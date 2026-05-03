@@ -14,7 +14,7 @@ not the reviewer.
 
 ## Repo layout
 
-```
+```text
 v1/
 ├── shared/                          imported by both SDK implementations
 │   ├── odis.py                      Outside-Diff Impact Slicing (port of baseline)
@@ -49,8 +49,12 @@ v1/
 
 ## I/O contract
 
-Both reviewers expose the identical `run()` signature so `compare.py` can drive
-them interchangeably:
+The shapes below describe the **Phase 1 reviewer contract** (the
+`reviewer.py` modules listed in the repo layout, not the existing
+offload `runner.py` files which already take `url` and return
+`tool_result_text` / `next_turn_input_tokens`). Both reviewers will
+expose the identical `run()` signature so `compare.py --task review`
+can drive them interchangeably:
 
 ```python
 def run(
