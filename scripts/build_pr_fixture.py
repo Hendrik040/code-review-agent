@@ -34,6 +34,21 @@ def _gh_json(endpoint: str) -> Any:
     return json.loads(out)
 
 
+def _gh_json_paginated(endpoint: str) -> list[Any]:
+    """Invoke `gh api --paginate --slurp <endpoint>` and flatten the
+    list-of-pages into a single list. The plain `_gh_json` returns only
+    the first page (~30 items by default); large PRs lose files silently.
+    """
+    out = subprocess.check_output(
+        ["gh", "api", "--paginate", "--slurp", endpoint], text=True
+    )
+    pages = json.loads(out)
+    flat: list[Any] = []
+    for page in pages:
+        flat.extend(page)
+    return flat
+
+
 def _fetch_file(owner: str, repo: str, path: str, ref: str) -> str | None:
     """Return the file's text at `ref`, or None if it doesn't exist there."""
     safe_path = path.replace("#", "%23").replace("?", "%3F")
@@ -60,7 +75,7 @@ def build(owner: str, repo: str, pr_number: int, fixture_name: str) -> Path:
     base_sha = pr["base"]["sha"]
     head_sha = pr["head"]["sha"]
     title = pr["title"]
-    files = _gh_json(f"repos/{owner}/{repo}/pulls/{pr_number}/files")
+    files = _gh_json_paginated(f"repos/{owner}/{repo}/pulls/{pr_number}/files")
 
     fixture_dir = FIXTURES_ROOT / fixture_name
     if fixture_dir.exists():

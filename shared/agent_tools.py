@@ -230,10 +230,18 @@ def build_review_context(repo: Path, base_ref: str, head_ref: str) -> str:
     Recommended as the first investigation step in the user prompt — it
     surfaces boundary bugs (signature changes with un-updated callers)
     in 1-5 KB of context for typical PRs.
+
+    Wrapped in try/except so a failing `git diff` (bad refs, non-git
+    repo, ast parse error in callgraph) cannot escape the dispatcher —
+    the agent loop's contract is "never raise; return an error string
+    so the model adapts".
     """
     # Local import to avoid circular-import paranoia at module load.
     from shared.odis import build_context
-    return build_context(repo, base_ref, head_ref)
+    try:
+        return build_context(repo, base_ref, head_ref)
+    except Exception as e:  # noqa: BLE001 — boundary; surface to model
+        return f"Error: build_review_context failed ({type(e).__name__}): {e}"
 
 
 # --------------------------------------------------------------------------- #

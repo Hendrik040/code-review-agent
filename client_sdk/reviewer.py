@@ -307,15 +307,30 @@ def run(
                 if submitted:
                     duplicate_submission = True
                     trace.append("  submit_findings called twice — keeping first")
+                    tool_result_content = "ok"
                 else:
-                    raw = block.input.get("findings", [])
-                    findings = [Finding(**item) for item in raw]
-                    submitted = True
-                    trace.append(f"  submit_findings → {len(findings)} finding(s)")
+                    # A malformed payload (wrong types, missing required keys,
+                    # non-list `findings`) must not crash the loop — the model
+                    # should see an Error string and adapt, exactly like for
+                    # the investigation tools.
+                    try:
+                        raw = block.input.get("findings", []) if isinstance(block.input, dict) else []
+                        parsed = [Finding(**item) for item in raw]
+                    except (TypeError, ValueError, AttributeError) as e:
+                        trace.append(f"  submit_findings rejected: {e}")
+                        tool_result_content = (
+                            f"Error: invalid submit_findings payload: {e}. "
+                            "Re-call with the documented schema."
+                        )
+                    else:
+                        findings = parsed
+                        submitted = True
+                        trace.append(f"  submit_findings → {len(findings)} finding(s)")
+                        tool_result_content = "ok"
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": "ok",
+                    "content": tool_result_content,
                 })
             else:
                 tool_output = _dispatch_tool(repo_path, block.name, block.input)
