@@ -93,18 +93,22 @@ CONTRACT_MISMATCH = Fixture(
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
+        # The expected finding anchors at calc.py — the changed file —
+        # per shared/prompts.py "Report bugs only in <file type='changed'>".
+        # The caller in main.py is the *evidence* (it still passes 2 args)
+        # but the bug-of-record is the breaking change in calc.py.
         Finding(
-            file="main.py",
-            line=5,
+            file="calc.py",
+            line=1,
             category="contract-mismatch",
             severity="high",
-            summary="Caller passes 2 args to add(); signature now requires 3",
+            summary="add() signature changed from 2 to 3 args; caller in main.py:5 still passes 2",
             detail=(
-                "calc.add was changed from `add(a, b)` to `add(a, b, c)` in "
-                "this diff, but the call in main.report() still passes only "
-                "two arguments. This will raise TypeError at runtime."
+                "calc.add was changed from `add(a, b)` to `add(a, b, c)` "
+                "without updating the caller `add(1, 2)` in main.py:5. "
+                "Will raise TypeError at runtime."
             ),
-            suggested_fix="    x = add(1, 2, 0)  # third arg required after signature change",
+            suggested_fix="def add(a, b, c=0):  # default makes the third arg optional",
         ),
     ],
 )
