@@ -46,9 +46,27 @@ class LocalRepo:
     `upload_bytes`.
     """
 
-    def __init__(self, prefix: str = "code-review-repo-") -> None:
+    def __init__(
+        self,
+        prefix: str = "code-review-repo-",
+        *,
+        existing_path: Optional[Path] = None,
+    ) -> None:
+        """Construct a LocalRepo.
+
+        With no args, `__enter__` creates a fresh tempdir and `__exit__`
+        rmtree's it (default, used by tests + suite runner).
+
+        With `existing_path=...`, the LocalRepo wraps a directory the
+        caller already provisioned and is responsible for cleaning up;
+        `__enter__/__exit__` become no-ops on the filesystem. Used by
+        github/repo_setup.py so the Phase-5 PR clone (which already
+        owns its tempdir's lifecycle via its own context manager) can
+        be exposed to the reviewer as a `Repo` Protocol object.
+        """
         self._prefix = prefix
-        self._path: Optional[Path] = None
+        self._path: Optional[Path] = existing_path
+        self._owns_tempdir = existing_path is None
 
     @property
     def path(self) -> Path:
@@ -57,11 +75,12 @@ class LocalRepo:
         return self._path
 
     def __enter__(self) -> "LocalRepo":
-        self._path = Path(tempfile.mkdtemp(prefix=self._prefix))
+        if self._owns_tempdir:
+            self._path = Path(tempfile.mkdtemp(prefix=self._prefix))
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self._path is not None:
+        if self._owns_tempdir and self._path is not None:
             shutil.rmtree(self._path, ignore_errors=True)
             self._path = None
 
