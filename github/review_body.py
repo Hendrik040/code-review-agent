@@ -49,8 +49,9 @@ def render_inline_comment(
 ) -> str:
     """Render one Finding as inline-comment markdown.
 
-    `analysis_trail` is accepted for backward compat; v1 callers pass ()
-    because the trail moved to the wrapping review's summary.
+    When `analysis_trail` is non-empty, a collapsible "Analysis trail"
+    details block is inserted after the detail paragraph and before the
+    "Prompt for AI agents" block.
     """
     loc = _location(finding)
     sev = SEVERITY_BADGES.get(finding.severity, finding.severity.title())
@@ -64,8 +65,17 @@ def render_inline_comment(
         "",
     ]
 
-    # The "Prompt for AI agents" block — copyable handoff prompt that
-    # downstream agents can paste directly into a fix session.
+    trail_bullets = list(analysis_trail)
+    if trail_bullets:
+        lines += [
+            "<details>",
+            f"<summary>🔎 Analysis trail ({len(trail_bullets)} steps)</summary>",
+            "",
+        ]
+        for bullet in trail_bullets:
+            lines.append(f"- {bullet}")
+        lines += ["", "</details>", ""]
+
     fix_goal = (
         finding.suggested_fix.strip()
         or "Fix the bug while preserving the intended behavior."

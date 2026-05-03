@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from github.trace_extract import _describe_tool_call, extract_trail
+from github.trace_extract import _describe_tool_call, extract_trail, extract_trail_for_finding
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -178,3 +178,49 @@ class TestExtractTrail:
         assert len(bullets) >= 4, (
             f"trail too sparse — expected >=4 bullets, got {len(bullets)}: {bullets}"
         )
+
+
+class TestExtractTrailForFinding:
+    def test_includes_build_review_context_universally(self):
+        # Even when nothing matches the finding's file, build_review_context
+        # is always included as universal context.
+        from shared.findings import Finding
+        f = Finding(file="totally_unrelated.py", line=1,
+                    category="other", severity="low",
+                    summary="x", detail="y", suggested_fix="")
+        bullets = extract_trail_for_finding(FIXTURE_DIR / "sample_trace.txt", f)
+        assert any("Loaded the PR diff" in b for b in bullets)
+
+    def test_attributes_by_basename(self, tmp_path):
+        # A bullet that mentions the basename of the finding's file should attribute.
+        trace = tmp_path / "fake_trace.txt"
+        trace.write_text(
+            "│ tool_use: mcp__reviewer__build_review_context\n"
+            "│   args: {}\n"
+            "└─\n"
+            "│ tool_use: mcp__reviewer__bash\n"
+            "│   args: {\"command\": \"head -100 src/sentry/app.py\"}\n"
+            "└─\n"
+            "│ tool_use: mcp__reviewer__bash\n"
+            "│   args: {\"command\": \"head -100 unrelated/other.py\"}\n"
+            "└─\n"
+        )
+        from shared.findings import Finding
+        f = Finding(file="src/sentry/app.py", line=10,
+                    category="other", severity="low",
+                    summary="x", detail="y", suggested_fix="")
+        bullets = extract_trail_for_finding(trace, f)
+        assert any("app.py" in b for b in bullets)
+        assert not any("other.py" in b for b in bullets), (
+            f"unrelated bullet attributed: {bullets}"
+        )
+
+    def test_caps_at_max_bullets(self):
+        # If many bullets match, cap honored.
+        from shared.findings import Finding
+        f = Finding(file="x.py", line=1, category="other", severity="low",
+                    summary="x", detail="y", suggested_fix="")
+        bullets = extract_trail_for_finding(
+            FIXTURE_DIR / "sample_trace.txt", f, max_bullets=2,
+        )
+        assert len(bullets) <= 2

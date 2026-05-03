@@ -53,8 +53,9 @@ def main() -> None:
         timestamp_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         num_turns=0, cost_usd=0.0,  # we don't have these here; show 0
     )
+    trace_path = _trace_path_for(run_id)
     payload = post_review.render_payload_for_inspection(
-        pr, findings, hunks, run_meta, trail,
+        pr, findings, hunks, run_meta, trail, trace_path=trace_path,
     )
     print("=" * 78)
     print("REVIEW SUMMARY BODY")

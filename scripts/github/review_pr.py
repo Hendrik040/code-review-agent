@@ -140,11 +140,12 @@ def main() -> None:
         if truncated:
             print("      WARN: reviewer hit MAX_TURNS before submitting findings")
 
+        trace_path = Path(result["trace_path"])
         if args.dry_run:
             print(f"[4/4] --dry-run: payload below, not posting to GH")
             payload = post_review.render_payload_for_inspection(
                 pr, result["findings"], hunks, run_meta, trail,
-                repo_path=repo.path, truncated=truncated,
+                repo_path=repo.path, truncated=truncated, trace_path=trace_path,
             )
             print(json.dumps(payload, indent=2))
             return
@@ -155,6 +156,7 @@ def main() -> None:
             url = post_review.submit_review(
                 pr, result["findings"], hunks, run_meta, trail,
                 token=token, repo_path=repo.path, truncated=truncated,
+                trace_path=trace_path,
             )
         except RuntimeError as e:
             _exit(1, f"ERROR: GH POST failed: {e}\n"
