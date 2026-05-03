@@ -43,6 +43,13 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable
 
+# Load .env early so SANDBOX_BACKEND=daytona can pick up DAYTONA_API_KEY
+# at materialize() time, not just inside reviewer.run() where dotenv
+# was previously called.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv()
+
 # Project root on path so `shared.*`, `client_sdk.*`, `agent_sdk.*` resolve.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
