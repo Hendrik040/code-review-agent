@@ -6,19 +6,27 @@ evaluator scores reviewer output against these expected findings.
 
 Each fixture lives in `tests/fixtures/<name>/` with two snapshot
 directories `v1/` (bug-free) and `v2/` (planted bug). The loader
-materializes both as commits in a temp git repo so ODIS can diff
-`HEAD~1..HEAD`.
+materializes both as commits in a fresh `Repo` (LocalRepo by default,
+DaytonaRepo when SANDBOX_BACKEND=daytona) so the reviewer can diff
+HEAD~1..HEAD.
+
+Phase 4 changed the fixture loader: instead of returning a temp
+directory `Path`, `materialize()` returns a `MaterializedFixture`
+whose `repo: Repo` is the right backend per env var. The fixture
+population (v1 commit, v2 commit) happens through `Repo.exec` and
+`Repo.upload_bytes` so the same code path works against a local
+tempdir or a Daytona sandbox.
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess
-import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+
+from sandbox.local import LocalRepo
+from sandbox.repo import Repo, get_backend
 
 from .findings import Finding
 
@@ -27,67 +35,115 @@ FIXTURES_ROOT = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 @dataclass(frozen=True)
 class Fixture:
+    """The spec of a fixture — name + refs + expected findings.
+
+    Phase 4 dropped `repo_path: Path` from this dataclass; the temp
+    directory was always a placeholder filled in by `materialize()`.
+    The materialized result now lives in `MaterializedFixture` below.
+    """
+
     name: str
-    repo_path: Path             # filesystem path to the temp git repo
     base_ref: str               # "HEAD~1" (the bug-free commit)
     head_ref: str               # "HEAD" (the commit with the planted bug)
     expected: list[Finding]     # findings a competent reviewer should surface
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+@dataclass(frozen=True)
+class MaterializedFixture:
+    """What `materialize(fixture)` yields.
+
+    Carries the underlying Repo so reviewers can run their tools
+    through it. The reviewer signature is
+    `run(repo: Repo, base_ref: str, head_ref: str)`; this dataclass
+    is what call sites unpack from the materialize() context manager.
+    """
+
+    name: str
+    repo: Repo
+    base_ref: str
+    head_ref: str
+    expected: list[Finding]
 
 
-def _materialize(name: str, expected: list[Finding]) -> Path:
-    """Create a temp git repo with two commits: v1 then v2.
+def _populate(repo: Repo, name: str) -> None:
+    """Seed `repo` with two commits: v1 (bug-free) and v2 (planted bug).
 
-    Both `v1/` and `v2/` snapshots may contain nested directories — the
-    whole tree is copied via shutil.copytree(..., dirs_exist_ok=True).
-    Real-world fixtures (e.g. extracted from a Sentry/Django PR) have
-    deeply nested paths like `src/foo/bar.py`; we preserve them so the
-    diff and imports look like the upstream repo.
+    Files are uploaded one at a time through `Repo.upload_bytes`. For
+    LocalRepo this is microseconds per file. For DaytonaRepo each
+    upload is an HTTP round-trip; Phase 4.2 may optimize to a single
+    tar upload per snapshot. For now the per-file path is the simplest
+    code that works against both backends without backend-aware
+    branching here.
     """
     src = FIXTURES_ROOT / name
     if not (src / "v1").is_dir() or not (src / "v2").is_dir():
-        raise FileNotFoundError(f"fixture {name!r} missing v1/ or v2/ at {src}")
+        raise FileNotFoundError(
+            f"fixture {name!r} missing v1/ or v2/ at {src}"
+        )
 
-    repo = Path(tempfile.mkdtemp(prefix=f"fixture-{name}-"))
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "fixture@local")
-    _git(repo, "config", "user.name", "fixture")
+    init = repo.exec(
+        "git init -q -b main && "
+        "git config user.email fixture@local && "
+        "git config user.name fixture",
+        timeout=30,
+    )
+    if not init.ok:
+        raise RuntimeError(
+            f"git init failed in fixture {name}: "
+            f"exit {init.exit_code} stderr={init.stderr!r}"
+        )
 
-    # v1 commit — recursively copy the whole snapshot tree.
-    shutil.copytree(src / "v1", repo, dirs_exist_ok=True)
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "v1")
+    for tag, label in (("v1", "v1"), ("v2", "v2 (planted bug)")):
+        snapshot_dir = src / tag
+        for path in snapshot_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(snapshot_dir)
+            repo.upload_bytes(path.read_bytes(), str(rel))
+        commit = repo.exec(
+            f'git add -A && git commit -q -m {label!r}',
+            timeout=30,
+        )
+        if not commit.ok:
+            raise RuntimeError(
+                f"git commit ({tag}) failed in fixture {name}: "
+                f"exit {commit.exit_code} stderr={commit.stderr!r}"
+            )
 
-    # v2 commit — overwrites/extends v1's tree. shutil.copytree with
-    # dirs_exist_ok=True merges; files at the same paths get replaced.
-    # Files present in v1 but not in v2 are NOT removed (rare in real
-    # PRs; we'd document or extend the fixture if a deletion test
-    # requires it).
-    shutil.copytree(src / "v2", repo, dirs_exist_ok=True)
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "v2 (planted bug)")
 
-    return repo
+def _make_repo(name: str) -> Repo:
+    """Build a fresh Repo of whichever backend SANDBOX_BACKEND requests."""
+    backend = get_backend()
+    if backend == "local":
+        return LocalRepo(prefix=f"fixture-{name}-")
+    if backend == "daytona":
+        # Local import — the daytona dep is optional at runtime; tests
+        # and CI without DAYTONA_API_KEY shouldn't pay the import cost.
+        from sandbox.daytona import DaytonaRepo
+        return DaytonaRepo()
+    raise ValueError(
+        f"unknown SANDBOX_BACKEND={backend!r}; expected 'local' or 'daytona'"
+    )
 
 
 @contextmanager
-def materialize(fixture: Fixture) -> Iterator[Fixture]:
-    """Yield a Fixture whose repo_path is a fresh temp checkout. Cleans
-    up after itself."""
-    repo = _materialize(fixture.name, fixture.expected)
-    try:
-        yield Fixture(
+def materialize(fixture: Fixture) -> Iterator[MaterializedFixture]:
+    """Yield a MaterializedFixture whose repo is freshly populated.
+
+    The repo's lifecycle is bracketed by this context manager — Repo
+    cleanup (sandbox delete or tempdir rmtree) runs in the finally
+    block.
+    """
+    repo = _make_repo(fixture.name)
+    with repo:
+        _populate(repo, fixture.name)
+        yield MaterializedFixture(
             name=fixture.name,
-            repo_path=repo,
+            repo=repo,
             base_ref=fixture.base_ref,
             head_ref=fixture.head_ref,
             expected=fixture.expected,
         )
-    finally:
-        shutil.rmtree(repo, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -96,7 +152,6 @@ def materialize(fixture: Fixture) -> Iterator[Fixture]:
 
 CONTRACT_MISMATCH = Fixture(
     name="contract_mismatch",
-    repo_path=Path(),     # filled in by materialize()
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
@@ -107,9 +162,8 @@ CONTRACT_MISMATCH = Fixture(
         # where the bug manifests most directly" and explicitly allows
         # callers as valid anchors when their contract is broken by the
         # diff. So both anchors are acceptable; the matcher in
-        # scripts/client_sdk/run_suite.py treats `expected` as a
-        # union — any expected entry matched by any model finding
-        # counts as a hit.
+        # scripts/run_suite.py treats `expected` as a UNION — any
+        # expected entry matched by any model finding counts as a hit.
         Finding(
             file="calc.py",
             line=1,
@@ -143,7 +197,6 @@ CONTRACT_MISMATCH = Fixture(
 
 SENTRY_80168 = Fixture(
     name="sentry_80168",
-    repo_path=Path(),
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
@@ -184,7 +237,6 @@ SENTRY_80168 = Fixture(
 
 SENTRY_80528 = Fixture(
     name="sentry_80528",
-    repo_path=Path(),
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
@@ -226,7 +278,6 @@ SENTRY_80528 = Fixture(
 
 SENTRY_67876 = Fixture(
     name="sentry_67876",
-    repo_path=Path(),
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
@@ -269,7 +320,6 @@ SENTRY_67876 = Fixture(
 
 SENTRY_93824 = Fixture(
     name="sentry_93824",
-    repo_path=Path(),
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
@@ -317,7 +367,6 @@ SENTRY_93824 = Fixture(
 
 SENTRY_77754 = Fixture(
     name="sentry_77754",
-    repo_path=Path(),
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
@@ -357,7 +406,6 @@ SENTRY_77754 = Fixture(
 
 SENTRY_95633 = Fixture(
     name="sentry_95633",
-    repo_path=Path(),
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[

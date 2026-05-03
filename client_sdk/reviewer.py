@@ -22,6 +22,9 @@ from typing import Any
 import anthropic
 from dotenv import load_dotenv
 
+# sys.path is bumped above; Repo lives in the project's sandbox/ module.
+from sandbox.repo import Repo  # noqa: E402
+
 # Make the project root importable for `shared.*` and `pricing`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pricing  # noqa: E402

@@ -1,70 +1,54 @@
-"""Investigation tools the reviewer can call when ODIS context isn't enough.
+"""Investigation tools the reviewer can call.
 
-Three thin wrappers, each importable as a Python function (called from the
-reviewer's tool-loop handler) AND as a tool schema dict (passed in
-`messages.create(tools=[...])`):
+Phase 4 refactor: every tool is now a thin shell-idiom wrapper over
+`Repo.exec` (or `Repo.upload_bytes` for write_file). The repo argument
+is a `sandbox.repo.Repo` — `LocalRepo` for the host backend,
+`DaytonaRepo` for the sandbox backend. Tools never touch host bytes
+directly; bash, ast-grep, grep, file IO, and ODIS all run wherever
+the repo lives.
 
-- read_file_section: pure I/O — read N lines of a file
-- ast_search: structural code search via the `ast-grep` CLI (must be
-  installed; `brew install ast-grep` on macOS, `cargo install ast-grep`
-  elsewhere)
-- grep: regex search via `git grep` for non-AST queries (comments,
-  configs, error strings)
-
-Both reviewers (Client SDK and Agent SDK) use the same implementations.
-The Client SDK wraps the schemas in `tools=[{name, description,
-input_schema}]`; the Agent SDK in Phase 2.x wraps via the @tool decorator.
+Both reviewers (Client SDK and Agent SDK) use the same callables.
+The Client SDK passes the JSON tool schemas in `messages.create(tools=[...])`;
+the Agent SDK wraps them via the @tool decorator inside its in-process
+MCP server.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
-from pathlib import Path
+import shlex
 from typing import Any
 
-# Cap output at sane sizes so a chatty grep doesn't blow context.
+from sandbox.repo import Repo
+
+# Cap output at sane sizes so a chatty grep doesn't blow context. These
+# also serve as the auto-offload mitigation on the Agent SDK path,
+# since Phase 4 replaces the harness's Read/Bash/Grep with our MCP
+# proxies (which lose harness-side auto-offloading).
 _MAX_AST_MATCHES = 30
 _MAX_GREP_LINES = 50
 _MAX_BASH_OUTPUT_CHARS = 8000
 _AST_TIMEOUT_S = 15
 _GREP_TIMEOUT_S = 10
 _BASH_TIMEOUT_S = 15
+_ODIS_TIMEOUT_S = 30
 
 
-def _safe_target(repo: Path, path: str) -> Path | None:
-    """Resolve `repo / path` and confirm it stays inside `repo`.
-
-    Returns the resolved Path if safe, None if the resolution escapes
-    the repo (via `..`, an absolute path, or a symlink). The check uses
-    `is_relative_to` after resolving so symlinks are followed once.
-    """
-    try:
-        target = (repo / path).resolve()
-        repo_resolved = repo.resolve()
-    except OSError:
-        return None
-    if not target.is_relative_to(repo_resolved):
-        return None
-    return target
-
-
-def read_file_section(repo: Path, path: str, start_line: int, end_line: int) -> str:
+def read_file_section(repo: Repo, path: str, start_line: int, end_line: int) -> str:
     """Read [start_line, end_line] (1-indexed, inclusive) from repo/path.
 
-    Returns line-numbered text or a short error string. Never raises — the
-    agent loop should never crash because the model passed a bad path.
-    Path traversal (`..`, symlinks pointing outside the repo) is blocked.
+    Returns line-numbered text (same format as pre-Phase-4) or a short
+    error string. Never raises — the agent loop should never crash
+    because the model passed a bad path. Path traversal is the
+    backend's job (LocalRepo's `_safe_target`; sandbox cwd is locked
+    to /workspace/repo).
     """
-    target = _safe_target(repo, path)
-    if target is None:
-        return f"Error: path outside repo or unresolvable: {path!r}"
-    if not target.exists() or not target.is_file():
-        return f"Error: file not found: {path}"
-    try:
-        rows = target.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as e:
-        return f"Error reading {path}: {e}"
+    result = repo.exec(f"cat -- {shlex.quote(path)}", timeout=_BASH_TIMEOUT_S)
+    if not result.ok:
+        # cat-style failures (no such file, is a directory, etc.) come
+        # back as exit_code != 0 with stderr describing the issue.
+        return f"Error reading {path}: {result.stderr.strip() or 'exit ' + str(result.exit_code)}"
+    rows = result.stdout.splitlines()
     start = max(1, start_line) - 1
     end = min(len(rows), max(start_line, end_line))
     if start >= end:
@@ -72,11 +56,7 @@ def read_file_section(repo: Path, path: str, start_line: int, end_line: int) -> 
     return "\n".join(f"{i:>4}  {rows[i - 1]}" for i in range(start + 1, end + 1))
 
 
-def ast_search(
-    repo: Path,
-    pattern: str,
-    language: str = "python",
-) -> str:
+def ast_search(repo: Repo, pattern: str, language: str = "python") -> str:
     """Run `ast-grep run -p <pattern> --lang <language>` in the repo.
 
     Returns a compact text summary of matches (capped at 30) or an error
@@ -84,24 +64,24 @@ def ast_search(
     any sequence. E.g. `add($$$)` finds every call to `add` regardless of
     arity or whitespace.
     """
-    try:
-        proc = subprocess.run(
-            ["ast-grep", "run", "-p", pattern, "--lang", language, "--json=stream"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            timeout=_AST_TIMEOUT_S,
+    cmd = (
+        f"ast-grep run -p {shlex.quote(pattern)} "
+        f"--lang {shlex.quote(language)} --json=stream"
+    )
+    result = repo.exec(cmd, timeout=_AST_TIMEOUT_S)
+    # ast-grep returns 0 on matches, 1 on no matches, anything else is
+    # an error. Match the pre-Phase-4 behavior: 0/1 are normal exit
+    # codes; only the others surface as errors. A FileNotFoundError
+    # from a missing binary now appears as a non-zero exit + stderr
+    # mentioning "ast-grep: command not found" or similar.
+    if result.exit_code not in (0, 1):
+        return (
+            f"Error: ast-grep exit {result.exit_code}: "
+            f"{result.stderr.strip()[:400]}"
         )
-    except FileNotFoundError:
-        return "Error: `ast-grep` not installed. macOS: `brew install ast-grep`."
-    except subprocess.TimeoutExpired:
-        return f"Error: ast-grep timed out after {_AST_TIMEOUT_S}s."
-
-    if proc.returncode not in (0, 1):
-        return f"Error: ast-grep exit {proc.returncode}: {proc.stderr.strip()[:400]}"
 
     matches: list[dict[str, Any]] = []
-    for line in proc.stdout.splitlines():
+    for line in result.stdout.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -135,68 +115,56 @@ def ast_search(
     return "\n".join(out)
 
 
-def grep(repo: Path, pattern: str, path_glob: str = "") -> str:
+def grep(repo: Repo, pattern: str, path_glob: str = "") -> str:
     """Plain regex grep via `git grep -E` — searches the working tree.
 
-    Cap on output to avoid blowing the agent's context. Returns "no matches"
-    cleanly rather than as an error.
+    Cap on output to avoid blowing the agent's context. Returns "no
+    matches" cleanly rather than as an error.
     """
-    cmd = ["git", "grep", "-n", "-E", pattern]
+    cmd = f"git grep -n -E {shlex.quote(pattern)}"
     if path_glob:
-        cmd.extend(["--", path_glob])
-    try:
-        proc = subprocess.run(
-            cmd, cwd=repo, capture_output=True, text=True, timeout=_GREP_TIMEOUT_S,
-        )
-    except subprocess.TimeoutExpired:
-        return f"Error: git grep timed out after {_GREP_TIMEOUT_S}s."
-
-    if proc.returncode == 1:
+        cmd += f" -- {shlex.quote(path_glob)}"
+    result = repo.exec(cmd, timeout=_GREP_TIMEOUT_S)
+    # git grep exits 1 when there are no matches; 0 means matches; >1
+    # is a real error. Match the pre-Phase-4 wrapper behavior.
+    if result.exit_code == 1:
         return f"No matches for pattern {pattern!r}."
-    if proc.returncode != 0:
-        return f"Error: git grep exit {proc.returncode}: {proc.stderr.strip()[:400]}"
-
-    lines = proc.stdout.splitlines()
+    if result.exit_code != 0:
+        return (
+            f"Error: git grep exit {result.exit_code}: "
+            f"{result.stderr.strip()[:400]}"
+        )
+    lines = result.stdout.splitlines()
     if len(lines) > _MAX_GREP_LINES:
         return (
             "\n".join(lines[:_MAX_GREP_LINES])
             + f"\n... and {len(lines) - _MAX_GREP_LINES} more (truncated)"
         )
-    return proc.stdout.rstrip("\n")
+    return result.stdout.rstrip("\n")
 
 
-def bash(repo: Path, command: str, timeout_s: int = _BASH_TIMEOUT_S) -> str:
-    """Run a shell command in the repo. cwd locked to `repo`, timeout-bounded.
+def bash(repo: Repo, command: str, timeout_s: int = _BASH_TIMEOUT_S) -> str:
+    """Run a shell command in the repo. cwd locked to repo root.
 
     The general-purpose escape hatch — covers anything the typed
-    wrappers (read_file_section / ast_search / grep / write_file) don't
-    fit. Composes pipelines, runs `git`, `find`, `head`/`tail`, `jq`,
-    `python -c`, and so on.
+    wrappers (read_file_section / ast_search / grep / write_file)
+    don't fit. Composes pipelines, runs `git`, `find`, `head`/`tail`,
+    `jq`, `python -c`, and so on.
 
-    Locked to the materialized fixture's temp directory in tests. For
-    Phase 4 (Daytona) this is replaced by a sandbox call; for Phase 5
-    (real PRs) the cwd is the cloned repo. The blast radius today is
-    one throwaway temp dir per run.
+    Phase 4: this proxies into the sandbox via Repo.exec. The blast
+    radius is now a per-review Daytona sandbox (when SANDBOX_BACKEND=
+    daytona) or a local tempdir (LocalRepo).
     """
-    try:
-        proc = subprocess.run(
-            ["bash", "-c", command],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired:
-        return f"Error: bash timed out after {timeout_s}s."
+    result = repo.exec(command, timeout=timeout_s)
 
     parts: list[str] = []
-    if proc.stdout:
-        parts.append(proc.stdout.rstrip("\n"))
-    if proc.stderr:
-        parts.append(f"--- stderr ---\n{proc.stderr.rstrip(chr(10))}")
-    out = "\n".join(parts) if parts else f"(no output, exit={proc.returncode})"
-    if proc.returncode != 0:
-        out = f"[exit {proc.returncode}]\n" + out
+    if result.stdout:
+        parts.append(result.stdout.rstrip("\n"))
+    if result.stderr:
+        parts.append(f"--- stderr ---\n{result.stderr.rstrip(chr(10))}")
+    out = "\n".join(parts) if parts else f"(no output, exit={result.exit_code})"
+    if result.exit_code != 0:
+        out = f"[exit {result.exit_code}]\n" + out
     if len(out) > _MAX_BASH_OUTPUT_CHARS:
         out = out[:_MAX_BASH_OUTPUT_CHARS] + (
             f"\n... (truncated; total {len(out):,} chars)"
@@ -204,49 +172,58 @@ def bash(repo: Path, command: str, timeout_s: int = _BASH_TIMEOUT_S) -> str:
     return out
 
 
-def write_file(repo: Path, path: str, content: str) -> str:
+def write_file(repo: Repo, path: str, content: str) -> str:
     """Write content to repo/path. Creates parent directories.
 
     Used as scratch space (notes the agent wants to remember between
     turns) or to write a script the agent then executes via bash. The
-    filesystem-as-context pattern from Manus / Lance Martin. Path
-    traversal is blocked the same way `read_file_section` blocks it.
+    filesystem-as-context pattern from Manus / Lance Martin.
+
+    Phase 4 routes through `Repo.upload_bytes`, which avoids escaping
+    a heredoc through the shell. Path traversal is the backend's
+    responsibility — both implementations reject any remote_path that
+    escapes the repo root.
     """
-    target = _safe_target(repo, path)
-    if target is None:
-        return f"Error: path outside repo or unresolvable: {path!r}"
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-    except OSError as e:
-        return f"Error writing {path}: {e}"
+        repo.upload_bytes(content.encode("utf-8"), path)
+    except PermissionError as e:
+        return f"Error: {e}"
+    except Exception as e:  # noqa: BLE001 — boundary; surface to model
+        return f"Error writing {path} ({type(e).__name__}): {e}"
     return f"Wrote {len(content):,} chars to {path}"
 
 
-def build_review_context(repo: Path, base_ref: str, head_ref: str) -> str:
+def build_review_context(repo: Repo, base_ref: str, head_ref: str) -> str:
     """ODIS-as-a-tool: same algorithm as `shared.odis.build_context`,
     exposed for the agent to call when it wants the curated slice.
 
-    Recommended as the first investigation step in the user prompt — it
-    surfaces boundary bugs (signature changes with un-updated callers)
-    in 1-5 KB of context for typical PRs.
+    Phase 4 invokes the ODIS CLI (`python -m shared.odis_cli BASE..HEAD`)
+    inside the sandbox so the algorithm runs next to the repo. The
+    Daytona image bakes the `shared/` package at /opt/code-review-agent
+    with PYTHONPATH set; LocalRepo seeds the same env in `exec`.
 
-    Wrapped in try/except so a failing `git diff` (bad refs, non-git
-    repo, ast parse error in callgraph) cannot escape the dispatcher —
-    the agent loop's contract is "never raise; return an error string
-    so the model adapts".
+    Recommended as the first investigation step — 1-5 KB of context
+    surfaces most boundary bugs immediately.
     """
-    # Local import to avoid circular-import paranoia at module load.
-    from shared.odis import build_context
-    try:
-        return build_context(repo, base_ref, head_ref)
-    except Exception as e:  # noqa: BLE001 — boundary; surface to model
-        return f"Error: build_review_context failed ({type(e).__name__}): {e}"
+    cmd = (
+        f"python -m shared.odis_cli "
+        f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
+    )
+    # NB: the ".." in BASE..HEAD must NOT be quoted; that's why we
+    # quote each ref individually.
+    result = repo.exec(cmd, timeout=_ODIS_TIMEOUT_S)
+    if not result.ok:
+        return (
+            f"Error: build_review_context failed (exit {result.exit_code}): "
+            f"{result.stderr.strip() or '(no stderr)'}"
+        )
+    return result.stdout
 
 
 # --------------------------------------------------------------------------- #
 # Tool schemas for the Anthropic Client SDK (`tools=[...]`).
 # Agent SDK (Phase 2.x) wraps the same callables via the @tool decorator.
+# Schemas are unchanged from pre-Phase-4 — the model sees the same surface.
 # --------------------------------------------------------------------------- #
 
 READ_FILE_SECTION_TOOL: dict[str, Any] = {
