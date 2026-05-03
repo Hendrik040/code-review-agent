@@ -128,25 +128,21 @@ def run(
     }
     num_turns = 0
 
-    # `tool_choice` is forced on the FIRST call so the model definitely
-    # produces structured output. After it does, we drop back to "auto"
-    # (default) so the model can cleanly end the conversation rather
-    # than calling submit_findings again.
+    # No tool_choice — `submit_findings` is offered as an option, the
+    # model decides when to call it. Forcing it would make the comparison
+    # unfair vs the Agent SDK (the harness has no equivalent forcing
+    # mechanism) and would collapse Phase 1.5 / 1.6 into a single
+    # structured-output API call rather than an agent loop. The system
+    # prompt already tells the model to call the tool when it has a
+    # verdict; we trust it to follow.
     while num_turns < MAX_TURNS:
-        is_first = num_turns == 0
-        kwargs: dict[str, Any] = dict(
+        response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=SYSTEM_PROMPT,
             tools=[SUBMIT_FINDINGS_TOOL],
             messages=messages,
         )
-        if is_first:
-            kwargs["tool_choice"] = {
-                "type": "tool",
-                "name": SUBMIT_FINDINGS_TOOL_NAME,
-            }
-        response = client.messages.create(**kwargs)
         num_turns += 1
         for k in total_usage:
             total_usage[k] += getattr(response.usage, k, 0) or 0

@@ -59,6 +59,6 @@ behavior) | low (subtle but real).
 USER_PROMPT_TEMPLATE = """\
 {odis_context}
 
-Review the above and submit findings via the `submit_findings` tool.
-Empty list is a valid result.
+When done, call `submit_findings` once with your list. Empty list is
+valid if no real bugs.
 """
