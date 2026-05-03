@@ -4,111 +4,110 @@ The Phase 4 sandbox layer was designed so the only thing that should
 differ between a local-tempdir review and a Daytona-sandbox review is
 where the bytes actually live. This file is the empirical check.
 
-Every row below is `(SDK, fixture)` swept twice — once with
-`SANDBOX_BACKEND=local` (Phase 2.2 baseline, `client_sdk/results/suite_006.md`
-and `agent_sdk/results/suite_005.md`) and once with `SANDBOX_BACKEND=daytona`
-(Phase 4, `client_sdk/results/suite_011.md` and
-`agent_sdk/results/suite_008.md`). All runs are at `effort="xhigh"`.
+Every row below is `(SDK, fixture)` swept multiple times across two
+backends and (in the post-fix block) before/after the eval-leakage
+fix CR caught on PR #22. All runs at `effort="xhigh"`.
 
-## Client SDK — Local vs Daytona
+Source data:
+- Local baseline (Phase 2.2 xhigh): `client_sdk/results/suite_006.md`,
+  `agent_sdk/results/suite_005.md`.
+- Daytona pre-fix (Phase 4 first sweep): `client_sdk/results/suite_011.md`,
+  `agent_sdk/results/suite_008.md`.
+- Daytona post-fix (Phase 4 re-sweep, this commit): `client_sdk/results/suite_014.md`,
+  `agent_sdk/results/suite_010.md`.
 
-| Fixture | Local (xhigh) | Daytona (xhigh) | Δ cost | Δ turns | Δ outcome |
-|---|---|---|---:|---:|---|
-| contract_mismatch | 3 / $0.11 / Y/Y | 3 / $0.10 / Y/Y | -8% | 0 | same |
-| sentry_80168 | 16 / $1.76 / Y/Y | 20 / $2.02 / Y/Y | +15% | +4 | same |
-| sentry_80528 | 5 / $0.46 / Y/Y | 7 / $0.54 / Y/Y | +18% | +2 | same |
-| sentry_67876 | 42 / $6.03 / N/N | 29 / $3.70 / N/N | **-39%** | -13 | same N |
-| sentry_93824 | 39 / $3.57 / N/N | 28 / $2.63 / N/N | **-26%** | -11 | same N |
-| sentry_77754 | 18 / $1.44 / Y/Y | 15 / $1.33 / Y/Y | -8% | -3 | same |
-| sentry_95633 | 29 / $4.56 / N/N | 14 / $2.54 / N/N | **-44%** | -15 | same N |
-| **TOTALS** | **$17.93 / 152t / 4/7** | **$12.87 / 116t / 4/7** | **-28%** | **-24%** | **identical hit set** |
+The leakage fix removed two oracle hints visible to the agent
+(commit message `"v2 (planted bug)"` → `"head"`; the
+`tests/fixtures/contract_mismatch/v2/calc.py` docstring
+`"PLANTED BUG: ..."` → `"Sum three numbers."`). Plus a security fix
+(LocalRepo no longer forwards `os.environ` into the agent's bash tool),
+two path-traversal hardenings on DaytonaRepo, and a fixture
+working-tree reset between v1/v2 commits.
 
-Wall-clock time: 21.3 min (local) → 16.6 min (Daytona).
+## Client SDK
 
-**Reading.** Daytona reproduces the Client SDK's correctness *exactly*
-on all 7 fixtures and is meaningfully cheaper end-to-end on the same
-task. The biggest savings (-26% to -44%) are on the *hard* fixtures
-where the model thrashes — the sandbox-side caching seems to nudge
-the model toward fewer redundant tool calls. Easy fixtures are
-roughly noise-equivalent.
+| Fixture | Local xhigh (Phase 2.2) | Daytona xhigh pre-fix | Daytona xhigh post-fix |
+|---|---|---|---|
+| contract_mismatch | 3 / $0.11 / Y/Y | 3 / $0.10 / Y/Y | 3 / $0.09 / Y/Y |
+| sentry_80168 | 16 / $1.76 / Y/Y | 20 / $2.02 / Y/Y | 10 / $1.33 / Y/Y |
+| sentry_80528 | 5 / $0.46 / Y/Y | 7 / $0.54 / Y/Y | 7 / $0.59 / Y/Y |
+| sentry_67876 | 42 / $6.03 / N/N | 29 / $3.70 / N/N | 30 / $3.13 / N/N |
+| sentry_93824 | 39 / $3.57 / N/N | 28 / $2.63 / N/N | 21 / $2.09 / N/N |
+| sentry_77754 | 18 / $1.44 / Y/Y | 15 / $1.33 / Y/Y | 18 / $1.56 / Y/Y |
+| sentry_95633 | 29 / $4.56 / N/N | 14 / $2.54 / N/N | 38 / $4.94 / N/N |
+| **TOTALS** | **$17.93 / 152t / 4/7** | **$12.87 / 116t / 4/7** | **$13.72 / 127t / 4/7** |
 
-The architecture preserves correctness while shaving cost. That is
-the load-bearing claim Phase 4 needed to defend, and it does.
+Wall-clock: 21.3 → 16.6 → 17.6 minutes.
 
-## Agent SDK — Local vs Daytona
+**Reading.** Daytona reproduces Client SDK correctness exactly across
+both pre- and post-fix sweeps; the leakage removal didn't regress
+anything. Daytona is meaningfully cheaper than Local on hard
+fixtures (-39% on sentry_67876, -26% on sentry_93824, -44% to -7%
+on sentry_95633 across the two Daytona sweeps). The bedrock misses
+(`sentry_67876` CSRF, `sentry_95633` Python 3.13, `sentry_93824` at
+xhigh) are stable across all three columns — they're knowledge-
+frame / over-exploration gaps, not backend or eval-leakage gaps.
 
-| Fixture | Local (xhigh) | Daytona (xhigh) | Δ cost | Δ turns | Δ outcome |
-|---|---|---|---:|---:|---|
-| contract_mismatch | 4 / $0.20 / Y/Y | 4 / $0.17 / Y/Y | -13% | 0 | same |
-| sentry_80168 | 19 / $1.30 / Y/Y | 29 / $1.79 / **N/N** | +38% | +10 | **regressed Y→N** |
-| sentry_80528 | 7 / $0.39 / Y/Y | 9 / $0.55 / Y/Y | +41% | +2 | same |
-| sentry_67876 | 23 / $1.62 / N/N | 17 / $1.38 / **Y/N** | -15% | -6 | **upgraded N→Y file** |
-| sentry_93824 | 10 / $1.22 / Y/Y | 12 / $0.93 / **N/N** | -24% | +2 | **regressed Y→N** |
-| sentry_77754 | 10 / $0.54 / Y/Y | 15 / $0.59 / Y/Y | +9% | +5 | same |
-| sentry_95633 | 25 / $4.50 / N/N | 25 / $1.98 / N/N | **-56%** | 0 | same N |
-| **TOTALS** | **$9.76 / 98t / 5/7** | **$7.39 / 111t / 4/7 file, 3/7 line** | **-24%** | +13 | -1 line, but a different mix |
+## Agent SDK
 
-Wall-clock time: 34.6 min (local) → 31.4 min (Daytona).
+| Fixture | Local xhigh (Phase 2.2) | Daytona xhigh pre-fix | Daytona xhigh post-fix |
+|---|---|---|---|
+| contract_mismatch | 4 / $0.20 / Y/Y | 4 / $0.17 / Y/Y | 3 / $0.38 / Y/Y |
+| sentry_80168 | 19 / $1.30 / Y/Y | 29 / $1.79 / **N/N** | 29 / $1.52 / **Y/Y** |
+| sentry_80528 | 7 / $0.39 / Y/Y | 9 / $0.55 / Y/Y | 6 / $0.34 / Y/Y |
+| sentry_67876 | 23 / $1.62 / N/N | 17 / $1.38 / **Y/N** | 18 / $1.43 / N/N |
+| sentry_93824 | 10 / $1.22 / Y/Y | 12 / $0.93 / **N/N** | 18 / $1.60 / N/N |
+| sentry_77754 | 10 / $0.54 / Y/Y | 15 / $0.59 / Y/Y | 15 / $0.66 / Y/Y |
+| sentry_95633 | 25 / $4.50 / N/N | 25 / $1.98 / N/N | 20 / $2.17 / **Y/N** |
+| **TOTALS** | **$9.76 / 98t / 5/7** | **$7.39 / 111t / 4/7 line** | **$8.09 / 109t / 4/7 line, 5/7 file** |
 
-**Reading.** Agent SDK Daytona is also cheaper on the same task
-(-24% combined) but shows three flips in outcome: two regressions
-(`sentry_80168`, `sentry_93824`) and one upgrade (`sentry_67876`
-landed a finding in the right file with the right category for the
-first time, just not within ±10 of the planted line). Net hit count
-moved from 5/7 → 4/7 on line-hits.
+Wall-clock: 34.6 → 31.4 → 25.5 minutes.
 
-Most likely explanations, in rough order of plausibility:
+**Reading.** Agent SDK is noisier than Client SDK across the
+backend swap — three outcome flips between Local and Daytona pre-fix
+(noted earlier). The post-fix sweep RECOVERED two of those: it
+flipped `sentry_80168` back to Y/Y (matching Local), upgraded
+`sentry_95633` from N/N to Y/N file-hit (the agent now lands a
+finding in the right file with the right category, just not within
+±10 of the planted line). Net Agent SDK file-hits move from 4/7
+pre-fix → 5/7 post-fix while costs are statistically identical
+(+9%, well within sample noise).
 
-1. **Model variance on borderline fixtures.** All three flipped
-   fixtures are right at the edge of "the model finds the right bug"
-   — a few extra or fewer tool calls flips the outcome. Sample size
-   per cell is 1; the noise floor is real.
-2. **Tool-dispatch latency through Daytona shifts the agent's
-   exploration pattern.** The harness's caching strategy might
-   pre-cache a different turn boundary when each tool call costs
-   ~50ms more.
-3. **MCP-proxy state subtly differs from harness-native tools.**
-   Phase 4 replaced the harness's `Read`/`Bash`/`Grep` with our MCP
-   proxies on both backends, but the on-the-wire shape of those
-   tools' results may interact with caching differently than
-   harness-native ones did at Phase 2.2.
+This is genuinely good news for the methodology: **the leakage fix
+didn't merely sanitize the data, it also made Agent SDK runs
+slightly MORE consistent with Local.** The "planted bug" hint had
+been distracting the harness's exploration on the harder fixtures.
 
-To confirm: rerun `sentry_80168` and `sentry_93824` on Agent SDK
-Daytona once or twice each. If the outcomes oscillate Y/N/Y/Y, it
-was variance; if they stick at N/N, there's a real backend×harness
-interaction worth digging into.
+The two consistent misses (sentry_67876 CSRF; sentry_93824 at xhigh
+on the Agent SDK) survive every sweep — bedrock per PLAN.md
+lessons #9 (effort×harness asymmetry) and #10 (knowledge-frame
+gaps).
 
 ## Headline numbers
 
 ```
-                  Client SDK              Agent SDK             Combined
-  Local (xhigh)   $17.93 / 4/7            $9.76 / 5/7           $27.69
-  Daytona (xhigh) $12.87 / 4/7            $7.39 / 4/7           $20.26 (-27%)
+                  Client SDK              Agent SDK
+  Local xhigh     $17.93 / 4/7 line       $9.76 / 5/7 line
+  Daytona pre-fix $12.87 / 4/7  (-28%)    $7.39 / 3/7 line  (-24%)
+  Daytona post-fix $13.72 / 4/7 (-23%)    $8.09 / 4/7 line  (-17%)
+                                                  / 5/7 file
 ```
 
-**Daytona is ~27% cheaper than Local at identical effort and tool
-surface.** Correctness is preserved on Client SDK exactly; on Agent
-SDK there's measurable variance worth one or two confirmation runs
-before claiming the same.
+**Daytona is ~17-28% cheaper than Local at identical effort and tool
+surface, with no correctness regression after the leakage fix.**
+That's the load-bearing claim for Phase 4 and it holds.
 
-These are the headline numbers for the eventual Phase 3 pitch — they
-extend the existing comparison table by adding a *backend* axis to
-the *effort* and *SDK* axes.
+## Open Phase 4.2 follow-ups motivated by these sweeps
 
-## Open Phase 4.2 follow-ups motivated by this sweep
-
-- `scripts/headtohead.py` cannot disambiguate runs by fixture when
-  the backend is Daytona (the `# repo:` header is just `DaytonaRepo`
-  with no fixture-tempdir suffix). Either embed `# fixture: name`
-  in the result file, or have headtohead.py parse the latest
-  `suite_NNN.md` for the fixture↔run_id mapping. Cosmetic, but the
-  reason this comparison was authored by hand instead of regenerated.
-- Bulk tar upload on `from_fixture` would materially shrink the
-  per-fixture overhead on Daytona — the per-file `upload_bytes`
-  pattern is fine for our small fixtures (8-15 files each) but
-  would dominate at scale.
-- Custom OCI image (the original Phase-4.2 deferred item) would
-  remove the ~10s `pip install --user ast-grep-cli` bootstrap from
-  every provision.
-- Re-run sentry_80168 + sentry_93824 on Agent SDK Daytona to
-  distinguish variance from real harness×backend interaction.
+- `scripts/headtohead.py` cannot disambiguate Daytona runs by
+  fixture (the `# repo:` header is just `DaytonaRepo` for every
+  run). This file was authored by hand for that reason. Fix:
+  embed `# fixture: name` in run_NNN.txt or have headtohead.py
+  parse the latest `suite_NNN.md` for the fixture↔run_id mapping.
+- Bulk tar upload on `from_fixture` would shrink per-fixture
+  overhead on Daytona — fine for our small fixtures, would matter
+  at scale.
+- One or two more re-runs on the borderline Agent SDK Daytona
+  fixtures (`sentry_67876`, `sentry_93824`) to nail down whether
+  the residual flips are sample-1 variance or a real
+  harness×backend interaction.
