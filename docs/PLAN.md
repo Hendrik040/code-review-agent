@@ -172,8 +172,93 @@ PHASE 2 — Agent SDK reviewer + tool/effort parity                    ✓ (PRs 
         xhigh hurts Client SDK and helps Agent SDK on the same
         fixture (sentry_93824) — asymmetric harness×effort
         interaction is now lesson #9.
-   2.3  Subagent dispatch for >5-file diffs                          ⏳
-   2.4  Recitation plan.md for long runs                             ⏳
+   2.3  Effort-frontier sweep — the headline pitch graphic         ⏳
+        Sweep all 7 fixtures on both SDKs at every effort level the
+        Anthropic API exposes for Opus 4.7: low, medium, high, xhigh,
+        max. That's 7 × 5 × 2 = 70 runs. Cost estimate: ~$80-150
+        depending on how aggressive max is.
+
+        Output: a 2×2 grid of charts (cost-vs-accuracy frontier),
+        one panel per (billing model, SDK) cell:
+          - Top-left:  API rate × Client SDK
+          - Top-right: API rate × Agent SDK
+          - Bot-left:  Max plan × Client SDK
+                       (n/a — Client SDK doesn't run on Max)
+          - Bot-right: Max plan × Agent SDK (harness-reported)
+        Plus a single overlay chart with all four lines for the
+        deck headline.
+
+        The numeric axes per fixture run: cost, latency, num_turns,
+        file_hit / line_hit, exit_reason. The aggregate axis: total
+        cost vs total hits/7 per (SDK, effort) point. Five points
+        per line × four lines = 20 data points on the headline
+        graph. That's the pitch's load-bearing visual.
+
+        We expect (hypotheses to test):
+          - At low effort, Agent SDK might be hugely cheaper for
+            modest accuracy loss — the "routine review" sweet spot.
+          - The Client-vs-Agent gap shrinks at xhigh and max where
+            the harness's compaction prevents over-exploration.
+          - On Max plan billing, Agent SDK dominates accuracy-per-$.
+          - On API billing, Client SDK dominates at low effort but
+            crosses over somewhere in the medium/high band.
+
+   2.4  Harness-stress fixtures — exercise what code review can't    ⏳
+        The standard 7 fixtures are single-PR, scope-bounded, no
+        session reuse — the worst case for showing off harness
+        features. Add 3 fixtures shaped to the harness's strengths:
+
+        2.4a  `sentry_bigdiff` — a real Sentry PR with 50+ changed
+              files. Forces the harness's auto-offloading on `Read`
+              to do real work; on Client SDK the model has to
+              narrow manually with bash head/tail. Hypothesis:
+              Agent SDK costs much less per-token because it
+              doesn't pull whole files into context.
+
+        2.4b  `multi_step_refactor` — a real cross-file refactor
+              that requires reading the diff, understanding cross-
+              file impact, AND verifying tests. Hypothesis: at
+              MAX_TURNS=100, Client SDK exhausts the budget while
+              Agent SDK's automatic compaction keeps context lean
+              past turn ~50. We should see Client SDK hit
+              exit=max_turns where Agent SDK still finishes.
+
+        2.4c  `review_then_rereview` — a "review the PR, then
+              re-review after the author pushes a fix" two-call
+              session. Agent SDK uses session resume / continue
+              to keep the original ODIS context warm; Client SDK
+              has to rebuild from scratch. Hypothesis: Agent SDK
+              is dramatically cheaper on the second call because
+              the prior session's caches are still warm.
+
+   2.5  Subagent dispatch demo — the harness's `Agent` tool         ⏳
+        For very-large fixtures (e.g. the Phase 2.4a 50-file
+        fixture), spawn one subagent per file cluster so each
+        runs with its own clean context.
+
+        - Agent SDK: built-in via the `Agent` tool + `agents=`
+          option in ClaudeAgentOptions. ~30 LOC of glue.
+        - Client SDK: we implement subagent dispatch from scratch
+          (separate API conversations, context isolation, result
+          aggregation). Estimated ~200-300 LOC.
+
+        The implementation gap IS the demo. Run both on a 50-file
+        fixture and measure:
+          - Engineering effort (LOC, time-to-implement)
+          - Cost on the same fixture
+          - Accuracy (does subagent-isolated review find more or
+            fewer planted bugs than monolithic review?)
+
+        Output: pitch slide titled "Subagent dispatch on huge PRs"
+        with a code-diff (Agent SDK 30 LOC vs Client SDK 250 LOC)
+        and a results table.
+
+   2.6  Recitation plan.md for long runs                             ⏳
+        Manus pattern — long Agent SDK sessions write a `plan.md`
+        every N tool calls to combat drift. Useful for the
+        multi_step_refactor fixture from Phase 2.4b. Demonstrates
+        another pattern the harness supports natively (via skills
+        and CLAUDE.md auto-load).
 
 PHASE 3 — Comparison + pitch                                         ⏳ ready
    3.1  compare.py --task review — THE Client-SDK-vs-Agent-SDK
@@ -183,6 +268,7 @@ PHASE 3 — Comparison + pitch                                         ⏳ ready
         latency, finding overlap).
    3.2  ASCII flow diagrams (`docs/comparison.md`)
    3.3  Pitch document (`docs/pitch.md`) with the headline numbers
+        and the four-panel effort-frontier grid from Phase 2.3
 
 PHASE 4 — Daytona sandbox layer                                      ⏳
 PHASE 5 — GitHub PR integration                                      ⏳
