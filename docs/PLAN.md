@@ -137,9 +137,18 @@ This is the bulk of the build. Each sub-step is its own checkpoint.
     - `grep(pattern, path_glob)` — `git grep -E` regex fallback.
     - `write_file(path, content)` — scratch space; filesystem-as-memory.
   The user prompt is a thin directive (repo path + refs + recommended first step). The agent decides everything else. Manual tool-calling loop with append-only message history. Cap turns at 12. No tool_choice forcing.
-- **1.7 — Caching**, applied surgically. Mark `cache_control` on the system prompt + tools array (the stable prefix). **Skip caching the tool_result and ODIS context** — Phase 1.5 has only 2-4 turns, so there are no reads to amortize the write cost (we proved this empirically with the offload script: caching a tool_result with 0 reads cost +25%). Document this in code comments referring back to `compare.py` run_008.
+- **1.7 — Caching**, applied surgically (now urgent). The Phase 1.6 v2 pivot added several tools to the tools array (~700+ tokens) and a richer system prompt (~6K tokens). Run #14 against `sentry_80168` ran 12 turns and consumed **333,160 input tokens / $5.17** because every turn re-pays for the full prefix. Mark `cache_control` on the system prompt + tools array (stable across all turns). **Skip caching the tool_result and ODIS context** — naive tool_result caching with 0 reads costs +25% (proven empirically in `compare.py` run_008 of the offload script). Also raise `MAX_TURNS` to ~20 once caching makes deeper turns affordable; consider a small prompt nudge ("aim to submit findings before the budget runs out") so the agent self-paces.
 - **1.8 — Wire into `compare.py`** with a `--task review` flag. Existing `--task offload` keeps working. Result file format extended to include findings list. Trace format unchanged (the new boxed style).
-- **1.9 — Run on the fixture, capture run_010+**. Inspect findings. Sanity check: did it find the planted contract-mismatch bug?
+- **1.9 — Run on both fixtures (`contract_mismatch` and `sentry_80168`), capture metrics**. Sanity checks: planted contract-mismatch bug detected on the simple fixture; agent reaches `submit_findings` within budget on the real-world Sentry fixture. Compare cost / turns / quality.
+
+### Fixture inventory (current)
+
+The originally-planned Phase 3.1 fixture expansion landed early because building `sentry_80168` was the test that empirically motivated Phase 1.7. Tooling: `scripts/build_pr_fixture.py owner/repo PR_NUMBER` lets us add more cheaply.
+
+| name | source | bug shape | size |
+|---|---|---|---|
+| `contract_mismatch` | synthetic | signature change with un-updated callers | 2 files, hand-written |
+| `sentry_80168` | getsentry/sentry#80168 | subclass body is `pass` over an `abc.ABC` → `TypeError` on instantiation | 4 files, +249/-151 |
 
 **Checkpoints:** I show the diff after each sub-step. We don't move past 1.5 until you've actually read `client_sdk/reviewer.py` and we agree the loop is clean.
 
@@ -154,7 +163,7 @@ Same I/O contract. The harness does the heavy lifting we did manually in Phase 1
 
 ## Phase 3 — Comparison + pitch
 
-- **3.1 — Fixture suite expansion**. Add 2 more repos: one larger (1-2 MB) to show the Agent SDK pulling ahead on offloading, one with cross-file impact to show subagent dispatch.
+- **3.1 — Fixture suite expansion** (already started — see Phase 1.6 inventory). The Sentry fixture (`sentry_80168`) landed early because it was the empirical motivation for Phase 1.7. Add 2-3 more in this phase: one larger (1-2 MB) to show offload pulling ahead, one with cross-file impact for subagent dispatch (Phase 2.2), and ideally a `deletion_orphan` fixture to close the ODIS TODO (PR #10's deferred CR Major).
 - **3.2 — Comparison table** in `compare.py` already exists; extend rows to include: `findings_count`, `findings_match_expected` (boolean), `latency_s`, the existing cost/turn columns.
 - **3.3 — ASCII flow diagrams** in `docs/comparison.md` showing both architectures side by side (we have a draft from a prior turn — refine it).
 - **3.4 — Pitch document** `docs/pitch.md`. ~500 words, the "why Agent SDK is worth it (or isn't) for this task". Refers to actual numbers from our runs, not generalities.
