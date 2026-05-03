@@ -1,0 +1,40 @@
+# Client SDK reviewer run 049
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 30
+# cost (USD, API rate): 3.130750
+# usage: {'input_tokens': 34, 'output_tokens': 15855, 'cache_creation_input_tokens': 40100, 'cache_read_input_tokens': 792827}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "medium",
+    "summary": "KeyError accessing integration.metadata['sender']['login'] when sender metadata is absent",
+    "detail": "GitHubInstallation.dispatch (lines 492-505) re-fetches the active Integration and unconditionally indexes `integration.metadata[\"sender\"][\"login\"]` to compare against the OAuth-authenticated user. However, the sender field is only written by build_integration (line 376-377) when `state.get(\"sender\")` is truthy, i.e. when the install webhook delivered the sender first. Two realistic scenarios produce an Integration row with no `sender` key in metadata: (a) any pre-existing GitHub integration created before this metadata was tracked, and (b) installations completed via the GitHubInstallation `Integration.DoesNotExist -> pipeline.next_step()` branch (line 481-482), which calls build_integration without any prior webhook. If such an Integration later loses its OrganizationIntegration row (org integration deleted), the next user who attempts to (re)install reaches line 492-505 with `installations_exist == False`, triggering an unhandled KeyError and a 500 response instead of the intended `error(...)` page. Wrap the lookup in a guarded access and treat the missing-sender case as an authentication failure.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        # Check that the authenticated GitHub user is the same as who installed the app.\n-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n+        # Check that the authenticated GitHub user is the same as who installed the app.\n+        sender = integration.metadata.get(\"sender\") or {}\n+        if (\n+            pipeline.fetch_state(\"github_authenticated_user\")\n+            != sender.get(\"login\")\n+        ):\n             return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "low",
+    "summary": "safe_urlopen failures during OAuth token exchange are not handled",
+    "detail": "OAuthLoginView.dispatch performs `req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)` outside any try/except. If the HTTP call to GitHub fails (timeout, DNS, TLS error, non-2xx that safe_urlopen surfaces as an exception, etc.), the exception propagates and the user gets a 500 instead of the user-friendly `error(request, self.active_organization)` page that the rest of this view uses for OAuth failures. Only the subsequent `safe_urlread`/`parse_qsl` is wrapped. The exchange should be wrapped to fall back to `payload = {}` so the existing `\"access_token\" not in payload` branch returns the friendly error page.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        # similar to OAuth2CallbackView.exchange_token\n-        req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n-\n-        try:\n-            body = safe_urlread(req).decode(\"utf-8\")\n-            payload = dict(parse_qsl(body))\n-        except Exception:\n-            payload = {}\n+        # similar to OAuth2CallbackView.exchange_token\n+        try:\n+            req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n+            body = safe_urlread(req).decode(\"utf-8\")\n+            payload = dict(parse_qsl(body))\n+        except Exception:\n+            payload = {}"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 435,
+    "category": "error",
+    "severity": "low",
+    "summary": "get_user_info return value is not validated for None before membership check",
+    "detail": "After exchanging the OAuth code, the view does `authenticated_user_info = get_user_info(payload[\"access_token\"])` and immediately tests `if \"login\" not in authenticated_user_info`. If get_user_info returns None on failure (e.g. non-2xx GitHub `/user` response, malformed JSON, or any defensive None return) the membership check raises `TypeError: argument of type 'NoneType' is not iterable`, propagating as a 500 instead of the friendly error page. Likewise, if get_user_info raises, no try/except guards it. Defaulting to {} (or wrapping in try/except) would funnel this into the existing error(...) path.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        authenticated_user_info = get_user_info(payload[\"access_token\"])\n-        if \"login\" not in authenticated_user_info:\n+        try:\n+            authenticated_user_info = get_user_info(payload[\"access_token\"]) or {}\n+        except Exception:\n+            authenticated_user_info = {}\n+        if \"login\" not in authenticated_user_info:\n             return error(request, self.active_organization)"
+  }
+]

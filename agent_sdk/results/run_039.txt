@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 039
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 18
+# cost (USD, harness-reported): 1.427696
+# cost (USD, public Opus 4 rate): 4.283089
+# usage: {'input_tokens': 32, 'cache_creation_input_tokens': 46359, 'cache_read_input_tokens': 1240985, 'output_tokens': 20692, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 46359}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 380, 'cache_read_input_tokens': 83428, 'cache_creation_input_tokens': 4355, 'cache_creation': {'ephemeral_5m_input_tokens': 4355, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "medium",
+    "summary": "KeyError on integration.metadata[\"sender\"][\"login\"] for integrations whose metadata lacks a \"sender\" key",
+    "detail": "The new identity check at lines 501-505 dereferences `integration.metadata[\"sender\"][\"login\"]` unconditionally, but `metadata[\"sender\"]` is not guaranteed to exist. `build_integration` (lines 376-377) only sets it when `state.get(\"sender\")` is truthy, and the new OAuth flow only binds `github_authenticated_user` to pipeline state, never `sender`. Two realistic situations therefore break:\n\n1. Legacy integrations created before this PR have no `sender` in metadata.\n2. Any new install where the user-initiated flow reaches `pipeline.next_step()` via the `Integration.DoesNotExist` branch at line 481 before the GitHub webhook has populated the Integration record. `build_integration` is then invoked with state that contains no `sender`, so the resulting integration has metadata without `sender`.\n\nIn both cases, when that user (or another user) later tries to add the integration to a different org, control reaches lines 493-505: the integration exists, no OrganizationIntegration is linked, and the dictionary lookup raises an uncaught `KeyError`. The user sees a 500 instead of either the success path or the friendly `error(...)` page that the rest of this PR carefully renders. The check should defensively read the value, e.g. `integration.metadata.get(\"sender\", {}).get(\"login\")`, and treat a missing/None value as a mismatch (returning the friendly error).",
+    "line_end": null,
+    "suggested_fix": "@@\n-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n+        expected_login = integration.metadata.get(\"sender\", {}).get(\"login\")\n+        if (\n+            not expected_login\n+            or pipeline.fetch_state(\"github_authenticated_user\") != expected_login\n+        ):\n             return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "low",
+    "summary": "safe_urlopen exception during OAuth token exchange escapes as 500 instead of friendly error page",
+    "detail": "The try/except at lines 425-429 only wraps `safe_urlread` and `parse_qsl`, but `safe_urlopen` itself is called outside the block at line 423. If GitHub's token endpoint times out, fails DNS, returns a connection error, or otherwise causes `safe_urlopen` to raise (e.g. `requests.exceptions.RequestException`/`SSLError`), the exception propagates and the view returns a 500 \u2014 bypassing the friendly `error(request, self.active_organization)` rendering that the rest of the OAuth handler is careful to use for every other failure mode (state mismatch, missing access_token, missing login). Move the `safe_urlopen` call inside the try block and treat any failure as `payload = {}` so the existing `if \"access_token\" not in payload` branch handles it.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        # similar to OAuth2CallbackView.exchange_token\n-        req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n-\n-        try:\n+        # similar to OAuth2CallbackView.exchange_token\n+        try:\n+            req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n             body = safe_urlread(req).decode(\"utf-8\")\n             payload = dict(parse_qsl(body))\n         except Exception:\n             payload = {}"
+  }
+]

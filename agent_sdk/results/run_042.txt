@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 042
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 20
+# cost (USD, harness-reported): 2.165090
+# cost (USD, public Opus 4 rate): 6.495271
+# usage: {'input_tokens': 34, 'cache_creation_input_tokens': 84009, 'cache_read_input_tokens': 1585178, 'output_tokens': 33891, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 84009}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 414, 'cache_read_input_tokens': 114473, 'cache_creation_input_tokens': 7115, 'cache_creation': {'ephemeral_5m_input_tokens': 7115, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 342,
+    "category": "resource",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close() shuts down the factory's shared queue_pool, breaking arroyo's rebalance lifecycle and causing silent data loss after a partition rebalance.",
+    "detail": "The factory creates self.queue_pool once in __init__ (mirroring how self.parallel_executor / self.multiprocessing_pool are created and reused across strategies). However, SimpleQueueProcessingStrategy.close() calls `self.queue_pool.shutdown()` (and terminate() does the same). When arroyo triggers a partition rebalance it calls `strategy.close()` then `factory.create_with_partitions(...)` again. After close(), `factory.queue_pool` still references the now-destroyed pool: every `queue.Queue` has been shut down (immediate=False) and every worker thread has joined. The next call to `factory.create_thread_queue_parallel_worker(commit)` passes its `assert self.queue_pool is not None` (the reference is still there) and constructs a fresh SimpleQueueProcessingStrategy reusing the dead pool. From that point on, every `submit()` calls `queue_pool.submit()` -> `work_queue.put(work_item)`, which raises `queue.ShutDown`; the strategy's outer except clause catches the exception and marks the offset complete via `offset_tracker.add_offset(...)`+`complete_offset(...)`. The commit loop then advances Kafka past those offsets even though no worker ever processed the messages \u2014 silent message loss for the entire post-rebalance assignment. Compare with `parallel_executor`, which is correctly shut down only in `factory.shutdown()`. Tests do not exercise rebalance, so this is not caught.",
+    "line_end": null,
+    "suggested_fix": "Move queue_pool shutdown out of SimpleQueueProcessingStrategy.close()/terminate() and let factory.shutdown() be the sole owner of queue_pool's lifecycle (matching parallel_executor). Only shut down the per-strategy commit_thread in close()/terminate()."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 186,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "Per-queue queue.Queue() is unbounded \u2014 no backpressure despite the docstring's claim, so a slow worker grows memory without bound.",
+    "detail": "FixedQueuePool creates each work queue as `queue.Queue()` with no maxsize, and SimpleQueueProcessingStrategy.submit() never raises arroyo's MessageRejected. The class docstring promises 'Natural backpressure when queues fill up', but no queue can ever 'fill up'. Under sustained slow processing (e.g. a result_processor that hits a slow downstream), upstream arroyo will keep handing messages in and put() always succeeds, causing the work queue and offset_tracker.outstanding/all_offsets sets to grow without bound until the consumer OOMs. There is also no upper bound on the offset_tracker dictionaries because mark_committed only prunes offsets <= last_committed.",
+    "line_end": null,
+    "suggested_fix": "Set a reasonable maxsize on each queue.Queue, and have SimpleQueueProcessingStrategy.submit raise arroyo.types.MessageRejected when work_queue.put_nowait raises queue.Full so arroyo applies upstream backpressure."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 356,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "SimpleQueueProcessingStrategy.join(timeout) ignores its timeout argument, breaking arroyo's strategy contract for bounded shutdown.",
+    "detail": "Arroyo's ProcessingStrategy.join(timeout: float | None) is the bounded-time shutdown hook used by StreamProcessor; the implementation here does `self.close()`, and close() unconditionally `self.commit_thread.join(timeout=5.0)` followed by `self.queue_pool.shutdown()` which itself joins each worker for up to 5 seconds. A caller passing timeout=0.1 still ends up blocked for up to ~5s + 5s*num_queues. With the default num_queues=20 that's ~105s of blocking on a 'fast' shutdown, well past any sensible deadline.",
+    "line_end": null,
+    "suggested_fix": "Thread `timeout` through close()/queue_pool.shutdown() and bound the per-step joins by the remaining budget."
+  }
+]

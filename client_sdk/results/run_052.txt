@@ -1,0 +1,40 @@
+# Client SDK reviewer run 052
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 38
+# cost (USD, API rate): 4.939190
+# usage: {'input_tokens': 42, 'output_tokens': 21681, 'cache_creation_input_tokens': 56636, 'cache_read_input_tokens': 1500373}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 338,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Reusing factory.queue_pool across strategy lifecycles causes silent message drop after rebalance",
+    "detail": "ResultsStrategyFactory.create_thread_queue_parallel_worker constructs a SimpleQueueProcessingStrategy that holds a reference to self.queue_pool, which is created once in the factory's __init__. When arroyo recreates the strategy (e.g. on a partition rebalance) it first calls strategy.close() on the previous strategy. SimpleQueueProcessingStrategy.close() unconditionally calls self.queue_pool.shutdown(), which sets worker.shutdown=True and calls q.shutdown(immediate=False) on every internal queue. The factory's queue_pool is now permanently dead, but ResultsStrategyFactory.create_with_partitions/create_thread_queue_parallel_worker will be called again on the new assignment and will hand out a new strategy that points at this same shutdown pool. The first call to FixedQueuePool.submit -> work_queue.put(work_item) raises queue.ShutDown (queue.ShutDown is a regular Exception); SimpleQueueProcessingStrategy.submit catches it in 'except Exception', logs, and then calls offset_tracker.add_offset/complete_offset for that offset. The result is that every message after the rebalance is silently dropped while its offset is happily committed - i.e. unbounded data loss after the first rebalance/strategy replacement. The same shape happens if anything else triggers create_with_partitions twice on the same factory.",
+    "line_end": null,
+    "suggested_fix": "Tie the FixedQueuePool lifecycle to the strategy (create it inside create_thread_queue_parallel_worker / SimpleQueueProcessingStrategy and let close() shut it down), or stop sharing the pool between consecutive strategies (rebuild it in create_with_partitions). Alternatively, do not call queue_pool.shutdown() from SimpleQueueProcessingStrategy.close()."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 335,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Commit thread is joined before queues are drained, so offsets for messages processed during shutdown are never committed",
+    "detail": "SimpleQueueProcessingStrategy.close() does:\n    self.shutdown_event.set()\n    self.commit_thread.join(timeout=5.0)   # commit thread exits here\n    self.queue_pool.shutdown()             # workers drain remaining items here\nBecause the commit thread is stopped before queue_pool.shutdown() drains the in-flight queue contents, any messages that finish processing during the drain (and there can be many - queues are unbounded and FixedQueuePool.shutdown waits up to 5s per worker) will have their offsets marked completed in OffsetTracker but never committed via commit_function. On the next consumer start those messages will be reprocessed, breaking the 'Only commits offsets after successful processing' guarantee on every clean shutdown/rebalance. The order should be reversed: drain the pool first, then perform a final get_committable_offsets() + commit_function() flush, then stop the commit thread.",
+    "line_end": null,
+    "suggested_fix": "    def close(self) -> None:\n        self.queue_pool.shutdown()\n        # final flush\n        committable = self.queue_pool.offset_tracker.get_committable_offsets()\n        if committable:\n            self.commit_function(committable)\n            for partition, offset in committable.items():\n                self.queue_pool.offset_tracker.mark_committed(partition, offset)\n        self.shutdown_event.set()\n        self.commit_thread.join(timeout=5.0)"
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 185,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "FixedQueuePool uses unbounded queues but the strategy claims 'natural backpressure'; arroyo will never see MessageRejected, so memory grows without limit when workers fall behind",
+    "detail": "FixedQueuePool creates each queue as queue.Queue() with no maxsize, and FixedQueuePool.submit calls work_queue.put(work_item) without timeout/nowait. SimpleQueueProcessingStrategy.submit also never raises arroyo's MessageRejected. If the result_processor is slower than ingest (e.g. a hot subscription whose group all routes to one queue, or a downstream slowdown), Kafka offsets keep being added to OffsetTracker.all_offsets and WorkItems keep piling up in the queue indefinitely. That defeats arroyo's normal backpressure model and can OOM the consumer. Either bound the queues (and translate queue.Full into MessageRejected) or drop the docstring claim and document the unbounded behavior; the safer fix is to add a bounded maxsize and raise MessageRejected from submit on Full.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]
