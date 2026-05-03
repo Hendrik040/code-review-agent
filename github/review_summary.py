@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, Union
 
 from shared.findings import Finding
 from github.review_body import SEVERITY_BADGES, _location
+
+if TYPE_CHECKING:
+    from github.trace_extract import TrailExtract
 
 
 class _RunMetaLike(Protocol):
@@ -108,21 +111,29 @@ def _render_orphan(orphan: Finding, repo_path: Path | None) -> str:
 def render_review_summary(
     meta: "_RunMetaLike",
     orphans: list[Finding],
-    trail: list[str],
+    trail: "Union[list[str], TrailExtract]",
     *,
     repo_path: Path | None = None,
     truncated: bool = False,
 ) -> str:
     """Render the body of the wrapping PR Review.
 
+    `trail` may be a plain list of bullet strings (legacy) or a TrailExtract.
     `repo_path` is the local cloned repo (RepoState.path) — used to read
-    snippets for orphan findings. Pass None if you don't have it on
-    hand (orphans render without snippets).
-
+    snippets for orphan findings. Pass None if unavailable.
     `truncated=True` means the reviewer hit max_turns without calling
-    submit_findings — render a warning header so demo viewers know
-    findings may be incomplete.
+    submit_findings — render a warning header so demo viewers know findings
+    may be incomplete.
     """
+    # Normalise: accept TrailExtract or plain list
+    from github.trace_extract import TrailExtract
+    if isinstance(trail, TrailExtract):
+        trail_bullets = trail.bullets
+        tool_summary = trail.tool_summary
+    else:
+        trail_bullets = list(trail)
+        tool_summary = ""
+
     sections: list[str] = [_render_run_header(meta), ""]
 
     if truncated:
@@ -147,15 +158,16 @@ def render_review_summary(
             "",
         ]
 
-    if trail:
-        sections += [
+    if trail_bullets:
+        trail_lines: list[str] = [
             "<details>",
-            f"<summary>🔎 Analysis trail ({len(trail)} steps)</summary>",
-            "",
-            *[f"- {bullet}" for bullet in trail],
-            "",
-            "</details>",
+            f"<summary>🔎 Analysis trail ({len(trail_bullets)} steps)</summary>",
             "",
         ]
+        if tool_summary:
+            trail_lines += [tool_summary, ""]
+        trail_lines += [f"- {bullet}" for bullet in trail_bullets]
+        trail_lines += ["", "</details>", ""]
+        sections += trail_lines
 
     return "\n".join(sections).rstrip() + "\n"

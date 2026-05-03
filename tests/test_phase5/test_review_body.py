@@ -103,6 +103,28 @@ def test_render_inline_comment_with_trail_renders_block():
     assert "step 1" in out_with and "step 2" in out_with
 
 
+def test_render_inline_comment_with_trail_extract():
+    from github.trace_extract import TrailExtract
+    f = Finding(
+        file="a.py", line=1, line_end=None,
+        category="other", severity="low",
+        summary="x", detail="y", suggested_fix="",
+    )
+    trail = TrailExtract(
+        tool_summary="**Tools used:** 1× build_review_context, 2× read_file_section _(all via mcp__reviewer)_",
+        bullets=[
+            "`mcp__reviewer__build_review_context` — loaded the PR diff and surrounding context",
+            "`mcp__reviewer__read_file_section` — a.py:1-10",
+        ],
+    )
+    out = render_inline_comment(f, analysis_trail=trail)
+    assert "Analysis trail" in out
+    assert "**Tools used:**" in out
+    assert "1× build_review_context" in out
+    assert "mcp__reviewer__build_review_context" in out
+    assert "a.py:1-10" in out
+
+
 def test_render_inline_comment_empty_trail_omits_block():
     f = Finding(file="a.py", line=1, line_end=None,
                 category="other", severity="low",
@@ -166,6 +188,24 @@ def test_trail_renders_in_collapsible_details():
     assert "<details>" in out
     assert "Loaded the PR diff" in out
     assert "Read foo.py (lines 1-10)" in out
+
+
+def test_trail_renders_with_trail_extract():
+    from github.trace_extract import TrailExtract
+    trail = TrailExtract(
+        tool_summary="**Tools used:** 1× build_review_context, 2× read_file_section _(all via mcp__reviewer)_",
+        bullets=[
+            "`mcp__reviewer__build_review_context` — loaded the PR diff and surrounding context",
+            "`mcp__reviewer__read_file_section` — backend/utils.py:186-240",
+        ],
+    )
+    out = render_review_summary(_meta(), orphans=[], trail=trail, repo_path=None)
+    assert "Analysis trail" in out
+    assert "**Tools used:**" in out
+    assert "1× build_review_context" in out
+    assert "_(all via mcp__reviewer)_" in out
+    assert "mcp__reviewer__build_review_context" in out
+    assert "backend/utils.py:186-240" in out
 
 
 def test_no_trail_no_trail_section():

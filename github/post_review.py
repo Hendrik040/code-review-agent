@@ -11,12 +11,14 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Union
 
 import httpx
 
 from shared.findings import Finding
 from github.pr_fetch import PullRequest, Hunk
 from github.review_summary import render_review_summary
+from github.trace_extract import TrailExtract
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ def _classify(
         if not _fits_in_one_hunk((start, end), file_hunks):
             orphans.append(f)
             continue
-        trail = (
+        trail: Union[TrailExtract, tuple] = (
             extract_trail_for_finding(trace_path, f)
             if trace_path is not None else ()
         )
@@ -110,7 +112,7 @@ def render_payload_for_inspection(
     findings: list[Finding],
     hunks: dict[str, list[Hunk]],
     run_meta: RunMeta,
-    trail: list[str],
+    trail: "Union[list[str], TrailExtract]",
     *,
     repo_path: Path | None = None,
     truncated: bool = False,
@@ -134,7 +136,7 @@ def submit_review(
     findings: list[Finding],
     hunks: dict[str, list[Hunk]],
     run_meta: RunMeta,
-    trail: list[str],
+    trail: "Union[list[str], TrailExtract]",
     token: str,
     *,
     repo_path: Path | None = None,

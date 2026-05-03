@@ -1,7 +1,7 @@
-"""Convert an agent trace file into a readable analysis trail.
+"""Convert an agent trace file into a diagnostic analysis trail.
 
-Internal tool names (build_review_context, ast_search, …) appear ONLY in
-the mapping table below — trail bullets use plain operator language.
+Each bullet shows: `<full_qualified_tool_name>` — <target description>
+A "Tools used:" inventory line is generated for the details block header.
 
 Trace format: each tool call is a box with `│ tool_use: <name>` and
 `│   args: {json}` lines; multi-line args continue on `│ ` lines;
@@ -12,70 +12,50 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from github._trace_text import sanitize_bash_cmd
+from github._trace_text import sanitize_bash_cmd, strip_mcp_prefix, target_for, build_tool_inventory  # noqa: F401
 
 _TOOL_USE_RE = re.compile(r"^\│ tool_use: (\S+)\s*$")
 _ARGS_START_RE = re.compile(r"^\│   args: (.+)$")
 _ARGS_CONT_RE = re.compile(r"^\│ (.+)$")
 _BOX_CLOSE_RE = re.compile(r"^└─")
-_MCP_PREFIX = "mcp__reviewer__"
+
+_KNOWN_TOOLS = frozenset({
+    "build_review_context", "read_file_section", "read", "glob",
+    "ast_search", "grep", "bash", "write_file",
+})
 
 
-def _strip_prefix(name: str) -> str:
-    return name[len(_MCP_PREFIX):] if name.startswith(_MCP_PREFIX) else name
+@dataclass(frozen=True)
+class TrailExtract:
+    """Structured result from extract_trail / extract_trail_for_finding."""
+    tool_summary: str          # "**Tools used:** ..." line, or "" if empty
+    bullets: list[str] = field(default_factory=list)
 
 
-def _describe_tool_call(tool_name: str, args: dict) -> str | None:
-    """Map (tool_name, args) to an operator-language bullet; None to omit."""
-    tool_name = tool_name.lower()
+def _describe_tool_call(raw_name: str, args: dict) -> str | None:
+    """Return a diagnostic bullet or None to omit this tool call.
 
-    if tool_name == "build_review_context":
-        return "Loaded the PR diff and surrounding context"
+    Format: `<full_qualified_tool_name>` — <target description>
+    MCP tools keep the full mcp__reviewer__* wire name.
+    Harness built-ins (Bash, Read, Grep, Glob) keep their capitalized names.
+    Only known investigative tools are surfaced; meta-tools (ToolSearch,
+    submit_findings) are omitted.
+    """
+    tool_key = strip_mcp_prefix(raw_name).lower()
 
-    if tool_name == "read_file_section":
-        path = args.get("path", "<unknown>")
-        return f"Read {path} (lines {args.get('start_line','?')}-{args.get('end_line','?')})"
+    # Skip tools that are not part of the investigative surface
+    if tool_key not in _KNOWN_TOOLS:
+        return None
 
-    if tool_name == "read":
-        path = args.get("file_path", args.get("path", "<unknown>"))
-        offset = args.get("offset")
-        limit = args.get("limit")
-        if offset is not None and limit is not None:
-            return f"Read {path} (lines {offset}-{offset + limit - 1})"
-        return f"Read {path}"
-
-    if tool_name == "glob":
-        return f"Searched for files matching `{args.get('pattern', '')}`"
-
-    if tool_name == "ast_search":
-        pattern = args.get("pattern", "")
-        m = re.match(r"class\s+(\w+)", pattern)
-        if m:
-            return f"Searched the codebase for the {m.group(1)} class definition"
-        m = re.match(r"def\s+(\w+)", pattern)
-        if m:
-            return f"Searched the codebase for the {m.group(1)} function definition"
-        return "Searched the codebase using a structural pattern"
-
-    if tool_name == "grep":
-        return f"Looked for `{args.get('pattern', '')}` in the codebase"
-
-    if tool_name == "bash":
-        cmd = (args.get("command") or "").strip()
-        if cmd.startswith("git diff"):
-            return "Inspected which files the PR changes"
-        return f"Ran `{sanitize_bash_cmd(cmd)}`"
-
-    if tool_name == "write_file":
-        return f"Wrote scratch notes to {args.get('path', '<unknown>')}"
-
-    return None
+    target = target_for(tool_key, args)
+    return f"`{raw_name}` — {target}"
 
 
 def _parse_trace(text: str) -> list[tuple[str, dict]]:
-    """Extract (tool_name, args_dict) tuples; robust to bad JSON. Never raises."""
+    """Extract (raw_name, args_dict) tuples; robust to bad JSON. Never raises."""
     out: list[tuple[str, dict]] = []
     current_name: str | None = None
     collecting_args: bool = False
@@ -88,7 +68,7 @@ def _parse_trace(text: str) -> list[tuple[str, dict]]:
             try:
                 args = json.loads(raw)
                 if isinstance(args, dict):
-                    out.append((_strip_prefix(current_name), args))
+                    out.append((current_name, args))
             except (json.JSONDecodeError, TypeError):
                 pass
         current_name = None
@@ -121,57 +101,82 @@ def _parse_trace(text: str) -> list[tuple[str, dict]]:
     return out
 
 
-def extract_trail(trace_path: Path, max_bullets: int = 8) -> list[str]:
-    """Return up to `max_bullets` friendly bullets from a trace file.
+def _build_bullets(raw_calls: list[tuple[str, dict]], max_bullets: int) -> tuple[list[str], list[str]]:
+    """Produce (bullets, included_raw_names) from parsed calls, capped at max_bullets.
 
-    Deduplicates consecutive duplicates. Returns [] on missing/bad file.
+    Deduplicates consecutive identical bullets.
     """
-    try:
-        text = Path(trace_path).read_text(encoding="utf-8", errors="replace")
-    except (FileNotFoundError, OSError):
-        return []
-
     bullets: list[str] = []
-    for name, args in _parse_trace(text):
-        described = _describe_tool_call(name, args)
+    raw_names: list[str] = []
+    for raw_name, args in raw_calls:
+        described = _describe_tool_call(raw_name, args)
         if described is None:
             continue
         if bullets and bullets[-1] == described:
             continue
         bullets.append(described)
+        raw_names.append(raw_name)
         if len(bullets) >= max_bullets:
             break
-    return bullets
+    return bullets, raw_names
+
+
+def extract_trail(trace_path: Path, max_bullets: int = 8) -> TrailExtract:
+    """Return a TrailExtract with up to `max_bullets` diagnostic bullets.
+
+    Deduplicates consecutive duplicates. Returns empty TrailExtract on missing/bad file.
+    """
+    try:
+        text = Path(trace_path).read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, OSError):
+        return TrailExtract(tool_summary="", bullets=[])
+
+    raw_calls = _parse_trace(text)
+    bullets, raw_names = _build_bullets(raw_calls, max_bullets)
+    return TrailExtract(tool_summary=build_tool_inventory(raw_names), bullets=bullets)
 
 
 def extract_trail_for_finding(
     trace_path: Path,
     finding: "Finding",  # type: ignore[name-defined]  # noqa: F821
     max_bullets: int = 6,
-) -> list[str]:
-    """Trail bullets attributed to a specific Finding (file-attribution heuristic).
+) -> TrailExtract:
+    """TrailExtract attributed to a specific Finding (file-attribution heuristic).
 
     Always includes the first build_review_context bullet (universal context).
-    Remaining bullets included iff they mention finding.file or its basename.
+    Remaining bullets included iff the bullet text mentions finding.file or its basename.
+    Attribution is matched against the full bullet (which contains the target path).
     Returns at most `max_bullets` in trace order.
     """
-    all_bullets = extract_trail(trace_path, max_bullets=64)
+    try:
+        text = Path(trace_path).read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, OSError):
+        return TrailExtract(tool_summary="", bullets=[])
+
+    raw_calls = _parse_trace(text)
+    all_bullets, all_raw_names = _build_bullets(raw_calls, max_bullets=64)
+
     if not all_bullets:
-        return []
+        return TrailExtract(tool_summary="", bullets=[])
 
     file_full = (finding.file or "").lower()
     file_base = Path(finding.file).name.lower() if finding.file else ""
 
-    result: list[str] = []
-    for i, bullet in enumerate(all_bullets):
-        if len(result) >= max_bullets:
+    result_bullets: list[str] = []
+    result_raw: list[str] = []
+
+    for i, (bullet, raw_name) in enumerate(zip(all_bullets, all_raw_names)):
+        if len(result_bullets) >= max_bullets:
             break
         b_lower = bullet.lower()
         if i == 0 and "loaded the pr diff" in b_lower:
-            result.append(bullet)
+            result_bullets.append(bullet)
+            result_raw.append(raw_name)
         elif file_full and file_full in b_lower:
-            result.append(bullet)
+            result_bullets.append(bullet)
+            result_raw.append(raw_name)
         elif file_base and file_base in b_lower:
-            result.append(bullet)
+            result_bullets.append(bullet)
+            result_raw.append(raw_name)
 
-    return result
+    return TrailExtract(tool_summary=build_tool_inventory(result_raw), bullets=result_bullets)

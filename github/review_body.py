@@ -18,9 +18,12 @@ brainstorming).
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable, Union
 
 from shared.findings import Finding
+
+if TYPE_CHECKING:
+    from github.trace_extract import TrailExtract
 
 SEVERITY_BADGES: dict[str, str] = {
     "high": "🟥 High risk",
@@ -45,14 +48,23 @@ def _location(f: Finding) -> str:
 def render_inline_comment(
     finding: Finding,
     *,
-    analysis_trail: Iterable[str] = (),
+    analysis_trail: "Union[Iterable[str], TrailExtract, None]" = (),
 ) -> str:
     """Render one Finding as inline-comment markdown.
 
-    When `analysis_trail` is non-empty, a collapsible "Analysis trail"
-    details block is inserted after the detail paragraph and before the
-    "Prompt for AI agents" block.
+    `analysis_trail` may be a plain iterable of bullet strings (legacy) or a
+    TrailExtract (new). When non-empty, a collapsible "Analysis trail" details
+    block is inserted after the detail paragraph and before the AI agents block.
     """
+    # Normalise: accept TrailExtract or plain iterable
+    from github.trace_extract import TrailExtract
+    if isinstance(analysis_trail, TrailExtract):
+        trail_bullets = analysis_trail.bullets
+        tool_summary = analysis_trail.tool_summary
+    else:
+        trail_bullets = list(analysis_trail or [])
+        tool_summary = ""
+
     loc = _location(finding)
     sev = SEVERITY_BADGES.get(finding.severity, finding.severity.title())
 
@@ -65,13 +77,14 @@ def render_inline_comment(
         "",
     ]
 
-    trail_bullets = list(analysis_trail)
     if trail_bullets:
         lines += [
             "<details>",
             f"<summary>🔎 Analysis trail ({len(trail_bullets)} steps)</summary>",
             "",
         ]
+        if tool_summary:
+            lines += [tool_summary, ""]
         for bullet in trail_bullets:
             lines.append(f"- {bullet}")
         lines += ["", "</details>", ""]
