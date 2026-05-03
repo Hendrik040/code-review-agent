@@ -32,13 +32,33 @@ _GREP_TIMEOUT_S = 10
 _BASH_TIMEOUT_S = 15
 
 
+def _safe_target(repo: Path, path: str) -> Path | None:
+    """Resolve `repo / path` and confirm it stays inside `repo`.
+
+    Returns the resolved Path if safe, None if the resolution escapes
+    the repo (via `..`, an absolute path, or a symlink). The check uses
+    `is_relative_to` after resolving so symlinks are followed once.
+    """
+    try:
+        target = (repo / path).resolve()
+        repo_resolved = repo.resolve()
+    except OSError:
+        return None
+    if not target.is_relative_to(repo_resolved):
+        return None
+    return target
+
+
 def read_file_section(repo: Path, path: str, start_line: int, end_line: int) -> str:
     """Read [start_line, end_line] (1-indexed, inclusive) from repo/path.
 
     Returns line-numbered text or a short error string. Never raises — the
     agent loop should never crash because the model passed a bad path.
+    Path traversal (`..`, symlinks pointing outside the repo) is blocked.
     """
-    target = repo / path
+    target = _safe_target(repo, path)
+    if target is None:
+        return f"Error: path outside repo or unresolvable: {path!r}"
     if not target.exists() or not target.is_file():
         return f"Error: file not found: {path}"
     try:
@@ -189,11 +209,12 @@ def write_file(repo: Path, path: str, content: str) -> str:
 
     Used as scratch space (notes the agent wants to remember between
     turns) or to write a script the agent then executes via bash. The
-    filesystem-as-context pattern from Manus / Lance Martin.
+    filesystem-as-context pattern from Manus / Lance Martin. Path
+    traversal is blocked the same way `read_file_section` blocks it.
     """
-    target = repo / path
-    if target.is_absolute() and not str(target).startswith(str(repo)):
-        return f"Error: write_file path must be relative to repo root."
+    target = _safe_target(repo, path)
+    if target is None:
+        return f"Error: path outside repo or unresolvable: {path!r}"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")

@@ -2,7 +2,7 @@
 end-to-end. Prints what the reviewer returned, plus the trace + result
 file paths so you can read them after.
 
-Run:    uv run python scripts/inspect_review.py
+Run:    uv run python scripts/client_sdk/inspect_review.py
 Cost:   one model call, ~$0.10-0.15 at standard Opus 4 rates.
 """
 
@@ -11,7 +11,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# This file is at scripts/client_sdk/inspect_review.py — three `parent`
+# hops land at the project root so `from shared.* import …` resolves.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from client_sdk import reviewer
 from shared.fixtures import CONTRACT_MISMATCH, materialize

@@ -6,7 +6,7 @@ The standard run (`reviewer.run(...)` on contract_mismatch) finishes in
 *new* code path — handling tool_use blocks for the investigation tools
 — never fires there. This script forces it to fire.
 
-Run:    uv run python scripts/smoke_phase16.py
+Run:    uv run python scripts/client_sdk/smoke_phase16.py
 Cost:   Test A is free (no API). Test B is one model call, ~$0.10-0.15.
 """
 
@@ -16,7 +16,8 @@ import sys
 from pathlib import Path
 
 # Project root on path so `shared.*` and `client_sdk.*` resolve.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# This file is at scripts/client_sdk/smoke_phase16.py — three hops up.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from dotenv import load_dotenv
 

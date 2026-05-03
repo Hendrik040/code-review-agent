@@ -67,22 +67,28 @@ def _dispatch_tool(repo: Path, name: str, args: dict[str, Any]) -> str:
 
     submit_findings is handled inline in the loop (it's the terminator)
     so this dispatcher only handles the read-only / scratch tools.
+    Wraps every call in try/except so a malformed tool_use payload
+    (missing required key, wrong type, etc.) cannot crash the loop —
+    the model just sees an Error string and adapts.
     """
-    if name == "build_review_context":
-        return build_review_context(repo, args["base_ref"], args["head_ref"])
-    if name == "bash":
-        return bash(repo, args["command"])
-    if name == "read_file_section":
-        return read_file_section(
-            repo, args["path"], args["start_line"], args["end_line"]
-        )
-    if name == "ast_search":
-        return ast_search(repo, args["pattern"], args.get("language", "python"))
-    if name == "grep":
-        return grep(repo, args["pattern"], args.get("path_glob", ""))
-    if name == "write_file":
-        return write_file(repo, args["path"], args["content"])
-    return f"Error: unknown tool {name!r}"
+    try:
+        if name == "build_review_context":
+            return build_review_context(repo, args["base_ref"], args["head_ref"])
+        if name == "bash":
+            return bash(repo, args["command"])
+        if name == "read_file_section":
+            return read_file_section(
+                repo, args["path"], args["start_line"], args["end_line"]
+            )
+        if name == "ast_search":
+            return ast_search(repo, args["pattern"], args.get("language", "python"))
+        if name == "grep":
+            return grep(repo, args["pattern"], args.get("path_glob", ""))
+        if name == "write_file":
+            return write_file(repo, args["path"], args["content"])
+        return f"Error: unknown tool {name!r}"
+    except (KeyError, TypeError, ValueError) as e:
+        return f"Error: invalid args for {name}: {e}"
 
 
 def _short_args(d: dict[str, Any], limit: int = 100) -> str:
@@ -169,6 +175,8 @@ def run(
     ]
 
     findings: list[Finding] = []
+    submitted: bool = False        # True once submit_findings has been called
+    duplicate_submission: bool = False
     total_usage = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -176,6 +184,7 @@ def run(
         "cache_read_input_tokens": 0,
     }
     num_turns = 0
+    exit_reason: str = "unknown"
 
     # No tool_choice — the model decides which tools to call. It can use
     # the investigation tools (read_file_section / ast_search / grep) to
@@ -202,6 +211,7 @@ def run(
                 trace.append(f"  [tool_use] {block.name}({_short_args(block.input)})")
 
         if response.stop_reason != "tool_use":
+            exit_reason = "stop_reason_" + str(response.stop_reason)
             break
 
         messages.append({"role": "assistant", "content": response.content})
@@ -210,9 +220,14 @@ def run(
             if block.type != "tool_use":
                 continue
             if block.name == SUBMIT_FINDINGS_TOOL_NAME:
-                raw = block.input.get("findings", [])
-                findings = [Finding(**item) for item in raw]
-                trace.append(f"  submit_findings → {len(findings)} finding(s)")
+                if submitted:
+                    duplicate_submission = True
+                    trace.append("  submit_findings called twice — keeping first")
+                else:
+                    raw = block.input.get("findings", [])
+                    findings = [Finding(**item) for item in raw]
+                    submitted = True
+                    trace.append(f"  submit_findings → {len(findings)} finding(s)")
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -227,12 +242,17 @@ def run(
                     "content": tool_output,
                 })
         messages.append({"role": "user", "content": results})
+    else:
+        # Loop exited because num_turns >= MAX_TURNS without `break`.
+        exit_reason = "max_turns"
 
     cost_usd = pricing.cost_usd(total_usage)
     trace.append("")
     trace.append(
         f"finished: {datetime.now(timezone.utc).isoformat()}  "
-        f"turns={num_turns}  findings={len(findings)}  cost=${cost_usd:.4f}"
+        f"turns={num_turns}  submitted={submitted}  "
+        f"findings={len(findings)}  exit_reason={exit_reason}  "
+        f"cost=${cost_usd:.4f}"
     )
 
     _write_trace(trace_path, trace)
@@ -241,6 +261,9 @@ def run(
 
     return {
         "findings": findings,
+        "submitted": submitted,
+        "duplicate_submission": duplicate_submission,
+        "exit_reason": exit_reason,
         "cost_usd": cost_usd,
         "api_rate_cost_usd": cost_usd,  # Client SDK = same; no Max OAuth path
         "num_turns": num_turns,

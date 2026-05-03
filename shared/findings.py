@@ -73,11 +73,17 @@ SUBMIT_FINDINGS_INPUT_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "file": {
                         "type": "string",
-                        "description": "Path of the changed file containing the bug, relative to repo root.",
+                        "description": (
+                            "Path where the bug manifests most directly, "
+                            "relative to repo root. Usually a changed file, "
+                            "but may be an unchanged caller/callee whose "
+                            "contract was broken by the diff (matches "
+                            "finding_contract in the system prompt)."
+                        ),
                     },
                     "line": {
                         "type": "integer",
-                        "description": "1-indexed line in the changed file where the bug occurs.",
+                        "description": "1-indexed line where the bug occurs.",
                     },
                     "line_end": {
                         "type": ["integer", "null"],
@@ -102,8 +108,12 @@ SUBMIT_FINDINGS_INPUT_SCHEMA: dict[str, Any] = {
                     "file", "line", "category", "severity",
                     "summary", "detail", "suggested_fix",
                 ],
+                # Reject unknown keys so the model can't invent fields
+                # that would crash Finding(**item) downstream.
+                "additionalProperties": False,
             },
         },
     },
     "required": ["findings"],
+    "additionalProperties": False,
 }

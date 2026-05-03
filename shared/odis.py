@@ -215,9 +215,13 @@ def one_hop_slice(
 # --------------------------------------------------------------------------- #
 
 def snippet(path: pathlib.Path, line: int, pad: int = 5) -> str:
-    """Lines around `line` with 1-indexed line-number prefixes."""
+    """Lines around `line` with 1-indexed line-number prefixes.
+
+    Uses errors='replace' so a non-UTF-8 file (rare but possible in
+    real repos) doesn't abort the whole review with UnicodeDecodeError.
+    """
     try:
-        rows = path.read_text(encoding="utf-8").splitlines()
+        rows = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return ""
     i = max(0, line - pad - 1)
