@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
 from dataclasses import FrozenInstanceError
 
-from github.pr_fetch import PullRequest, Hunk, _parse_pr_url
+import pytest
+
+from github.pr_fetch import (
+    PullRequest,
+    Hunk,
+    _parse_pr_url,
+    _parse_patch_to_hunks,
+)
 
 
 class TestParsePrUrl:
@@ -56,9 +62,6 @@ class TestDataclasses:
             h.start_line = 99
 
 
-from github.pr_fetch import _parse_patch_to_hunks
-
-
 class TestParsePatchToHunks:
     def test_single_hunk(self):
         # +Y,M means: starting at NEW line Y, M new lines are added/context
@@ -93,3 +96,8 @@ class TestParsePatchToHunks:
         # @@ -X +Y @@ form (no comma, count defaults to 1)
         patch = "@@ -5 +5 @@\n unchanged"
         assert _parse_patch_to_hunks(patch) == [Hunk(5, 5, "RIGHT")]
+
+    def test_asymmetric_default_count_new_side(self):
+        # `@@ -N,0 +M @@` form — old has explicit ,0; new defaults to count=1
+        patch = "@@ -5,0 +6 @@\n+inserted line"
+        assert _parse_patch_to_hunks(patch) == [Hunk(6, 6, "RIGHT")]
