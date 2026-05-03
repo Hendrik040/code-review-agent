@@ -11,7 +11,7 @@ from collections import Counter
 
 # Matches internal absolute paths that should not leak into user-visible text.
 ABS_PATH_RE = re.compile(
-    r"(?:/Users/[^\s]*/|/tmp/(?:[^\s]*/)?|/var/[^\s]*/)([^\s/]+)"
+    r"(?:/Users/[^\s]*/|/tmp/(?:[^\s]*/)?|/(?:private/)?var/[^\s]*/)([^\s/]+)"
 )
 
 _MCP_PREFIX = "mcp__reviewer__"

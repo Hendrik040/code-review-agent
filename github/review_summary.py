@@ -99,10 +99,11 @@ def _render_orphan(orphan: Finding, repo_path: Path | None) -> str:
         "",
     ]
     if snippet is not None:
+        # Use a 4-backtick fence so snippets containing ``` don't break Markdown.
         parts += [
-            "```",
+            "````text",
             snippet,
-            "```",
+            "````",
             "",
         ]
     return "\n".join(parts)

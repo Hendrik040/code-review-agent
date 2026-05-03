@@ -155,14 +155,18 @@ def submit_review(
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
+    # POST /reviews is non-idempotent: a transport error after the
+    # request reached GitHub but before we got the response would mean
+    # a retry could create a DUPLICATE review. So we retry only on a
+    # confirmed 5xx (server received + replied) and surface transport
+    # errors immediately.
     for attempt in (1, 2):
         try:
             resp = httpx.post(url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS)
         except httpx.HTTPError as exc:
-            if attempt == 1:
-                time.sleep(5)
-                continue
-            raise RuntimeError(f"GitHub POST transport error: {exc!r}") from exc
+            raise RuntimeError(
+                f"GitHub POST transport error (not retried to avoid duplicate reviews): {exc!r}"
+            ) from exc
         if 200 <= resp.status_code < 300:
             return resp.json()["html_url"]
         if 500 <= resp.status_code < 600 and attempt == 1:

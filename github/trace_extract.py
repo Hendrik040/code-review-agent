@@ -165,7 +165,7 @@ def extract_trail_for_finding(
     result_bullets: list[str] = []
     result_raw: list[str] = []
 
-    for i, (bullet, raw_name) in enumerate(zip(all_bullets, all_raw_names)):
+    for i, (bullet, raw_name) in enumerate(zip(all_bullets, all_raw_names, strict=True)):
         if len(result_bullets) >= max_bullets:
             break
         b_lower = bullet.lower()

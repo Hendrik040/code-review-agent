@@ -31,7 +31,12 @@ def _load_findings(path: Path) -> list[Finding]:
 def _run_id_from_result_path(path: Path) -> int:
     # agent_sdk/results/run_042.txt -> 42
     name = path.stem  # "run_042"
-    return int(name.split("_", 1)[1])
+    parts = name.split("_", 1)
+    if len(parts) != 2 or parts[0] != "run" or not parts[1].isdigit():
+        raise SystemExit(
+            f"result filename must match run_<id>.txt, got: {path.name}"
+        )
+    return int(parts[1])
 
 
 def _trace_path_for(run_id: int) -> Path:

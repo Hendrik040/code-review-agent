@@ -65,6 +65,12 @@ class LocalRepo:
         be exposed to the reviewer as a `Repo` Protocol object.
         """
         self._prefix = prefix
+        if existing_path is not None:
+            existing_path = existing_path.resolve()
+            if not existing_path.is_dir():
+                raise ValueError(
+                    f"existing_path must be an existing directory: {existing_path}"
+                )
         self._path: Optional[Path] = existing_path
         self._owns_tempdir = existing_path is None
 

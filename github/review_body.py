@@ -97,7 +97,8 @@ def render_inline_comment(
         "<details>",
         "<summary>🤖 Prompt for AI agents</summary>",
         "",
-        "```text",
+        # 4-backtick fence so finding text containing ``` doesn't break Markdown.
+        "````text",
         "Verify this finding against the current code before editing.",
         "",
         f"Location: {loc}",
@@ -117,7 +118,7 @@ def render_inline_comment(
         f"- Inspect {loc} directly.",
         "- Confirm the relevant caller/callee contracts involved in the finding.",
         "- Add or update a focused test that would fail before the fix.",
-        "```",
+        "````",
         "",
         "</details>",
     ]

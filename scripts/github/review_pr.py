@@ -49,9 +49,12 @@ def _preflight(pr_url: str) -> pr_fetch.PullRequest:
     if not os.environ.get("GITHUB_REVIEW_BOT_TOKEN"):
         _exit(2, "ERROR: GITHUB_REVIEW_BOT_TOKEN not set. "
                   "Add it to .env (Working-Ant token).")
-    if shutil.which("gh") is None:
+    gh = shutil.which("gh")
+    if gh is None:
         _exit(2, "ERROR: `gh` CLI not on PATH. Install it and run `gh auth login`.")
-    auth = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+    auth = subprocess.run(
+        [gh, "auth", "status"], capture_output=True, text=True, timeout=10,
+    )
     if auth.returncode != 0:
         _exit(2, "ERROR: gh CLI not authenticated. Run `gh auth login`.")
     try:
@@ -65,9 +68,9 @@ def _preflight(pr_url: str) -> pr_fetch.PullRequest:
     # check, posting fails opaquely with 403 after a 2-min clone + $1+
     # reviewer run. Fail fast here instead.
     perm_check = subprocess.run(
-        ["gh", "api",
+        [gh, "api",
          f"repos/{pr.owner}/{pr.repo}/collaborators/{BOT_USER}/permission"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=15,
     )
     if perm_check.returncode != 0:
         _exit(2, f"ERROR: {BOT_USER} is not a collaborator on "
