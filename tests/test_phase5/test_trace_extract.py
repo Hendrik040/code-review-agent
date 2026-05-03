@@ -46,10 +46,41 @@ class TestDescribeToolCall:
         result = _describe_tool_call("bash", {"command": "git diff --stat"})
         assert result == "Inspected which files the PR changes"
 
-    def test_bash_other(self):
-        # Any other bash command: generic phrasing, never echo the command verbatim
-        result = _describe_tool_call("bash", {"command": "rm -rf /"})
-        assert result == "Ran a shell command on the working tree"
+    def test_bash_other_shows_command(self):
+        # Non-git-diff bash commands surface the command (truncated, sanitized)
+        result = _describe_tool_call("bash", {"command": "rm -rf /tmp/scratch"})
+        assert result is not None
+        assert "rm -rf" in result
+
+    def test_bash_sanitizes_internal_user_path(self):
+        # Internal Claude Code session paths must NOT leak into bullets
+        result = _describe_tool_call("bash", {
+            "command": "wc -l /Users/foo/.claude/projects/abc/session.txt",
+        })
+        assert "/Users/foo/.claude" not in result, (
+            f"internal path leaked: {result!r}"
+        )
+        # The basename should be visible so the bullet still says something useful
+        assert "session.txt" in result
+
+    def test_bash_sanitizes_tmp_path(self):
+        result = _describe_tool_call("bash", {
+            "command": "head -100 /tmp/odis_context.md",
+        })
+        assert "/tmp/" not in result, f"tmp path leaked: {result!r}"
+        assert "odis_context.md" in result
+
+    def test_bash_keeps_relative_paths(self):
+        # Relative paths are useful, keep them
+        result = _describe_tool_call("bash", {"command": "cat src/foo.py"})
+        assert "src/foo.py" in result
+
+    def test_bash_truncates_long_commands(self):
+        long_cmd = "echo " + "x" * 200
+        result = _describe_tool_call("bash", {"command": long_cmd})
+        # Bullet wrapping (Ran `...`) plus truncation. Cap is around 80 + a little.
+        assert len(result) < 100
+        assert "…" in result
 
     def test_submit_findings_omitted(self):
         # Terminal call, not part of the investigation
@@ -127,6 +158,23 @@ class TestExtractTrail:
         trail = extract_trail(FIXTURE_DIR / "sample_trace.txt", max_bullets=8)
         assert any(
             "Inspected which files the PR changes" in b
-            or "Ran a shell command" in b
+            or "Ran `" in b
             for b in trail
         ), f"Bash call should produce a bullet; got: {trail}"
+
+    def test_extract_trail_on_real_run_043(self):
+        """Regression test for the 'all-bash-collapsed-to-1' bug.
+
+        run_043.txt was the first real-world Phase 5 run (DIY-Finder PR);
+        it exposed that 24 distinct bash commands collapsed to 1 bullet
+        because they all rendered identically. After the fix, distinct
+        bash commands render distinctly.
+        """
+        trace = Path(__file__).resolve().parent.parent.parent / "agent_sdk" / "traces" / "run_043.txt"
+        if not trace.exists():
+            pytest.skip(f"run_043 trace not present at {trace}")
+        bullets = extract_trail(trace)
+        # Should be more than the original 2-bullet collapse
+        assert len(bullets) >= 4, (
+            f"trail too sparse — expected >=4 bullets, got {len(bullets)}: {bullets}"
+        )

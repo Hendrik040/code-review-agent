@@ -20,21 +20,28 @@ import json
 import re
 from pathlib import Path
 
+_ABS_PATH_RE = re.compile(r"(?:/Users/[^\s]*/|/tmp/(?:[^\s]*/)?|/var/[^\s]*/)([^\s/]+)")
+
+
+def _sanitize_bash_cmd(cmd: str, *, max_len: int = 80) -> str:
+    """Replace internal absolute paths with <…>/basename; truncate to max_len."""
+    sanitized = _ABS_PATH_RE.sub(r"<…>/\1", cmd)
+    return sanitized if len(sanitized) <= max_len else sanitized[:max_len - 1] + "…"
+
+
 # Matches the tool_use line inside a trace box.
 _TOOL_USE_RE = re.compile(r"^\│ tool_use: (\S+)\s*$")
 
 # Matches the first args line (may be incomplete JSON).
 _ARGS_START_RE = re.compile(r"^\│   args: (.+)$")
 
-# Matches a continuation line inside the box (starts with │ + space,
-# NOT the deeper-indented args prefix).
+# Matches a continuation args line (│ + space, not the deeper-indented prefix).
 _ARGS_CONT_RE = re.compile(r"^\│ (.+)$")
 
 # Box-close sentinel — stop collecting args at this line.
 _BOX_CLOSE_RE = re.compile(r"^└─")
 
-# Strip the MCP reviewer prefix so the mapping table works on bare tool names.
-_MCP_PREFIX = "mcp__reviewer__"
+_MCP_PREFIX = "mcp__reviewer__"  # stripped so the mapping table works on bare names
 
 
 def _strip_prefix(name: str) -> str:
@@ -95,17 +102,16 @@ def _describe_tool_call(tool_name: str, args: dict) -> str | None:
         return f"Looked for `{pattern}` in the codebase"
 
     if tool_name == "bash":
-        cmd = args.get("command", "")
+        cmd = (args.get("command") or "").strip()
         if cmd.startswith("git diff"):
             return "Inspected which files the PR changes"
-        return "Ran a shell command on the working tree"
+        return f"Ran `{_sanitize_bash_cmd(cmd)}`"
 
     if tool_name == "write_file":
         path = args.get("path", "<unknown>")
         return f"Wrote scratch notes to {path}"
 
-    # Terminal calls and unknown tools: omit from the trail.
-    return None
+    return None  # terminal calls and unknown tools: omit from the trail
 
 
 def _parse_trace(text: str) -> list[tuple[str, dict]]:
@@ -120,7 +126,6 @@ def _parse_trace(text: str) -> list[tuple[str, dict]]:
     args_fragments: list[str] = []
 
     def _flush() -> None:
-        """Try to parse collected args and append to out."""
         nonlocal current_name, collecting_args, args_fragments
         if current_name is not None and args_fragments:
             raw = "".join(args_fragments).strip()
