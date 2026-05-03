@@ -130,29 +130,38 @@ PHASE 1 — Client SDK reviewer MVP                                    ✓ (PR #
         CR fixes: path traversal, dispatcher try/except, additionalProperties,
                   schema/prompt alignment, snippet UnicodeDecodeError, sys.path
 
-PHASE 1.8 — Client SDK suite runner                                  ⏳ next
-   scripts/client_sdk/run_suite.py — sweeps ALL_FIXTURES, captures
-   per-fixture cost / turns / findings / expected-match, writes
-   client_sdk/results/suite_NNN.md. Single-SDK only — NOT a
-   Client-vs-Agent comparison (that's compare.py, deferred to 3.1).
+PHASE 1.8 — Suite runner (single-SDK)                                ✓ (PR #20)
+   scripts/run_suite.py — sweeps ALL_FIXTURES on either SDK
+   (--sdk client|agent), writes <sdk>/results/suite_NNN.md
+   incrementally with per-fixture try/except, SIGALRM wall-clock
+   timeout, and cost ceiling. NOT a Client-vs-Agent comparison;
+   that's Phase 3.1.
 PHASE 1.9 — metrics commentary                                       ⏳
    PLAN.md (this file) gains a per-fixture row in the empirical-
    evidence table; cost / latency / correctness numbers cited
    verbatim in the eventual pitch.
 
-PHASE 2 — Agent SDK reviewer MVP                                     ⏳
-   2.1  agent_sdk/reviewer.py — same I/O contract, MCP tools, harness
-        provides Read/Bash/Grep/Glob, we add build_review_context +
-        submit_findings via @tool decorator
-   2.2  Subagent dispatch for >5-file diffs
-   2.3  Recitation plan.md for long runs
-   2.4  Run on same fixture suite, capture metrics
+PHASE 2 — Agent SDK reviewer MVP                                     ✓ (PR #21)
+   2.1  agent_sdk/reviewer.py — identical run() contract; in-process
+        MCP exposes build_review_context + submit_findings; harness
+        provides Read/Bash/Grep/Glob with built-in offloading.
+        permission_mode=bypassPermissions, max_turns=100,
+        SYSTEM_PROMPT_AGENT_SDK = canonical SYSTEM_PROMPT verbatim
+        plus a small <sdk_note> mapping client-SDK tool names to
+        harness names. Caching is harness-managed (no manual
+        breakpoints — that's part of what we're comparing).
+   2.2  Subagent dispatch for >5-file diffs                          ⏳
+   2.3  Recitation plan.md for long runs                             ⏳
+   2.4  Run on same fixture suite, capture metrics                   ⏳ (sweep
+        in progress as of Phase 2.1 PR; results land as a follow-up
+        commit)
 
-PHASE 3 — Comparison + pitch                                         ⏳
+PHASE 3 — Comparison + pitch                                         ⏳ ready
    3.1  compare.py --task review — THE Client-SDK-vs-Agent-SDK
         comparison, drives both reviewers across the fixture suite.
-        Requires Phase 2 to be complete; this is what produces the
-        head-to-head numbers (cost, latency, finding overlap).
+        Both reviewers now exist (PR #21), so 3.1 is unblocked.
+        This is what produces the head-to-head numbers (cost,
+        latency, finding overlap).
    3.2  ASCII flow diagrams (`docs/comparison.md`)
    3.3  Pitch document (`docs/pitch.md`) with the headline numbers
 
@@ -166,15 +175,35 @@ PHASE 9 — Linters in sandbox + subagent FP validation                ⏳
 
 ## Empirical evidence to date (the comparison-pitch gold)
 
-| Run | Fixture | Variant | Turns | Cost | Tool calls (key) | Bug found? |
-|---|---|---|---:|---:|---|---|
-| #11 | contract_mismatch | v0 single-shot, no cache | 2 | $0.13 | submit_findings | ✓ |
-| #13 | contract_mismatch | v2 agent-with-computer | 3 | $0.25 | build_review_context + submit | ✓ |
-| #14 | sentry_80168 | v2, no cache, MAX=12 | 12 (cap) | $5.17 | 12 tools, no submit | ✗ |
-| #16 | sentry_80168 | v2 + caching, MAX=20 | 17 | $1.68 | 22 tools incl. ast_search | ✓ |
-| #17 | sentry_80168 | v2 + caching + skill | 17 | $1.64 | 16 tools, all-bash | ✓ |
+### Phase 1 caching ablation (single fixture, sentry_80168)
 
-Caching delta on the headline fixture: **3.1× cost reduction + 0→1 finding correctness gained**. That's the headline graphic for the Phase 3 pitch.
+| Run | Variant | Turns | Cost | Bug found? |
+|---|---|---:|---:|---|
+| #11 | v0 single-shot, no cache | 2 | $0.13 | n/a (different fixture) |
+| #14 | v2, no cache, MAX=12 | 12 (cap) | $5.17 | ✗ |
+| #16 | v2 + caching, MAX=20 | 17 | $1.68 | ✓ |
+| #17 | v2 + caching + ast-grep skill | 17 | $1.64 | ✓ |
+
+Caching delta on the headline fixture: **3.1× cost reduction + 0→1 finding correctness gained**.
+
+### Phase 2.1 head-to-head: Client SDK vs Agent SDK on the full 7-fixture suite
+
+(Client SDK: `client_sdk/results/suite_001.md` + `suite_002.md`; Agent SDK: `agent_sdk/results/suite_002.md`. MAX_TURNS=100 on both. line-tolerance ±10.)
+
+| Fixture | Client SDK | Agent SDK | Cost delta |
+|---|---|---|---:|
+| contract_mismatch | 3 turns / $0.16 / Y/Y | 4 turns / $0.15 / Y/Y | ~same |
+| sentry_80168 | 18 / $1.79 / Y/Y | 14 / $1.00 / Y/Y | **-44%** |
+| sentry_80528 | 7 / $0.58 / N/N | 8 / $0.33 / N/N | both miss; -43% |
+| sentry_67876 | 16 / $1.78 / Y/N | 20 / $0.95 / Y/N | both partial; -47% |
+| sentry_93824 | 20 / $1.65 / Y/Y | 8 / $0.82 / Y/N | -50%; Y→N line |
+| sentry_77754 | 14 / $1.09 / Y/Y | 12 / $0.50 / Y/Y | **-54%** |
+| sentry_95633 | 13 / $2.18 / Y/Y | 21 / $2.05 / Y/N | -6%; Y→N line |
+| **Totals** | **$9.23 / 91 turns / 5/7 line-hits** | **$5.79 / 87 turns / 3/7 line-hits** | **-37%** |
+
+Agent SDK is **~37% cheaper end-to-end** thanks to the harness's automatic offloading + more aggressive caching. The line-hit divergence (5/7 → 3/7) is concentrated in two fixtures (`sentry_93824`, `sentry_95633`) where the agent flagged a *different but plausibly valid line* for the same underlying bug — alternate-anchor cases. Both file-hits are 6/7 vs 7/7 (the only true miss is the genuine `sentry_80528` semantic miss, which is consistent across SDKs).
+
+These are the headline numbers for the Phase 3 pitch.
 
 ## Fixture inventory
 

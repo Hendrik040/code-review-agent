@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 013
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_67876-1xb6ykd1
+# refs: HEAD~1..HEAD
+# turns: 20
+# cost (USD, harness-reported): 0.953932
+# cost (USD, public Opus 4 rate): 2.861797
+# usage: {'input_tokens': 29, 'cache_creation_input_tokens': 45325, 'cache_read_input_tokens': 632512, 'output_tokens': 14170, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 45325}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 243, 'cache_read_input_tokens': 52737, 'cache_creation_input_tokens': 2074, 'cache_creation': {'ephemeral_5m_input_tokens': 2074, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "high",
+    "summary": "Unguarded `integration.metadata[\"sender\"][\"login\"]` lookup raises KeyError for integrations missing sender metadata.",
+    "detail": "The new user-mismatch check assumes every ACTIVE GitHub Integration has `metadata[\"sender\"][\"login\"]` populated. However, `build_integration` (line 376\u2013377) only writes that key when `state.get(\"sender\")` is truthy, and there is no `pipeline.bind_state(\"sender\", ...)` anywhere in the changed code path \u2014 so any Integration created via the OAuth pipeline without a prior webhook that set sender (a race that is easy to lose: the redirect from GitHub.com can arrive before the webhook is processed), or any legacy Integration that pre-dates the sender field, will trigger a `KeyError` on this line. The result is a 500 response instead of either the success path or the intended `error(...)` page, breaking the re-installation flow this PR is trying to harden. Equivalent risk if `metadata[\"sender\"]` exists but lacks `\"login\"`.",
+    "line_end": 503,
+    "suggested_fix": "-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n+        sender_login = integration.metadata.get(\"sender\", {}).get(\"login\")\n+        if (\n+            sender_login is None\n+            or pipeline.fetch_state(\"github_authenticated_user\") != sender_login\n+        ):\n             return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "low",
+    "summary": "`safe_urlopen` call is outside the try/except, so network/HTTP errors during token exchange surface as 500s instead of the friendly error page.",
+    "detail": "The exchange-token call `req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)` happens before the `try:` block. `safe_urlopen` can raise (timeouts, DNS, SSL, non-2xx via the underlying http machinery), and any such exception will bubble out of `dispatch`, producing a 500 instead of the intended `error(request, self.active_organization)` rendering. Since the very next lines already silently coerce parse failures into an empty payload + friendly error, the urlopen call should share that protection.",
+    "line_end": 423,
+    "suggested_fix": "-        # similar to OAuth2CallbackView.exchange_token\n-        req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n-\n-        try:\n-            body = safe_urlread(req).decode(\"utf-8\")\n-            payload = dict(parse_qsl(body))\n-        except Exception:\n-            payload = {}\n+        # similar to OAuth2CallbackView.exchange_token\n+        try:\n+            req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n+            body = safe_urlread(req).decode(\"utf-8\")\n+            payload = dict(parse_qsl(body))\n+        except Exception:\n+            payload = {}"
+  }
+]

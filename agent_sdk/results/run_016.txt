@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 016
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_95633-c0pzfvcf
+# refs: HEAD~1..HEAD
+# turns: 21
+# cost (USD, harness-reported): 2.051221
+# cost (USD, public Opus 4 rate): 6.153664
+# usage: {'input_tokens': 30, 'cache_creation_input_tokens': 86081, 'cache_read_input_tokens': 943330, 'output_tokens': 41656, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 86081}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 344, 'cache_read_input_tokens': 91360, 'cache_creation_input_tokens': 3585, 'cache_creation': {'ephemeral_5m_input_tokens': 3585, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 338,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Strategy.close()/terminate() shuts down the factory-owned queue_pool, breaking partition rebalances",
+    "detail": "ResultsStrategyFactory.__init__ creates self.queue_pool once, intending it to be a long-lived factory-owned resource shared across strategies created on each partition assignment. However, SimpleQueueProcessingStrategy.close() (line 338) and terminate() (line 342) both call self.queue_pool.shutdown(), which terminates all worker threads and shuts down the underlying queue.Queue objects. On a Kafka rebalance, Arroyo calls strategy.close()/join() and then calls factory.create_with_partitions() again, which builds a new SimpleQueueProcessingStrategy reusing the same factory.queue_pool. Because the queues were shut down (queue.shutdown(immediate=False)), any subsequent work_queue.put() in FixedQueuePool.submit() will raise queue.ShutDown, and even if it didn't, all worker threads have already exited via worker.join(). This effectively wedges the consumer after the first rebalance \u2014 no further messages will be processed. The factory's own shutdown() is the only place that should tear down the queue_pool.",
+    "line_end": 342,
+    "suggested_fix": "Remove `self.queue_pool.shutdown()` from `SimpleQueueProcessingStrategy.close()` and `terminate()`; let `ResultsStrategyFactory.shutdown()` (which already does it) own the lifecycle. Only the strategy-local resources (shutdown_event, commit_thread) should be torn down on strategy close."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 287,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "Arroyo's commit callable is invoked from a background thread, which is unsafe for the underlying Kafka consumer",
+    "detail": "The commit callable threaded through SimpleQueueProcessingStrategy.commit_function ultimately wraps Arroyo's Commit (from create_with_partitions). Arroyo's Commit and the underlying confluent-kafka Consumer.commit() are designed to be called from the StreamProcessor's main thread (the same thread that polls the consumer) \u2014 they are not thread-safe. Here, _commit_loop runs in self.commit_thread (started in __init__, line 270-271) and calls self.commit_function(committable) (line 287) from that background thread, racing with StreamProcessor.run()/poll() on the same Kafka consumer object. This can manifest as segfaults, broker protocol errors, lost commits, or duplicate processing under load. Other parallel modes (CommitOffsets, BatchStep) all commit from the main thread by design.",
+    "line_end": null,
+    "suggested_fix": "Marshal commits back to the main thread: have _commit_loop only collect committable offsets into a thread-safe staging area, and commit them from poll() (which Arroyo invokes on the main thread). Alternatively, push commits through Arroyo's existing CommitOffsets strategy instead of bypassing it."
+  }
+]
