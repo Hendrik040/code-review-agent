@@ -6,7 +6,6 @@ gracefully if credentials aren't configured.
 """
 from __future__ import annotations
 
-import os
 import secrets
 from collections.abc import Iterator
 
