@@ -14,8 +14,8 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
-from agent_sdk import runner as agent_runner
-from client_sdk import runner as client_runner
+from agent_sdk import offload_runner as agent_runner
+from client_sdk import offload_runner as client_runner
 
 DEFAULT_URL = "https://en.wikipedia.org/wiki/Software_engineering"
 USE_OAUTH = False  # set by --use-oauth CLI flag
