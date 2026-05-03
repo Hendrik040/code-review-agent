@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 # https://github.com/<owner>/<repo>/pull/<n>(/)
 _PR_URL_RE = re.compile(
@@ -34,7 +35,7 @@ class Hunk:
     for v1 — we only comment on new code, never on the deleted side."""
     start_line: int
     end_line: int
-    side: str
+    side: Literal["RIGHT"]
 
 
 def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:
