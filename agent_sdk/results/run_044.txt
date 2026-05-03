@@ -1,0 +1,52 @@
+# Agent SDK reviewer run 044
+# repo: LocalRepo
+# refs: c22fde3c0c3169e6c3b18a1c78916feac46193c6..c10551df0a6cdb8e1510cd5ccfd0a949cd136d14
+# turns: 6
+# cost (USD, harness-reported): 0.918825
+# cost (USD, public Opus 4 rate): 2.756474
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 77307, 'cache_read_input_tokens': 179482, 'output_tokens': 13835, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 77307}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 492, 'cache_read_input_tokens': 70228, 'cache_creation_input_tokens': 7079, 'cache_creation': {'ephemeral_5m_input_tokens': 7079, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "backend/utils.py",
+    "line": 209,
+    "category": "security",
+    "severity": "high",
+    "summary": "Reject queries whose WHERE clause is not exclusively bound by user_id (e.g. OR 1=1).",
+    "detail": "_validate_sql_query only verifies that the literal substring USER_ID appears somewhere in the query, not that user_id = ? is the exclusive row-restrictor, so a query like `SELECT * FROM items WHERE user_id = ? OR 1=1` passes validation and then returns rows for all users when executed with the bound username. The user-message sanitizer at utils.py:248-250 blocks DROP/DELETE/INSERT/UPDATE/;--/* but does not block OR 1=1, so a prompt-injection attacker can still coerce the Mistral model into emitting such a tautology. This re-introduces the cross-user data leak the PR claims to remove; either parse the SQL (sqlglot/sqlite3 expressions) and require user_id = ? to be the only top-level filter, or stop letting the LLM author SQL and use a fixed parameterized query template instead.",
+    "line_end": 212,
+    "suggested_fix": ""
+  },
+  {
+    "file": "backend/utils.py",
+    "line": 333,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "Require an actual `?` placeholder in the validator instead of trusting a substring check.",
+    "detail": "The comment at line 333 asserts \"validation ensures ? placeholder exists\", but _validate_sql_query never checks for `?` \u2014 it only checks that the string `USER_ID` is present. If the LLM inlines the username (`WHERE user_id = 'alice'`) the bind count is 0/1; if it adds a second `?` for another column the bind count is 2/1; both raise `sqlite3.ProgrammingError: Incorrect number of bindings supplied` which is caught generically and the user gets the opaque \"I encountered an error\" message. Either enforce `sql_query.count('?') == 1` (and that the `?` follows `user_id =`) in the validator, or build the bindings dynamically based on the actual placeholder count.",
+    "line_end": 334,
+    "suggested_fix": "    if normalized_query.count('?') != 1:\n        return False, \"Query must contain exactly one '?' placeholder for user_id\"\n"
+  },
+  {
+    "file": "frontend/src/components/views/DashboardView.tsx",
+    "line": 196,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Remove the Trash button or restore its onClick handler \u2014 it is now a dead control.",
+    "detail": "The DELETE endpoint, apiService.deleteItem, and the previous onClick handler were all removed, but the `<Button size=\"sm\" variant=\"ghost\"><Trash2 /></Button>` is still rendered next to every inventory card. Users will click the trash icon and nothing happens \u2014 no confirmation, no error, no network call. Either delete the button entirely along with the rest of the delete plumbing, or re-introduce a working delete flow; leaving a visible affordance with no behavior is a clear UX regression.",
+    "line_end": 198,
+    "suggested_fix": ""
+  },
+  {
+    "file": "backend/utils.py",
+    "line": 201,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Use word-boundary matching for forbidden SQL keywords so legitimate LIKE patterns aren't rejected.",
+    "detail": "The dangerous_keywords loop does a naive `in` substring check against the upper-cased query, so any LIKE pattern or string literal that contains a keyword as a substring is rejected \u2014 `LIKE '%drop%'`, `LIKE '%insert%'`, a column or location named with those words, or a trailing `;` all get blocked even though the system prompt explicitly recommends `LIKE '%term%'` for fuzzy search. This makes ordinary DIY-inventory queries (drop cloth, screw insert, etc.) fail with a misleading \"forbidden keyword\" message. Switch to a regex word-boundary match like `re.search(rf\"\\b{kw}\\b\", normalized_query)` (and ignore content inside string literals) before rejecting the query.",
+    "line_end": 205,
+    "suggested_fix": ""
+  }
+]
