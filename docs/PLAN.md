@@ -188,22 +188,28 @@ Caching delta on the headline fixture: **3.1× cost reduction + 0→1 finding co
 
 ### Phase 2.1 head-to-head: Client SDK vs Agent SDK on the full 7-fixture suite
 
-(Client SDK: `client_sdk/results/suite_001.md` + `suite_002.md`; Agent SDK: `agent_sdk/results/suite_002.md`. MAX_TURNS=100 on both. line-tolerance ±10.)
+Latest run per fixture per SDK, with the **category-aware matcher** from PR #20's CR review (a finding only counts as a hit if `(file, category)` matches expected, plus `line ±10` for the stricter line-hit). Sources: `client_sdk/results/run_*.txt`, `agent_sdk/results/run_*.txt`. Reproducible at any time via `uv run python scripts/headtohead.py`.
+
+The `sentry_80528` fixture's v1 baseline was patched after PR #20 review (the upstream PR moved an already-buggy function rather than introducing a bug, so the v1→v2 diff didn't reveal a regression). Numbers below are post-fix.
 
 | Fixture | Client SDK | Agent SDK | Cost delta |
 |---|---|---|---:|
-| contract_mismatch | 3 turns / $0.16 / Y/Y | 4 turns / $0.15 / Y/Y | ~same |
+| contract_mismatch | 3 / $0.10 / Y/Y | 4 / $0.15 / Y/Y | +54% |
 | sentry_80168 | 18 / $1.79 / Y/Y | 14 / $1.00 / Y/Y | **-44%** |
-| sentry_80528 | 7 / $0.58 / N/N | 8 / $0.33 / N/N | both miss; -43% |
-| sentry_67876 | 16 / $1.78 / Y/N | 20 / $0.95 / Y/N | both partial; -47% |
-| sentry_93824 | 20 / $1.65 / Y/Y | 8 / $0.82 / Y/N | -50%; Y→N line |
-| sentry_77754 | 14 / $1.09 / Y/Y | 12 / $0.50 / Y/Y | **-54%** |
-| sentry_95633 | 13 / $2.18 / Y/Y | 21 / $2.05 / Y/N | -6%; Y→N line |
-| **Totals** | **$9.23 / 91 turns / 5/7 line-hits** | **$5.79 / 87 turns / 3/7 line-hits** | **-37%** |
+| sentry_80528 | 5 / $0.50 / Y/Y | 6 / $0.50 / Y/Y | ~same (post-fix) |
+| sentry_67876 | 16 / $1.78 / N/N | 20 / $0.95 / N/N | both miss; -47% |
+| sentry_93824 | 20 / $1.65 / Y/Y | 8 / $0.82 / N/N | -50%; Y→N |
+| sentry_77754 | 14 / $1.09 / Y/Y | 12 / $0.50 / Y/Y | **-55%** |
+| sentry_95633 | 13 / $2.18 / N/N | 21 / $2.05 / N/N | both miss; -6% |
+| **Totals** | **$9.09 / 89 turns / 5/7 line-hits** | **$5.96 / 85 turns / 4/7 line-hits** | **-34%** |
 
-Agent SDK is **~37% cheaper end-to-end** thanks to the harness's automatic offloading + more aggressive caching. The line-hit divergence (5/7 → 3/7) is concentrated in two fixtures (`sentry_93824`, `sentry_95633`) where the agent flagged a *different but plausibly valid line* for the same underlying bug — alternate-anchor cases. Both file-hits are 6/7 vs 7/7 (the only true miss is the genuine `sentry_80528` semantic miss, which is consistent across SDKs).
+**Headline:** Agent SDK is **~34% cheaper end-to-end on the same fixture suite**, thanks to the harness's automatic offloading and built-in caching (vs the Client SDK's manual three-breakpoint scheme). Correctness:
 
-These are the headline numbers for the Phase 3 pitch.
+- **Both SDKs solve 5 of 7 planted bugs** at the right (file, category, ±10 lines): contract_mismatch, sentry_80168, sentry_80528, sentry_77754, plus sentry_93824 (Client only).
+- **Two genuine misses on both SDKs**: sentry_67876 (CSRF / OAuth state) and sentry_95633 (Python-3.13-only API). The model finds *other* plausible bugs in the right files but doesn't surface the planted one. These are prompt-strategy gaps, not budget gaps — both had tool-call headroom.
+- **One Client-only hit** (sentry_93824): the Agent SDK landed on the same file but a different line for the SpawnProcess isinstance bug. Worth investigating in Phase 3.
+
+These are the headline numbers for the Phase 3 pitch. The complete table also lives in `docs/headtohead.md` and is rebuildable via `scripts/headtohead.py`.
 
 ## Fixture inventory
 

@@ -82,20 +82,31 @@ def _expected_match(
     expected: list[Finding],
     line_tolerance: int,
 ) -> tuple[bool, bool]:
-    """Same matcher as the Phase 1.8 client suite runner.
+    """Two-tier match check.
 
     Returns (file_hit, line_hit). `expected` is a UNION — any model
-    finding matched against any expected entry counts as a hit. The
-    line_hit is the stricter "right file AND within +/- tolerance"
-    check.
+    finding matched against any expected entry counts as a hit.
+
+    Both tiers require the **category** to match — without that, a
+    finding that hits the right file/line for the *wrong reason*
+    inflates the suite score (e.g. agent reports a KeyError where
+    the planted bug is a CSRF). CodeRabbit caught this on PR #20.
+
+      file_hit — same (file, category) as some expected entry. Coarse
+                 "agent landed in the right neighborhood looking for
+                 the right thing."
+      line_hit — same (file, category) AND |line - expected.line|
+                 <= line_tolerance. Stricter signal.
     """
     if not expected:
         return (not findings, not findings)
 
-    expected_files = {f.file for f in expected}
-    file_hit = any(f.file in expected_files for f in findings)
+    expected_pairs = {(f.file, f.category) for f in expected}
+    file_hit = any((f.file, f.category) in expected_pairs for f in findings)
     line_hit = any(
-        f.file == e.file and abs(f.line - e.line) <= line_tolerance
+        f.file == e.file
+        and f.category == e.category
+        and abs(f.line - e.line) <= line_tolerance
         for f in findings
         for e in expected
     )
