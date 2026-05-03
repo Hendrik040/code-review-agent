@@ -1,0 +1,20 @@
+# Client SDK reviewer run 051
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 18
+# cost (USD, API rate): 1.564904
+# usage: {'input_tokens': 22, 'output_tokens': 7118, 'cache_creation_input_tokens': 25432, 'cache_read_input_tokens': 369249}
+# findings: 1
+# ---
+[
+  {
+    "file": "src/sentry/integrations/services/assignment_source.py",
+    "line": 18,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "AssignmentSource.queued default is evaluated once at class definition time, so every instance shares the import-time timestamp instead of being stamped at creation.",
+    "detail": "`queued: datetime = timezone.now()` is a regular dataclass default, which Python evaluates exactly once when the class body executes (i.e. at module import). Every `AssignmentSource(...)` constructed without explicitly passing `queued` (which is *every* call site in this PR \u2014 `from_integration`, `cls(**input_dict)` when `queued` is absent, and direct instantiation in tests) will therefore receive the same datetime: the moment the worker/process first imported `assignment_source.py`. The field is named `queued` and is round-tripped through `to_dict()`/`from_dict()` for Celery, strongly implying the intent is \"time the assignment was queued.\" In practice, after this change, `queued` becomes a process-startup-time constant, not a per-event timestamp. If anything (analytics, debugging, future replay/dedupe logic, or downstream consumers reading the `assignment_source_dict` payload) relies on this value, it will be silently wrong. Standard Python idiom for this is `field(default_factory=timezone.now)`.",
+    "line_end": null,
+    "suggested_fix": "@@\n-from dataclasses import asdict, dataclass\n+from dataclasses import asdict, dataclass, field\n@@\n-    queued: datetime = timezone.now()\n+    queued: datetime = field(default_factory=timezone.now)\n"
+  }
+]
