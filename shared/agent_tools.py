@@ -274,7 +274,8 @@ AST_SEARCH_TOOL: dict[str, Any] = {
         "$VAR for a single node and $$$ for a sequence. Examples: "
         "`add($$$)` (any call to add); `def $NAME($$$): $$$` (any function "
         "definition); `class $X($Foo): $$$` (any class inheriting from Foo). "
-        "Returns up to 30 matches with file:line:col."
+        "Returns up to 30 matches with file:line:col. "
+        "For non-trivial patterns, read `shared/skills/ast_grep.md` first."
     ),
     "input_schema": {
         "type": "object",
