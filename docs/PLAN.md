@@ -4,7 +4,7 @@
 
 You're not just building a code-review agent. You're building **the same agent twice** — once on the bare Anthropic Client SDK, once on the Claude Agent SDK — and using the head-to-head comparison as a presentation/pitch about agentic harness design.
 
-This document is intentionally re-written end-to-end as of the consolidated PR #17 (Phase 1.7 caching + sentry_80168 fixture + agent-with-computer pivot + CR fixes + ast-grep skill). It supersedes prior versions; everything shipped to date is captured below with run numbers + cost evidence.
+This document is intentionally re-written end-to-end as of PRs #17 (merged), #20 (Phase 1.8 — single-SDK suite runner + matcher fix + MAX=100), and #21 (Phase 2.1 — Agent SDK reviewer at parity + category-aware matcher + head-to-head consolidator). It supersedes prior versions; everything shipped to date is captured below with run numbers + cost evidence.
 
 ## Working agreement
 
@@ -38,54 +38,69 @@ This document is intentionally re-written end-to-end as of the consolidated PR #
 
 ```
 v1/
-├── shared/
-│   ├── findings.py            Finding dataclass + SUBMIT_FINDINGS_TOOL_* schema
-│   ├── odis.py                Outside-Diff Impact Slicing (PR #17 has the
-│   │                          changed_lines() fixes + UnicodeDecodeError fix)
-│   ├── fixtures.py            Fixture dataclass + materialize() (recursive
-│   │                          copytree, supports nested paths)
-│   ├── prompts.py             SYSTEM_PROMPT + USER_PROMPT_TEMPLATE
-│   │                          (codex-iterated, agent-with-computer aware)
-│   ├── agent_tools.py         build_review_context / bash / read_file_section /
-│   │                          ast_search / grep / write_file + tool schemas.
-│   │                          Path-traversal guarded via _safe_target().
+├── shared/                            "the neutral middle" — used by both SDKs
+│   ├── findings.py                Finding dataclass + SUBMIT_FINDINGS_TOOL_* schema
+│   ├── odis.py                    Outside-Diff Impact Slicing
+│   ├── fixtures.py                Fixture dataclass + materialize() + ALL_FIXTURES
+│   │                              (7 entries; recursive copytree; nested paths)
+│   ├── prompts.py                 SYSTEM_PROMPT + USER_PROMPT_TEMPLATE
+│   │                              (canonical for BOTH SDKs)
+│   ├── agent_tools.py             Client SDK tools: build_review_context / bash /
+│   │                              read_file_section / ast_search / grep /
+│   │                              write_file + JSON schemas. Path-traversal
+│   │                              guarded via _safe_target().
 │   ├── skills/
-│   │   └── ast_grep.md        Progressive-disclosure skill (134 lines)
-│   └── memory/                Phase 6 home for diary entries + REVIEW_RULES.md
+│   │   └── ast_grep.md            Progressive-disclosure skill (134 lines)
+│   └── memory/                    Phase 6 home for diary + REVIEW_RULES.md
 ├── client_sdk/
-│   ├── offload_runner.py      Phase 0 offload comparison (kept)
-│   ├── reviewer.py            Phase 1.5+1.6+1.7 — agentic loop, 6 tools,
-│   │                          MAX_TURNS=20, 3-breakpoint caching
-│   ├── results/               Per-run findings + metrics
-│   └── traces/                Per-run boxed trace
+│   ├── offload_runner.py          Phase 0 offload comparison (kept)
+│   ├── reviewer.py                Phase 1.5–1.8 — agentic loop, 6 tools,
+│   │                              MAX_TURNS=100, 3-breakpoint manual caching
+│   ├── results/                   Per-run findings + metrics + suite_NNN.md
+│   └── traces/                    Per-run boxed trace
 ├── agent_sdk/
-│   ├── offload_runner.py      Phase 0 (kept)
-│   └── reviewer.py            Phase 2.1 — NOT YET BUILT
-├── tests/fixtures/
-│   ├── contract_mismatch/     Synthetic, hand-built (Phase 1.3)
-│   ├── sentry_80168/          Real PR — abc.ABC subclass with `pass` body
-│   └── (5 more in flight via subagent — sentry_80528, 67876, 93824, 77754, 95633)
+│   ├── offload_runner.py          Phase 0 offload comparison (kept)
+│   ├── reviewer.py                Phase 2.1 ✓ — async ClaudeSDKClient,
+│   │                              in-proc MCP for build_review_context +
+│   │                              submit_findings, harness Read/Bash/Grep/Glob
+│   │                              with auto-offloading, max_turns=100,
+│   │                              permission_mode=bypassPermissions, identical
+│   │                              run() return shape as Client SDK
+│   ├── results/
+│   └── traces/
+├── tests/fixtures/                7 fixtures total (see Fixture inventory)
 ├── scripts/
-│   ├── build_pr_fixture.py    Generic GH-PR → fixture builder
-│   ├── inspect_fixture.py     Manual test: see fixture contents
-│   ├── inspect_odis.py        Manual test: see ODIS output
-│   ├── inspect_tools.py       Manual test: each agent tool standalone
-│   └── client_sdk/
-│       ├── inspect_review.py  Manual test: end-to-end reviewer (1 API call)
-│       └── smoke_phase16.py   Test A (dispatch) + Test B (forced tool use)
-├── compare.py                 Phase 0 orchestrator (offload mode only).
-│                              `--task review` lands in Phase 3.1, not 1.8 —
-│                              it's the Client-vs-Agent SDK comparison and
-│                              needs both reviewers to exist first.
-├── pricing.py                 Cost calculator (Opus 4 rates)
+│   ├── run_suite.py               SDK-agnostic sweep: --sdk client|agent.
+│   │                              Per-fixture try/except + SIGALRM timeout +
+│   │                              cumulative cost ceiling + incremental
+│   │                              suite_NNN.md persistence (overnight-safe).
+│   │                              Matcher requires (file, category) for
+│   │                              file_hit and (file, category, ±N lines)
+│   │                              for line_hit.
+│   ├── headtohead.py              Latest-run-per-fixture-per-SDK consolidator;
+│   │                              renders docs/headtohead.md.
+│   ├── reeval_suite.py            Re-applies the current matcher to past
+│   │                              suite_NNN.md tables WITHOUT re-running.
+│   ├── build_pr_fixture.py        Generic GH-PR → tests/fixtures/<name> builder.
+│   ├── inspect_{fixture,odis,tools}.py  Manual inspectors for each subsystem.
+│   ├── client_sdk/
+│   │   ├── inspect_review.py      Manual test: end-to-end reviewer (1 API call)
+│   │   └── smoke_phase16.py       Test A (dispatch) + Test B (forced tool use)
+│   └── agent_sdk/
+│       └── smoke_phase21.py       Test A (5 structural) + Test B (1 API call)
+├── compare.py                     Phase 0 orchestrator (offload mode only).
+│                                  `--task review` lands in Phase 3.1 — the
+│                                  literal Client-vs-Agent comparison harness.
+├── pricing.py                     Cost calculator (Opus 4 rates)
 ├── docs/
-│   ├── PLAN.md                this file
-│   ├── architecture.md        operational reference
-│   ├── verification.md        evidence gates before completion claims
-│   ├── research/              prompt-research artifacts (PR #16)
-│   ├── comparison.md          Phase 3 deliverable (not yet)
-│   └── pitch.md               Phase 3 deliverable (not yet)
-└── code-review-baseline/      submodule, OpenAI baseline (a48bca3)
+│   ├── PLAN.md                    this file
+│   ├── architecture.md            operational reference
+│   ├── verification.md            evidence gates before completion claims
+│   ├── headtohead.md              Phase 2.1 head-to-head numbers (auto-built)
+│   ├── research/                  prompt-research artifacts (PR #16)
+│   ├── comparison.md              Phase 3 deliverable (not yet)
+│   └── pitch.md                   Phase 3 deliverable (not yet)
+└── code-review-baseline/          submodule, OpenAI baseline (a48bca3)
 ```
 
 ### I/O contract
@@ -215,40 +230,48 @@ These are the headline numbers for the Phase 3 pitch. The complete table also li
 
 ```
 tests/fixtures/
-├── contract_mismatch/         synthetic, planted signature change
+├── contract_mismatch/         synthetic, signature change (caller anchor accepted)
 ├── sentry_80168/              real, abc.ABC subclass with pass body
-├── sentry_80528/              real, function mutates local config         (in flight)
-├── sentry_67876/              real, OAuth state CSRF risk                  (in flight)
-├── sentry_93824/              real, isinstance(SpawnProcess) always False  (in flight)
-├── sentry_77754/              real, mutable datetime.now() default         (in flight)
-└── sentry_95633/              real, queue.shutdown() Python <3.13          (in flight)
+├── sentry_80528/              real, returns wrong variable; v1 patched (see lessons)
+├── sentry_67876/              real, OAuth state CSRF (consistent miss across SDKs)
+├── sentry_93824/              real, isinstance(SpawnProcess) always False
+├── sentry_77754/              real, mutable datetime.now() default
+└── sentry_95633/              real, queue.shutdown() Python <3.13 only
+                               (consistent miss across SDKs)
 ```
 
-The five "in flight" entries are being built by a subagent on branch `phase-1/sentry-fixtures-batch` (target: stack on PR #17).
+All 7 fixtures live on `main` and materialize via `shared.fixtures.materialize()` into a temp git repo with `HEAD~1..HEAD` refs.
 
 ## Architectural lessons learned (worth carrying forward)
 
 1. **ODIS pre-baked vs ODIS-as-tool**: agency requires the latter. PR #13 pivoted from "ODIS in user prompt" to "build_review_context tool"; the agent now actually decides whether/when to fetch context. Cost ~2× on simple fixtures, same outcome — pays back on hard fixtures.
 2. **Caching breakpoint placement**: system + tools + rolling last-message. Each cache breakpoint is one of Anthropic's 4 max. Avoid per-tool_result markers with 0 reads (we measured +25% in a prior offload run). Skill nudges that say "read X first" can backfire — the model abandons the wrapped tool entirely.
-3. **MAX_TURNS scales with cache cost**: caching makes deeper turns affordable; raised from 12 to 20.
+3. **MAX_TURNS scales with cache cost**: caching makes deeper turns affordable; raised 12 → 20 (Phase 1.7) → 100 (Phase 1.8 after sentry_93824 hit the 20-cap mid-investigation).
 4. **Stacked PR consolidation**: one merge per phase. Re-target the latest PR to main, close ancestors. CR auto-review only fires on default-base PRs; we do this consolidation when ready for review.
-5. **Fixture's expected Finding must match the prompt's localization rule**: when the prompt allows "caller/callee whose contract was broken," the fixture's `file` field becomes flexible. We may need a "matches any of these locations" matcher for future fixtures.
+5. **Fixture's expected Finding must match the prompt's localization rule**: when the prompt allows "caller/callee whose contract was broken," the fixture's `file` field becomes flexible. `Fixture.expected` is treated as a UNION — list multiple acceptable anchors. See `contract_mismatch` (calc.py changed file + main.py caller).
 6. **`compare.py --task review` is the Phase-3 deliverable, not a Phase-1 batch runner**: earlier wording in this doc conflated "sweep our fixture suite to validate the reviewer" with "compare Client SDK vs Agent SDK on the same fixture." The first is single-SDK and lands in Phase 1.8 as `run_suite.py`. The second requires both SDKs and is the literal point of the comparison pitch — it lands as `compare.py --task review` in Phase 3.1, after Phase 2 builds the Agent SDK reviewer.
+7. **Matcher must require category match** (CR catch on PR #20). Without it, a finding hitting the right file/line for the wrong reason inflates the score. New matcher: `(file, category)` for file_hit, plus `line ±N` for line_hit. Concrete impact: sentry_67876 and sentry_95633 flipped from hits to honest misses — both SDKs find different bugs in the right files.
+8. **A fixture's v1 baseline must show the bug as a regression** (CR catch on PR #20, sentry_80528). When the upstream PR *moves* an already-buggy function rather than introducing a new bug, the v1→v2 diff shows only the move and the bug-of-record is invisible to a diff-based reviewer. Patching v1 to the *intended pre-PR* behavior — even though it diverges from the literal upstream base_sha — keeps the benchmark honest. Document the divergence in the fixture file.
 
-## Open background work
+## Open follow-ups (post-Phase 2.1)
 
-- Subagent `ae1d22d...` building 5 more Sentry fixtures (target: PR stacked on #17).
-- CR auto-review on PR #17 in progress (51 files, takes 5-10 min). After it lands, dispatch fresh CR-triage subagent with longer poll window.
+- **PR #20 needs to merge first**, then PR #21 retargets to `main` for fresh CR review. Standard stacked-PR consolidation.
+- **PR #19** (5 Sentry fixtures) is redundant — those files already shipped in PR #20 (got bundled when the suite runner branch was created locally). Close with a cross-reference.
+- **PR #16** (research/claude-code-prompt) has a closed/orphaned base branch from before context compaction. Close.
+- **CR review on PR #21** is `PENDING` as of Phase 2.1 ship time. Same triage SOP applies when it lands.
+- **2 consistent misses** across SDKs (`sentry_67876` CSRF, `sentry_95633` Python 3.13 API). These are prompt-strategy gaps — investigation, not SDK work. Likely need either richer ODIS context (cross-version Python compatibility?) or a security-focused prompt addendum. Out of scope until after Phase 3.
+- **One Client-only hit** (`sentry_93824`): Agent SDK landed on the right file but a different line/category for the SpawnProcess `isinstance` bug. Worth a closer look when the comparison pitch is being written.
 
 ## Verification matrix
 
-| Phase | Success means |
-|---|---|
-| 0 | Architecture doc approved; fixture + prompt v0 chosen. |
-| 1 | `client_sdk/reviewer.py:run()` finds the planted bug on contract_mismatch and sentry_80168 within budget. |
-| 2 | Agent SDK reviewer matches Phase 1's findings with comparable cost; harness handles offload+caching automatically. |
-| 3 | Pitch numbers reproduce verbatim from `compare.py --task review`. |
-| 4 | Both reviewers pass the fixture suite using a Daytona sandbox. |
-| 5 | A real PR gets a real CR-style comment at the right line. |
-| 6 | Diary entry → reflect → REVIEW_RULES.md → next-run citation. |
-| 7-9 | Each is a feature flag; tested independently. |
+| Phase | Success means | State |
+|---|---|---|
+| 0 | Architecture doc approved; fixture + prompt v0 chosen. | ✓ |
+| 1 | `client_sdk/reviewer.py:run()` finds the planted bug on contract_mismatch and sentry_80168 within budget. | ✓ (PR #17) |
+| 1.8 | `scripts/run_suite.py --sdk client` produces a 7-fixture suite_NNN.md unattended. | ✓ (PR #20) |
+| 2.1 | Agent SDK reviewer matches Phase 1's findings on the same suite with comparable correctness; harness handles offload+caching automatically. | ✓ (PR #21) — `5 of 7 ↔ 5 of 7 line-hits, ‑34% cost, 4 of 7 vs 5 of 7 line-hits with new category-aware matcher` |
+| 3 | `compare.py --task review` reproduces `docs/headtohead.md` verbatim from a single command. | ⏳ next |
+| 4 | Both reviewers pass the fixture suite using a Daytona sandbox. | ⏳ |
+| 5 | A real PR gets a real CR-style comment at the right line. | ⏳ |
+| 6 | Diary entry → reflect → REVIEW_RULES.md → next-run citation. | ⏳ |
+| 7–9 | Each is a feature flag; tested independently. | ⏳ |
