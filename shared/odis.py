@@ -22,6 +22,12 @@ Limits (inherited from baseline, documented in docs/architecture.md):
 - Python AST only.
 - Local symbol resolution only — no module/qualified-name handling.
 - One hop — caller-of-caller is not pulled in.
+- TODO(phase-3): pure-deletion diffs lose the deleted symbol. Every AST
+  walk reads only the post-change file, so `def foo(): ...` removed
+  entirely yields no `_ChangedSymbol` and `one_hop_slice` doesn't pull
+  in callers of `foo`. Fix when we add a `deletion_orphan` fixture
+  for the comparison study: read the BASE-version file via `git show
+  <base_ref>:<path>` and AST-scan that too. CR thread: PR #10 line 389.
 """
 
 from __future__ import annotations
