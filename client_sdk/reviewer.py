@@ -45,11 +45,34 @@ from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 MODEL = "claude-opus-4-7"
 MAX_TOKENS = 4096
 # Safety cap. With investigation tools available the agent may take
-# several turns; we still want a hard ceiling.
-MAX_TURNS = 12
+# several turns; we still want a hard ceiling. Phase 1.7 caching makes
+# deeper turns affordable, so the cap was raised from 12 to 20 — the
+# sentry_80168 baseline run #14 hit 12 still investigating.
+MAX_TURNS = 20
 
 RESULTS_DIR = Path(__file__).parent / "results"
 TRACES_DIR = Path(__file__).parent / "traces"
+
+# --------------------------------------------------------------------------- #
+# Phase 1.7 — prompt caching
+#
+# Three breakpoints (well under Anthropic's 4-mark limit):
+#   1. System prompt — large + perfectly stable across all turns. Biggest
+#      single win.
+#   2. Tools array — also stable. cache_control on the LAST tool causes the
+#      whole array up to and including it to be cached.
+#   3. Rolling last-message breakpoint — added inside the loop to the last
+#      content block of the last user message. Each new turn hits the cache
+#      for everything before this rotating mark, so the conversation prefix
+#      grows but stays on the cheap side of the API rate card.
+#
+# Tool_results are NOT marked individually — the last-message rolling mark
+# already covers them as part of the prefix, and adding a per-block mark
+# could hit the +25% cost penalty we measured in compare.py run_008 of the
+# offload script (cache write with 0 reads).
+# --------------------------------------------------------------------------- #
+
+CACHE_CONTROL_EPHEMERAL: dict[str, Any] = {"type": "ephemeral"}
 
 SUBMIT_FINDINGS_TOOL: dict[str, Any] = {
     "name": SUBMIT_FINDINGS_TOOL_NAME,
@@ -59,7 +82,67 @@ SUBMIT_FINDINGS_TOOL: dict[str, Any] = {
 
 # All tools the agent has access to: investigation tools (decide what to
 # look at) + submit_findings (terminate with structured output).
-ALL_TOOLS: list[dict[str, Any]] = [*INVESTIGATION_TOOLS, SUBMIT_FINDINGS_TOOL]
+# `cache_control` on the LAST tool caches the entire tools array.
+ALL_TOOLS: list[dict[str, Any]] = [
+    *INVESTIGATION_TOOLS,
+    {**SUBMIT_FINDINGS_TOOL, "cache_control": CACHE_CONTROL_EPHEMERAL},
+]
+
+
+SYSTEM_BLOCKS: list[dict[str, Any]] = [
+    {
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": CACHE_CONTROL_EPHEMERAL,
+    }
+]
+
+
+def _stamp_last_message_for_cache(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a copy of `messages` with `cache_control` on the last
+    content block of the last message, so the entire prefix up to that
+    point becomes cacheable for the *next* turn's request.
+
+    Anthropic's API allows up to 4 cache breakpoints per request. We
+    use 3: system block, last tool, last message — well under the cap.
+    Each turn the marker rotates forward as messages list grows.
+    """
+    if not messages:
+        return messages
+    out = [m for m in messages[:-1]]
+    last = dict(messages[-1])
+    content = last["content"]
+
+    # Coerce string content into a single text block we can mark.
+    if isinstance(content, str):
+        last["content"] = [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": CACHE_CONTROL_EPHEMERAL,
+            }
+        ]
+        out.append(last)
+        return out
+
+    # content is a list — could be dicts (we authored) or SDK objects
+    # (came from response.content). Coerce each to a dict and mark the
+    # final one.
+    new_content: list[dict[str, Any]] = []
+    last_idx = len(content) - 1
+    for i, block in enumerate(content):
+        if isinstance(block, dict):
+            block_dict = dict(block)
+        else:  # SDK content-block object
+            block_dict = block.model_dump()
+        if i == last_idx:
+            block_dict["cache_control"] = CACHE_CONTROL_EPHEMERAL
+        new_content.append(block_dict)
+    last["content"] = new_content
+    out.append(last)
+    return out
 
 
 def _dispatch_tool(repo: Path, name: str, args: dict[str, Any]) -> str:
@@ -190,12 +273,13 @@ def run(
     # the investigation tools (read_file_section / ast_search / grep) to
     # dig deeper, then call submit_findings when it has a verdict.
     while num_turns < MAX_TURNS:
+        cached_messages = _stamp_last_message_for_cache(messages)
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=SYSTEM_BLOCKS,
             tools=ALL_TOOLS,
-            messages=messages,
+            messages=cached_messages,
         )
         num_turns += 1
         for k in total_usage:
