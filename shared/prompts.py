@@ -54,6 +54,12 @@ findings without further investigation. If evidence is incomplete,
 inspect only the smallest additional code slice needed to confirm or
 reject the suspected bug — use bash, read_file_section, ast_search,
 or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
 </workflow>
 
 <action_space>
@@ -64,6 +70,12 @@ ast-grep), grep (regex search), write_file (scratch notes), and
 submit_findings (terminator). Tool schemas are the source of truth for
 exact arguments. Prefer narrow reads and targeted searches over broad
 context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
 </action_space>
 
 <bug_categories>
@@ -107,6 +119,9 @@ the ODIS context you fetched or from a file you read.
 - Do not give feedback on code outside the base..head change unless that
   code is unchanged-but-broken-by-the-diff (a caller of a changed
   signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
 - Empty findings list is valid.
 - When done, call submit_findings exactly once.
 </rules>

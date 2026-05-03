@@ -2,240 +2,206 @@
 
 ## Context
 
-You're not just building a code-review agent. You're building **the same code-review agent twice** — once on the bare Anthropic Client SDK, once on the Claude Agent SDK — and using the head-to-head comparison as a presentation/pitch about agentic harness design.
+You're not just building a code-review agent. You're building **the same agent twice** — once on the bare Anthropic Client SDK, once on the Claude Agent SDK — and using the head-to-head comparison as a presentation/pitch about agentic harness design.
 
-This builds directly on work already in `/Users/hendrikkrack/Desktop/code-review-agent/v1/`:
-- `compare.py` orchestrator + `pricing.py` cost model + per-run `traces/`/`results/` folders are already wired and running.
-- `agent_sdk/runner.py` and `client_sdk/runner.py` proved offloading and caching patterns experimentally on a `fetch_url` toy.
-- The baseline at `code-review-baseline/ai-code-reviewer/` provides the ODIS (Outside-Diff Impact Slicing) algorithm we'll port — currently OpenAI-based, single-shot, Python-only.
-
-The plan unrolls in many small phases, with **explicit interactive checkpoints** at each sub-step. We won't rush. Architecture locks in before code.
+This document is intentionally re-written end-to-end as of the consolidated PR #17 (Phase 1.7 caching + sentry_80168 fixture + agent-with-computer pivot + CR fixes + ast-grep skill). It supersedes prior versions; everything shipped to date is captured below with run numbers + cost evidence.
 
 ## Working agreement
 
-- Each numbered sub-step below is a checkpoint. I show the artifact (spec, file, run output), you approve, we proceed.
-- No file grows past ~200 LOC without an explicit reason.
-- Comments explain *why*, never *what*. Code reads like prose for a human reviewer.
-- No emojis. ASCII for diagrams.
-- Plain Python; no LangChain or unnecessary frameworks.
-- Phases 1 → 3 are the critical path for the comparison pitch. Phases 4+ extend both implementations symmetrically.
+- Sub-steps are checkpoints. Show artifact, get user approval, move on.
+- Stacked PRs, single merge per phase. Per-phase consolidation: re-target the latest PR to `main`, close the in-flight stack.
+- No file > 200 LOC without explicit reason.
+- Comments explain *why*, not *what*. ASCII for diagrams. No emoji.
+- Plain Python. No LangChain. The whole point is comparing the SDKs directly.
+- CR triage SOP at `.claude/agents/coderabbit-triage.md`: Critical/Major fix in-PR, nits reply-only.
 
-## Reference architecture: which patterns we're applying where
+## Reference architecture: design patterns and where they live
 
-These come from Lance Martin's *Agent Design Patterns* post + the Anthropic, Manus, and Claude-diary articles linked from it. Each pattern has a clear home in our build.
-
-| Pattern | Source | Where it lives in our harness |
+| Pattern | Source | Where it lives |
 |---|---|---|
-| **Give agents a computer** | Lance Martin | Phase 4 (Daytona) — replaces local FS with sandbox shell. Also the Bash/Read/Grep tools we expose in Phase 1.5+. |
-| **Multi-layer action space** | Lance Martin / CodeAct | Single `bash` tool composes linters/greps/finds rather than 10 specific tools. Phase 1 minimum tools, Phase 4+ leans further. |
-| **Progressive disclosure** | Lance Martin / Anthropic | Tool definitions kept terse; agent runs `--help` or `Read` on a manifest if it needs detail. ODIS context is the first-shot prompt; deeper code is fetched on demand. |
-| **Offload context** | Lance Martin / Manus | Already proven in `agent_sdk/`. The harness offloads ≥5 KB tool outputs to disk; we keep that behavior in Phase 2. Client SDK manually mimics with explicit `read_file_section(path, lines)` tool in Phase 1.5. |
-| **Cache context** | Lance Martin / Manus | Stable system-prompt prefix (no timestamps), append-only message history, `cache_control` on the heavy ODIS context block in the Client SDK reviewer. Manus reports 10× cost delta from this alone. |
-| **Isolate context** | Lance Martin / Anthropic | Phase 2.2 dispatches subagents for parallel per-file review. Each returns ~1-2 KB summary of a 10K+ token investigation (Anthropic's recommended shape). |
-| **Evolve context** | Lance Martin / Claude-diary | Phase 6: filesystem diary at `v1/shared/memory/diary/YYYY-MM-DD-run-NNN.md`, manual `reflect` command updates a `REVIEW_RULES.md` that loads into the system prompt. Vector DB only if/when manual reflection scales out — explicitly not the v1 of the feedback loop. |
-| **Recitation** | Manus | Long Agent SDK runs rewrite a `plan.md` every N tool calls to combat drift. Phase 2.x. |
-| **Preserve error traces** | Manus | We do NOT prune failed tool calls from message history. Both SDKs. |
-| **Just-in-time retrieval** | Anthropic | The agent receives file *paths* in the ODIS context and reads them only when needed; never the full repo upfront. Phase 1.5. |
-| **Goldilocks system prompt** | Anthropic | System prompt < 500 tokens, organized with XML tags, kept identical between both SDK implementations to make the comparison clean. |
+| **Give agents a computer** | Lance Martin | `shared/agent_tools.py:bash` (cwd-locked, 15s timeout, repo-relative). Phase 4 (Daytona) replaces local exec with sandbox; same surface. |
+| **Multi-layer action space** | LM / CodeAct | `bash` is the primitive; typed wrappers (`read_file_section`, `ast_search`, `grep`, `build_review_context`, `write_file`) are sugar with cleaner schemas the model picks for common ops. |
+| **Progressive disclosure** | LM / Anthropic | `shared/skills/ast_grep.md` is read on demand by the agent; not pre-injected. Tool descriptions stay terse. |
+| **Offload context** | LM / Manus | Agent SDK provides automatically (Phase 0 `compare.py` proved 99.7% reduction). Client SDK manually mimics via `read_file_section` + `bash head/tail`. |
+| **Cache context** | LM / Manus | Phase 1.7 — three breakpoints: system prompt, tools array, rolling last-message. Sentry_80168 cost dropped 3.1× ($5.17 → $1.68). |
+| **Isolate context** | LM / Anthropic | Phase 2.2 (subagent dispatch for >5 changed files); Phase 9 (linter false-positive validation). |
+| **Evolve context** | LM / Claude-diary | Phase 6 — filesystem diary at `shared/memory/diary/...`, manual `reflect` command updates `REVIEW_RULES.md`. Vector DB only if manual diary scales out. |
+| **Recitation** | Manus | Phase 2.3 — long Agent SDK runs rewrite a `plan.md` every N tool calls. |
+| **Preserve error traces** | Manus | We never prune failed tool calls. Both SDKs. |
+| **Just-in-time retrieval** | Anthropic | Agent gets file *paths* in ODIS context, not file contents. |
+| **Goldilocks system prompt** | Anthropic | `shared/prompts.py`, codex-iterated, ~6K tokens (raised from 500 target after richer task definition stuck). |
+| **Restate evidence** | Claude Code leak (research PR #16) | Added to `<workflow>` (PR #17) — agent restates `file:line + reason` in text before each tool_result, surviving context elision. |
+| **Citation format** | Claude Code leak | Added to `<reporting_rules>` (PR #17) — `path/to/file.py:NN` in intermediate text. |
+| **Parallel tool_use** | Claude Code leak | Added to `<action_space>` (PR #17) — issue independent reads/searches in one turn. |
 
-## Architecture (high level)
+## Architecture
 
 ```
 v1/
-├── shared/                          (new — used by both SDKs)
-│   ├── odis.py                      ported from baseline review_demo.py
-│   ├── fixtures.py                  golden test repos + expected findings
-│   ├── findings.py                  Finding dataclass + JSON serializer
-│   ├── prompts.py                   the canonical system prompt + few-shot
-│   └── memory/                      filled in Phase 6
-│       └── REVIEW_RULES.md          reflection-curated rules; loads into prompt
+├── shared/
+│   ├── findings.py            Finding dataclass + SUBMIT_FINDINGS_TOOL_* schema
+│   ├── odis.py                Outside-Diff Impact Slicing (PR #17 has the
+│   │                          changed_lines() fixes + UnicodeDecodeError fix)
+│   ├── fixtures.py            Fixture dataclass + materialize() (recursive
+│   │                          copytree, supports nested paths)
+│   ├── prompts.py             SYSTEM_PROMPT + USER_PROMPT_TEMPLATE
+│   │                          (codex-iterated, agent-with-computer aware)
+│   ├── agent_tools.py         build_review_context / bash / read_file_section /
+│   │                          ast_search / grep / write_file + tool schemas.
+│   │                          Path-traversal guarded via _safe_target().
+│   ├── skills/
+│   │   └── ast_grep.md        Progressive-disclosure skill (134 lines)
+│   └── memory/                Phase 6 home for diary entries + REVIEW_RULES.md
 ├── client_sdk/
-│   ├── runner.py                    existing offload comparison (keep)
-│   ├── reviewer.py                  NEW Phase 1 — code-review agent
-│   ├── results/                     existing per-run output convention
-│   └── traces/                      existing per-run output convention
+│   ├── offload_runner.py      Phase 0 offload comparison (kept)
+│   ├── reviewer.py            Phase 1.5+1.6+1.7 — agentic loop, 6 tools,
+│   │                          MAX_TURNS=20, 3-breakpoint caching
+│   ├── results/               Per-run findings + metrics
+│   └── traces/                Per-run boxed trace
 ├── agent_sdk/
-│   ├── runner.py                    existing
-│   ├── reviewer.py                  NEW Phase 2
-│   ├── results/
-│   └── traces/
-├── compare.py                       extended: --task offload | review
-├── pricing.py                       (no change)
+│   ├── offload_runner.py      Phase 0 (kept)
+│   └── reviewer.py            Phase 2.1 — NOT YET BUILT
+├── tests/fixtures/
+│   ├── contract_mismatch/     Synthetic, hand-built (Phase 1.3)
+│   ├── sentry_80168/          Real PR — abc.ABC subclass with `pass` body
+│   └── (5 more in flight via subagent — sentry_80528, 67876, 93824, 77754, 95633)
+├── scripts/
+│   ├── build_pr_fixture.py    Generic GH-PR → fixture builder
+│   ├── inspect_fixture.py     Manual test: see fixture contents
+│   ├── inspect_odis.py        Manual test: see ODIS output
+│   ├── inspect_tools.py       Manual test: each agent tool standalone
+│   └── client_sdk/
+│       ├── inspect_review.py  Manual test: end-to-end reviewer (1 API call)
+│       └── smoke_phase16.py   Test A (dispatch) + Test B (forced tool use)
+├── compare.py                 Phase 0 orchestrator (offload mode only).
+│                              Phase 1.8 will add --task review.
+├── pricing.py                 Cost calculator (Opus 4 rates)
 ├── docs/
-│   └── architecture.md              Phase 0 deliverable
-└── code-review-baseline/            unchanged; reference only
+│   ├── PLAN.md                this file
+│   ├── architecture.md        operational reference
+│   ├── verification.md        evidence gates before completion claims
+│   ├── research/              prompt-research artifacts (PR #16)
+│   ├── comparison.md          Phase 3 deliverable (not yet)
+│   └── pitch.md               Phase 3 deliverable (not yet)
+└── code-review-baseline/      submodule, OpenAI baseline (a48bca3)
 ```
 
-**Shared I/O contract for both reviewers:**
+### I/O contract
+
+Both reviewers expose the identical `run()`:
 
 ```python
-# Both client_sdk/reviewer.py and agent_sdk/reviewer.py expose:
-def run(
-    repo_path: Path,
-    base_ref: str,           # e.g. "HEAD~1"
-    head_ref: str,           # e.g. "HEAD"
-    *,
-    run_id: int | None = None,
-    use_oauth: bool = False, # agent_sdk only
-) -> dict[str, Any]:
-    """Returns: {
-        'findings': list[Finding],
-        'cost_usd': float,
-        'api_rate_cost_usd': float,
-        'num_turns': int,
-        'total_usage': dict,
-        'tool_result_chars': int,
-        'trace_path': str,
-        'result_path': str,
-        'run_id': int,
-    }"""
+def run(repo_path, base_ref, head_ref, *, run_id=None, use_oauth=False) -> dict:
+    # Returns:
+    #   findings:               list[Finding]
+    #   submitted:              bool   (was submit_findings called?)
+    #   duplicate_submission:   bool
+    #   exit_reason:            str    (max_turns / stop_reason_X / unknown)
+    #   cost_usd:               float
+    #   api_rate_cost_usd:      float
+    #   num_turns:              int
+    #   total_usage:            dict (input/output/cache_w/cache_r tokens)
+    #   trace_path:             str
+    #   result_path:            str
+    #   run_id:                 int
 ```
 
-**Finding shape** (matches the baseline's structured output, language-agnostic):
+## What's shipped (in PR #17, consolidated)
 
-```python
-@dataclass
-class Finding:
-    file: str            # path relative to repo root
-    line: int            # primary line; range optional
-    line_end: int | None
-    category: str        # contract-mismatch | logic | concurrency | resource | error | security | other
-    severity: str        # high | medium | low
-    summary: str         # one-line headline
-    detail: str          # 2-4 sentences explaining the bug
-    suggested_fix: str   # diff-format suggestion (may be empty)
+```
+PHASE 0 — Architecture + agreement                                   ✓
+   0.1  docs/architecture.md
+   0.2  fixture choices (contract_mismatch synthetic; sentry_80168 real)
+   0.3  prompt v0 source (review_demo.py:313–333), codex-iterated since
+
+PHASE 1 — Client SDK reviewer MVP                                    ✓ (PR #17)
+   1.1  shared/findings.py + SUBMIT_FINDINGS schema
+   1.2  shared/odis.py (port of baseline + diff-parser fixes)
+   1.3  shared/fixtures.py — recursive copytree; contract_mismatch
+   1.4  shared/prompts.py — codex-iterated, agent-with-computer aware
+   1.5  client_sdk/reviewer.py v0 (single-shot)
+   1.6  reviewer.py v2 — "agent with a computer" pivot
+        (ODIS-as-tool, bash, read_file_section, ast_search, grep, write_file)
+   1.7  prompt caching (3 breakpoints) + MAX_TURNS=20
+   --
+        ast-grep skill (progressive disclosure)
+        CR fixes: path traversal, dispatcher try/except, additionalProperties,
+                  schema/prompt alignment, snippet UnicodeDecodeError, sys.path
+
+PHASE 1.8 — wire compare.py with --task review                       ⏳ next
+PHASE 1.9 — capture metrics on full fixture suite                    ⏳
+
+PHASE 2 — Agent SDK reviewer MVP                                     ⏳
+   2.1  agent_sdk/reviewer.py — same I/O contract, MCP tools, harness
+        provides Read/Bash/Grep/Glob, we add build_review_context +
+        submit_findings via @tool decorator
+   2.2  Subagent dispatch for >5-file diffs
+   2.3  Recitation plan.md for long runs
+   2.4  Run on same fixture suite, capture metrics
+
+PHASE 3 — Comparison + pitch                                         ⏳
+   3.1  Fixture suite expansion (mostly done — see fixture inventory)
+   3.2  compare.py table extension (already extended for offload runs)
+   3.3  ASCII flow diagrams (`docs/comparison.md`)
+   3.4  Pitch document (`docs/pitch.md`) with the headline numbers
+
+PHASE 4 — Daytona sandbox layer                                      ⏳
+PHASE 5 — GitHub PR integration                                      ⏳
+PHASE 6 — Filesystem-based learning loop                             ⏳
+PHASE 7 — Web search                                                 ⏳
+PHASE 8 — Docs MCP servers + gateway                                 ⏳
+PHASE 9 — Linters in sandbox + subagent FP validation                ⏳
 ```
 
-## Phase 0 — Architecture doc + agreement (now)
+## Empirical evidence to date (the comparison-pitch gold)
 
-**Output:** this plan file + a one-page `v1/docs/architecture.md` you can read before any code is written.
+| Run | Fixture | Variant | Turns | Cost | Tool calls (key) | Bug found? |
+|---|---|---|---:|---:|---|---|
+| #11 | contract_mismatch | v0 single-shot, no cache | 2 | $0.13 | submit_findings | ✓ |
+| #13 | contract_mismatch | v2 agent-with-computer | 3 | $0.25 | build_review_context + submit | ✓ |
+| #14 | sentry_80168 | v2, no cache, MAX=12 | 12 (cap) | $5.17 | 12 tools, no submit | ✗ |
+| #16 | sentry_80168 | v2 + caching, MAX=20 | 17 | $1.68 | 22 tools incl. ast_search | ✓ |
+| #17 | sentry_80168 | v2 + caching + skill | 17 | $1.64 | 16 tools, all-bash | ✓ |
 
-Critical files to author in this phase:
-- `/Users/hendrikkrack/.claude/plans/declarative-marinating-harp.md` (this file)
-- `/Users/hendrikkrack/Desktop/code-review-agent/v1/docs/architecture.md` (Phase 0.1)
+Caching delta on the headline fixture: **3.1× cost reduction + 0→1 finding correctness gained**. That's the headline graphic for the Phase 3 pitch.
 
-**Checkpoints in Phase 0:**
+## Fixture inventory
 
-- 0.1 I write `docs/architecture.md` — single page, ~200 lines, with the diagram above + the I/O contract + the design-pattern table. You read it.
-- 0.2 We pick the **fixture repo** for the comparison. Default candidate: `code-review-baseline/ai-code-reviewer/demo_project/` — it already has a planted contract-mismatch bug (function signature changed without updating callers) and is small enough to inspect by eye. We may add 1-2 more later.
-- 0.3 We pick the **review prompt v0**. Starting point: the baseline's prompt in `review_demo.py:313–333` (quoted in `shared/prompts.py`). Reduced to <500 tokens. XML-tagged sections (per Anthropic's guidance).
+```
+tests/fixtures/
+├── contract_mismatch/         synthetic, planted signature change
+├── sentry_80168/              real, abc.ABC subclass with pass body
+├── sentry_80528/              real, function mutates local config         (in flight)
+├── sentry_67876/              real, OAuth state CSRF risk                  (in flight)
+├── sentry_93824/              real, isinstance(SpawnProcess) always False  (in flight)
+├── sentry_77754/              real, mutable datetime.now() default         (in flight)
+└── sentry_95633/              real, queue.shutdown() Python <3.13          (in flight)
+```
 
-## Phase 1 — Client SDK reviewer MVP (the slow path)
+The five "in flight" entries are being built by a subagent on branch `phase-1/sentry-fixtures-batch` (target: stack on PR #17).
 
-This is the bulk of the build. Each sub-step is its own checkpoint.
+## Architectural lessons learned (worth carrying forward)
 
-- **1.1 — Author `shared/findings.py`** (~30 LOC). Just the dataclass + JSON serializer. No model code yet.
-- **1.2 — Port ODIS to `shared/odis.py`** from `code-review-baseline/ai-code-reviewer/review_demo.py`. Key functions to lift verbatim or near-verbatim: `changed_lines()` (lines 30-ish), `symbols_containing_lines()`, `symbols_with_signature_changes()`, `callgraph_for_files()`, `one_hop_slice()`, `snippet()`, `format_context_as_markdown()`. Replace OpenAI-specific bits. Keep Python-AST scope (matches user's "Python only" decision).
-- **1.3 — Author `shared/fixtures.py`** (~50 LOC). Loads the demo_project, returns `(repo_path, base_ref, head_ref, expected_findings)`. Lets us assert correctness.
-- **1.4 — Author `shared/prompts.py`** (~80 LOC). One file containing: `SYSTEM_PROMPT`, `USER_PROMPT_TEMPLATE`, optional `FEW_SHOT_EXAMPLES`. XML-tagged. Identical for both SDKs.
-- **1.5 — `client_sdk/reviewer.py` v0: single-shot** (~120 LOC). `run()` calls `shared.odis.build_context(...)`, sends one `messages.create` with the structured-output JSON schema (Anthropic supports `tools` for structured output; we'll use a single `submit_findings` tool). No agentic loop yet. This is the ODIS port to Anthropic.
-- **1.6 — `client_sdk/reviewer.py` v2: "agent with a computer"** (~+150 LOC). Per Lance Martin's pattern (https://rlancemartin.github.io/2026/01/09/agent_design/), the agent gets a thin user prompt + a computer (filesystem + shell + curated context). All tools land in `shared/agent_tools.py` so the Agent SDK reviewer reuses them in Phase 2.x:
-    - `build_review_context(base_ref, head_ref)` — ODIS as a TOOL, not pre-baked. Recommended first step in the prompt.
-    - `bash(command)` — general escape hatch. cwd locked to repo, 15s timeout. Composes `git`, `find`, `head`, `jq`, `python -c`, etc.
-    - `read_file_section(path, start, end)` — direct line range, no shell escaping.
-    - `ast_search(pattern, language)` — wraps [`ast-grep`](https://ast-grep.github.io) for structural patterns like `add($$$)` or `def $NAME($$$): $$$`. Multi-language ready.
-    - `grep(pattern, path_glob)` — `git grep -E` regex fallback.
-    - `write_file(path, content)` — scratch space; filesystem-as-memory.
-  The user prompt is a thin directive (repo path + refs + recommended first step). The agent decides everything else. Manual tool-calling loop with append-only message history. Cap turns at 12. No tool_choice forcing.
-- **1.7 — Caching**, applied surgically (now urgent). The Phase 1.6 v2 pivot added several tools to the tools array (~700+ tokens) and a richer system prompt (~6K tokens). Run #14 against `sentry_80168` ran 12 turns and consumed **333,160 input tokens / $5.17** because every turn re-pays for the full prefix. Mark `cache_control` on the system prompt + tools array (stable across all turns). **Skip caching the tool_result and ODIS context** — naive tool_result caching with 0 reads costs +25% (proven empirically in `compare.py` run_008 of the offload script). Also raise `MAX_TURNS` to ~20 once caching makes deeper turns affordable; consider a small prompt nudge ("aim to submit findings before the budget runs out") so the agent self-paces.
-- **1.8 — Wire into `compare.py`** with a `--task review` flag. Existing `--task offload` keeps working. Result file format extended to include findings list. Trace format unchanged (the new boxed style).
-- **1.9 — Run on both fixtures (`contract_mismatch` and `sentry_80168`), capture metrics**. Sanity checks: planted contract-mismatch bug detected on the simple fixture; agent reaches `submit_findings` within budget on the real-world Sentry fixture. Compare cost / turns / quality.
+1. **ODIS pre-baked vs ODIS-as-tool**: agency requires the latter. PR #13 pivoted from "ODIS in user prompt" to "build_review_context tool"; the agent now actually decides whether/when to fetch context. Cost ~2× on simple fixtures, same outcome — pays back on hard fixtures.
+2. **Caching breakpoint placement**: system + tools + rolling last-message. Each cache breakpoint is one of Anthropic's 4 max. Avoid per-tool_result markers with 0 reads (we measured +25% in a prior offload run). Skill nudges that say "read X first" can backfire — the model abandons the wrapped tool entirely.
+3. **MAX_TURNS scales with cache cost**: caching makes deeper turns affordable; raised from 12 to 20.
+4. **Stacked PR consolidation**: one merge per phase. Re-target the latest PR to main, close ancestors. CR auto-review only fires on default-base PRs; we do this consolidation when ready for review.
+5. **Fixture's expected Finding must match the prompt's localization rule**: when the prompt allows "caller/callee whose contract was broken," the fixture's `file` field becomes flexible. We may need a "matches any of these locations" matcher for future fixtures.
 
-### Fixture inventory (current)
+## Open background work
 
-The originally-planned Phase 3.1 fixture expansion landed early because building `sentry_80168` was the test that empirically motivated Phase 1.7. Tooling: `scripts/build_pr_fixture.py owner/repo PR_NUMBER` lets us add more cheaply.
+- Subagent `ae1d22d...` building 5 more Sentry fixtures (target: PR stacked on #17).
+- CR auto-review on PR #17 in progress (51 files, takes 5-10 min). After it lands, dispatch fresh CR-triage subagent with longer poll window.
 
-| name | source | bug shape | size |
-|---|---|---|---|
-| `contract_mismatch` | synthetic | signature change with un-updated callers | 2 files, hand-written |
-| `sentry_80168` | getsentry/sentry#80168 | subclass body is `pass` over an `abc.ABC` → `TypeError` on instantiation | 4 files, +249/-151 |
+## Verification matrix
 
-**Checkpoints:** I show the diff after each sub-step. We don't move past 1.5 until you've actually read `client_sdk/reviewer.py` and we agree the loop is clean.
-
-## Phase 2 — Agent SDK reviewer MVP
-
-Same I/O contract. The harness does the heavy lifting we did manually in Phase 1.
-
-- **2.1 — `agent_sdk/reviewer.py` v0** (~100 LOC). `create_sdk_mcp_server` with two tools: `build_odis_context(repo, base, head)` (calls `shared.odis`) and `submit_findings(findings)`. Allow `Read`, `Bash`, `Grep`, `Glob` from the harness — these *are* the agent's investigation tools, no need to reimplement.
-- **2.2 — Subagent dispatch for >N changed files**. If the diff touches more than ~5 files, dispatch a Task subagent per file or per cluster. Each subagent has its own context, returns 1-2 KB findings summary. Lead agent dedupes and consolidates. (Anthropic pattern, Pattern 6.)
-- **2.3 — Recitation `plan.md`** for long runs. After every 5 tool calls, the agent rewrites a `plan.md` listing files reviewed / files outstanding. (Manus pattern.)
-- **2.4 — Run on same fixture, capture run_NNN**.
-
-## Phase 3 — Comparison + pitch
-
-- **3.1 — Fixture suite expansion** (already started — see Phase 1.6 inventory). The Sentry fixture (`sentry_80168`) landed early because it was the empirical motivation for Phase 1.7. Add 2-3 more in this phase: one larger (1-2 MB) to show offload pulling ahead, one with cross-file impact for subagent dispatch (Phase 2.2), and ideally a `deletion_orphan` fixture to close the ODIS TODO (PR #10's deferred CR Major).
-- **3.2 — Comparison table** in `compare.py` already exists; extend rows to include: `findings_count`, `findings_match_expected` (boolean), `latency_s`, the existing cost/turn columns.
-- **3.3 — ASCII flow diagrams** in `docs/comparison.md` showing both architectures side by side (we have a draft from a prior turn — refine it).
-- **3.4 — Pitch document** `docs/pitch.md`. ~500 words, the "why Agent SDK is worth it (or isn't) for this task". Refers to actual numbers from our runs, not generalities.
-
-## Phase 4 — Daytona sandbox layer (only after Phase 3 lands)
-
-Both reviewers swap local FS / `subprocess.run` for the Daytona Python SDK. Same I/O contract. Three sub-steps: provision sandbox, clone repo into it, route `read_file_section` / `Bash` through it.
-
-This realizes the **Give Agents a Computer** pattern in its full form — the agent has a real isolated computer, not just our laptop's filesystem.
-
-## Phase 5 — GitHub PR integration
-
-A new front door: `code-review --pr <url>` clones the PR's branches, runs the reviewer, posts findings as inline review comments via `gh pr review` inside the Daytona sandbox. Designated GitHub account; PAT in `.env`.
-
-## Phase 6 — Learning loop (filesystem first, vector DB later)
-
-Per the **Claude-diary** post, the smart move is filesystem-based first:
-- **6.1** — After each review run, optionally write `shared/memory/diary/YYYY-MM-DD-run-NNN.md` capturing: findings the user accepted, findings they rejected as false positives, any free-text response.
-- **6.2** — A `reflect` CLI command reads accumulated diary entries, asks the model to distill recurring patterns into one-line bullets in `shared/memory/REVIEW_RULES.md`. Manual approval gate (per Claude-diary's lesson — never auto-update).
-- **6.3** — `REVIEW_RULES.md` loads into the system prompt at every run. This is the **Evolve Context** pattern.
-- **6.4** — Vector DB upgrade is *only* introduced if the manual diary corpus exceeds a few hundred entries. By default, plain markdown beats Pinecone for low volume.
-
-## Phase 7 — Web search
-
-`web_search(query)` and `web_fetch(url)` exposed to both SDKs. The Agent SDK gets these natively; the Client SDK gets a thin wrapper. Useful for: "is this CVE? is this idiomatic in this framework version?" Standard tool, low risk.
-
-## Phase 8 — Docs MCP servers + gateway
-
-Connect to Mintlify or Context7 MCP servers for project-specific docs. Add a small **MCP gateway** in front (separate process, in-memory cache) that:
-1. Caches frequent doc lookups so the same query doesn't repeatedly burn tokens.
-2. Filters tool descriptions to a token budget per turn (progressive disclosure pattern).
-3. Drops responses that don't pass a relevance check (some MCP servers are noisy).
-
-## Phase 9 — Linters in sandbox + subagent false-positive validation
-
-In the Daytona sandbox: run `ruff`, `pyright`, `bandit`, etc. Pipe output to a subagent whose only job is "for each lint warning: open the file, decide if this is a real bug or a false positive". Returns a filtered list to the lead agent. This is **Pattern 6 (Isolate Context)** at its strongest — lint output can be huge, the lead agent never sees it.
-
-## Verification plan
-
-| Phase | Verification |
+| Phase | Success means |
 |---|---|
-| 0 | You read `architecture.md` and approve, or send back changes. |
-| 1 | `python compare.py --task review` finds the planted bug in `demo_project/`. JSON output validates against the `Finding` schema. Trace shows ≤12 turns. |
-| 2 | Same fixture, same finding, comparable findings. Cost lower than Phase 1 at API rates. |
-| 3 | `compare.py --task review` prints the comparison table; `docs/pitch.md` reproduces those numbers verbatim. |
-| 4 | Both reviewers pass the same fixture test using a Daytona sandbox instead of local FS. |
-| 5 | A PR with the planted bug, reviewed end-to-end, gets a real comment on GitHub at the right line. |
-| 6 | A diary entry is written; `reflect` produces a sensible bullet you can hand-approve into `REVIEW_RULES.md`; subsequent runs cite the rule. |
-| 7-9 | Each is a feature flag; tested independently, regression-tested against Phase 3's fixture suite. |
-
-## What we're explicitly NOT doing in v1
-
-- Multi-language support beyond Python (decided in clarifying Q&A).
-- Real-time streaming UI / web dashboard.
-- Vector DB before manual diary scales out.
-- LangChain / LangGraph or other agent frameworks. We use the SDKs directly because the entire point is the comparison.
-- LLM-as-a-judge for evaluation. For Phase 3 we hand-eval the small fixture suite.
-
-## Critical files (cumulative across phases)
-
-| Path | Phase | Purpose |
-|---|---|---|
-| `v1/docs/architecture.md` | 0 | Single-page reference |
-| `v1/shared/odis.py` | 1.2 | Ported from `code-review-baseline/ai-code-reviewer/review_demo.py` lines 30-304 |
-| `v1/shared/fixtures.py` | 1.3 | Golden test inputs |
-| `v1/shared/findings.py` | 1.1 | `Finding` dataclass |
-| `v1/shared/prompts.py` | 1.4 | Canonical prompt, identical across both SDKs |
-| `v1/client_sdk/reviewer.py` | 1.5-1.7 | Manual tool loop |
-| `v1/agent_sdk/reviewer.py` | 2.1-2.3 | `claude_agent_sdk.query` + harness |
-| `v1/compare.py` | 1.8, 3.2 | Extended with `--task review` |
-| `v1/pricing.py` | (existing) | Cost computation; reused |
-| `v1/shared/memory/REVIEW_RULES.md` | 6.3 | Reflection output, loads into prompt |
-| `v1/sandbox/daytona_client.py` | 4 | Thin wrapper around Daytona SDK |
-| `v1/github/pr_runner.py` | 5 | gh CLI driver |
-| `v1/mcp_gateway/` | 8 | Token-budget + cache layer |
+| 0 | Architecture doc approved; fixture + prompt v0 chosen. |
+| 1 | `client_sdk/reviewer.py:run()` finds the planted bug on contract_mismatch and sentry_80168 within budget. |
+| 2 | Agent SDK reviewer matches Phase 1's findings with comparable cost; harness handles offload+caching automatically. |
+| 3 | Pitch numbers reproduce verbatim from `compare.py --task review`. |
+| 4 | Both reviewers pass the fixture suite using a Daytona sandbox. |
+| 5 | A real PR gets a real CR-style comment at the right line. |
+| 6 | Diary entry → reflect → REVIEW_RULES.md → next-run citation. |
+| 7-9 | Each is a feature flag; tested independently. |
