@@ -31,6 +31,13 @@ SEVERITY_BADGES: dict[str, str] = {
 
 
 def _location(f: Finding) -> str:
+    """Render the file:line(-line_end) anchor for a Finding.
+
+    Returns "file:L" for single-line findings, "file:L-E" for ranges.
+    Caller is responsible for ensuring line_end >= line if set —
+    post_review._classify (Task 8) defensively swaps reversed bounds
+    before findings reach this layer.
+    """
     if f.line_end and f.line_end != f.line:
         return f"{f.file}:{f.line}-{f.line_end}"
     return f"{f.file}:{f.line}"
@@ -61,7 +68,7 @@ def render_inline_comment(
     # The "Prompt for AI agents" block — copyable handoff prompt that
     # downstream agents can paste directly into a fix session.
     fix_goal = (
-        finding.suggested_fix
+        finding.suggested_fix.strip()
         or "Fix the bug while preserving the intended behavior."
     )
     lines += [

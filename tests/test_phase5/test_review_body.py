@@ -65,11 +65,18 @@ def test_render_inline_comment_severity_badges_used():
 
 
 def test_render_inline_comment_keeps_analysis_trail_param():
-    # Backward-compat: param stays in the signature even if v1 callers
-    # pass () (trail moved to review summary). Calling with () must work.
+    # Backward-compat: the param stays in the signature, but v1 callers
+    # pass () because the trail moved to the wrapping review's summary.
+    # Verify the param is INERT — passing a non-empty trail produces the
+    # same output as passing none. If a future change accidentally starts
+    # consuming the trail here, this test catches it.
     f = Finding(
         file="a.py", line=1, line_end=None,
         category="other", severity="low",
         summary="x", detail="y", suggested_fix="",
     )
-    render_inline_comment(f, analysis_trail=())  # must not raise
+    out_empty = render_inline_comment(f, analysis_trail=())
+    out_with = render_inline_comment(f, analysis_trail=("step 1", "step 2"))
+    assert out_empty == out_with, (
+        "analysis_trail must be inert in v1 — same output regardless of value"
+    )
