@@ -1,0 +1,231 @@
+"""Investigation tools the reviewer can call when ODIS context isn't enough.
+
+Three thin wrappers, each importable as a Python function (called from the
+reviewer's tool-loop handler) AND as a tool schema dict (passed in
+`messages.create(tools=[...])`):
+
+- read_file_section: pure I/O — read N lines of a file
+- ast_search: structural code search via the `ast-grep` CLI (must be
+  installed; `brew install ast-grep` on macOS, `cargo install ast-grep`
+  elsewhere)
+- grep: regex search via `git grep` for non-AST queries (comments,
+  configs, error strings)
+
+Both reviewers (Client SDK and Agent SDK) use the same implementations.
+The Client SDK wraps the schemas in `tools=[{name, description,
+input_schema}]`; the Agent SDK in Phase 2.x wraps via the @tool decorator.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+# Cap output at sane sizes so a chatty grep doesn't blow context.
+_MAX_AST_MATCHES = 30
+_MAX_GREP_LINES = 50
+_AST_TIMEOUT_S = 15
+_GREP_TIMEOUT_S = 10
+
+
+def read_file_section(repo: Path, path: str, start_line: int, end_line: int) -> str:
+    """Read [start_line, end_line] (1-indexed, inclusive) from repo/path.
+
+    Returns line-numbered text or a short error string. Never raises — the
+    agent loop should never crash because the model passed a bad path.
+    """
+    target = repo / path
+    if not target.exists() or not target.is_file():
+        return f"Error: file not found: {path}"
+    try:
+        rows = target.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as e:
+        return f"Error reading {path}: {e}"
+    start = max(1, start_line) - 1
+    end = min(len(rows), max(start_line, end_line))
+    if start >= end:
+        return f"(empty range {start_line}-{end_line} in {path}; file has {len(rows)} lines)"
+    return "\n".join(f"{i:>4}  {rows[i - 1]}" for i in range(start + 1, end + 1))
+
+
+def ast_search(
+    repo: Path,
+    pattern: str,
+    language: str = "python",
+) -> str:
+    """Run `ast-grep run -p <pattern> --lang <language>` in the repo.
+
+    Returns a compact text summary of matches (capped at 30) or an error
+    string. Pattern syntax: `$VAR` matches a single AST node, `$$$` matches
+    any sequence. E.g. `add($$$)` finds every call to `add` regardless of
+    arity or whitespace.
+    """
+    try:
+        proc = subprocess.run(
+            ["ast-grep", "run", "-p", pattern, "--lang", language, "--json=stream"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=_AST_TIMEOUT_S,
+        )
+    except FileNotFoundError:
+        return "Error: `ast-grep` not installed. macOS: `brew install ast-grep`."
+    except subprocess.TimeoutExpired:
+        return f"Error: ast-grep timed out after {_AST_TIMEOUT_S}s."
+
+    if proc.returncode not in (0, 1):
+        return f"Error: ast-grep exit {proc.returncode}: {proc.stderr.strip()[:400]}"
+
+    matches: list[dict[str, Any]] = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        # `--json=stream` emits one object per match (when matches exist),
+        # OR one array per file. Normalize both.
+        if isinstance(obj, list):
+            matches.extend(obj)
+        else:
+            matches.append(obj)
+
+    if not matches:
+        return f"No matches for pattern {pattern!r} in lang={language}."
+
+    out = [f"Found {len(matches)} match(es) for pattern {pattern!r}:"]
+    for m in matches[:_MAX_AST_MATCHES]:
+        path_match = m.get("file", "?")
+        rng = m.get("range", {})
+        start = rng.get("start", {})
+        text_match = (m.get("text") or "").strip().replace("\n", " ")
+        if len(text_match) > 120:
+            text_match = text_match[:117] + "..."
+        out.append(
+            f"  {path_match}:{start.get('line', '?')}:{start.get('column', '?')}  {text_match}"
+        )
+    if len(matches) > _MAX_AST_MATCHES:
+        out.append(f"  ... and {len(matches) - _MAX_AST_MATCHES} more (truncated)")
+    return "\n".join(out)
+
+
+def grep(repo: Path, pattern: str, path_glob: str = "") -> str:
+    """Plain regex grep via `git grep -E` — searches the working tree.
+
+    Cap on output to avoid blowing the agent's context. Returns "no matches"
+    cleanly rather than as an error.
+    """
+    cmd = ["git", "grep", "-n", "-E", pattern]
+    if path_glob:
+        cmd.extend(["--", path_glob])
+    try:
+        proc = subprocess.run(
+            cmd, cwd=repo, capture_output=True, text=True, timeout=_GREP_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return f"Error: git grep timed out after {_GREP_TIMEOUT_S}s."
+
+    if proc.returncode == 1:
+        return f"No matches for pattern {pattern!r}."
+    if proc.returncode != 0:
+        return f"Error: git grep exit {proc.returncode}: {proc.stderr.strip()[:400]}"
+
+    lines = proc.stdout.splitlines()
+    if len(lines) > _MAX_GREP_LINES:
+        return (
+            "\n".join(lines[:_MAX_GREP_LINES])
+            + f"\n... and {len(lines) - _MAX_GREP_LINES} more (truncated)"
+        )
+    return proc.stdout.rstrip("\n")
+
+
+# --------------------------------------------------------------------------- #
+# Tool schemas for the Anthropic Client SDK (`tools=[...]`).
+# Agent SDK (Phase 2.x) wraps the same callables via the @tool decorator.
+# --------------------------------------------------------------------------- #
+
+READ_FILE_SECTION_TOOL: dict[str, Any] = {
+    "name": "read_file_section",
+    "description": (
+        "Read a range of lines from a file in the repo. Use when the ODIS "
+        "context didn't include the code you need to see."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path relative to the repo root.",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "1-indexed start line (inclusive).",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "1-indexed end line (inclusive).",
+            },
+        },
+        "required": ["path", "start_line", "end_line"],
+    },
+}
+
+AST_SEARCH_TOOL: dict[str, Any] = {
+    "name": "ast_search",
+    "description": (
+        "Structural code search via ast-grep. Pattern uses code syntax with "
+        "$VAR for a single node and $$$ for a sequence. Examples: "
+        "`add($$$)` (any call to add); `def $NAME($$$): $$$` (any function "
+        "definition); `class $X($Foo): $$$` (any class inheriting from Foo). "
+        "Returns up to 30 matches with file:line:col."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "ast-grep pattern; uses $VAR and $$$.",
+            },
+            "language": {
+                "type": "string",
+                "enum": ["python", "javascript", "typescript", "go", "rust", "java"],
+                "default": "python",
+            },
+        },
+        "required": ["pattern"],
+    },
+}
+
+GREP_TOOL: dict[str, Any] = {
+    "name": "grep",
+    "description": (
+        "Plain extended-regex search via `git grep -E`. Use for non-AST "
+        "queries (comments, error strings, configs). Returns up to 50 lines "
+        "as `path:line: text`."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "POSIX extended regex.",
+            },
+            "path_glob": {
+                "type": "string",
+                "description": "Optional pathspec, e.g. `*.py` or `src/*`.",
+                "default": "",
+            },
+        },
+        "required": ["pattern"],
+    },
+}
+
+INVESTIGATION_TOOLS: list[dict[str, Any]] = [
+    READ_FILE_SECTION_TOOL,
+    AST_SEARCH_TOOL,
+    GREP_TOOL,
+]

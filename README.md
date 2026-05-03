@@ -40,6 +40,14 @@ cp .env.example .env          # then fill in ANTHROPIC_API_KEY
 git submodule update --init   # pull in the baseline (pinned commit)
 ```
 
+Phase 1.6+ (the agentic reviewer) also needs [`ast-grep`](https://ast-grep.github.io)
+on PATH for structural code search:
+
+```bash
+brew install ast-grep         # macOS arm64: `arch -arm64 brew install ast-grep`
+# or: cargo install ast-grep
+```
+
 The Agent SDK path requires the `claude` CLI on `PATH` (Claude Code must
 be installed locally — the SDK shells out to it). For OAuth/Max-billed
 runs, log in with `claude /login` once.

@@ -1,9 +1,10 @@
-"""Client SDK reviewer (Phase 1.5 — v0, single-shot).
+"""Client SDK reviewer (Phase 1.6 — v1, agentic loop).
 
 Calls `shared.odis.build_context()` to assemble the curated review
-context, then asks the model to surface bugs by forcing a single
-`submit_findings` tool call. No agentic loop yet — that lands in Phase
-1.6 with Read/Grep tools.
+context, then runs an agent loop: the model can call investigation
+tools (read_file_section / ast_search / grep) to dig further, and
+calls `submit_findings` when it has a verdict. No tool is forced —
+the model chooses when to investigate, when to submit, when to stop.
 
 I/O contract is the one in docs/architecture.md ("Both reviewers
 expose the identical run() signature"). The companion file is
@@ -24,6 +25,12 @@ from dotenv import load_dotenv
 # Make the project root importable for `shared.*` and `pricing`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pricing  # noqa: E402
+from shared.agent_tools import (  # noqa: E402
+    INVESTIGATION_TOOLS,
+    ast_search,
+    grep,
+    read_file_section,
+)
 from shared.findings import (  # noqa: E402
     Finding,
     SUBMIT_FINDINGS_INPUT_SCHEMA,
@@ -35,9 +42,9 @@ from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 
 MODEL = "claude-opus-4-7"
 MAX_TOKENS = 4096
-# Safety cap. v0 typically uses 2 turns: (1) submit_findings call,
-# (2) post-tool-result acknowledgement.
-MAX_TURNS = 5
+# Safety cap. With investigation tools available the agent may take
+# several turns; we still want a hard ceiling.
+MAX_TURNS = 12
 
 RESULTS_DIR = Path(__file__).parent / "results"
 TRACES_DIR = Path(__file__).parent / "traces"
@@ -47,6 +54,34 @@ SUBMIT_FINDINGS_TOOL: dict[str, Any] = {
     "description": SUBMIT_FINDINGS_TOOL_DESCRIPTION,
     "input_schema": SUBMIT_FINDINGS_INPUT_SCHEMA,
 }
+
+# All tools the agent has access to: investigation tools (decide what to
+# look at) + submit_findings (terminate with structured output).
+ALL_TOOLS: list[dict[str, Any]] = [*INVESTIGATION_TOOLS, SUBMIT_FINDINGS_TOOL]
+
+
+def _dispatch_tool(repo: Path, name: str, args: dict[str, Any]) -> str:
+    """Run an investigation tool and return its result as a string.
+
+    submit_findings is handled inline in the loop (it's the terminator)
+    so this dispatcher only handles the three read-only tools.
+    """
+    if name == "read_file_section":
+        return read_file_section(
+            repo, args["path"], args["start_line"], args["end_line"]
+        )
+    if name == "ast_search":
+        return ast_search(repo, args["pattern"], args.get("language", "python"))
+    if name == "grep":
+        return grep(repo, args["pattern"], args.get("path_glob", ""))
+    return f"Error: unknown tool {name!r}"
+
+
+def _short_args(d: dict[str, Any], limit: int = 100) -> str:
+    """Compact JSON-ish repr for trace lines."""
+    import json
+    s = json.dumps(d, default=str)
+    return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
 def _next_run_id() -> int:
@@ -128,19 +163,15 @@ def run(
     }
     num_turns = 0
 
-    # No tool_choice — `submit_findings` is offered as an option, the
-    # model decides when to call it. Forcing it would make the comparison
-    # unfair vs the Agent SDK (the harness has no equivalent forcing
-    # mechanism) and would collapse Phase 1.5 / 1.6 into a single
-    # structured-output API call rather than an agent loop. The system
-    # prompt already tells the model to call the tool when it has a
-    # verdict; we trust it to follow.
+    # No tool_choice — the model decides which tools to call. It can use
+    # the investigation tools (read_file_section / ast_search / grep) to
+    # dig deeper, then call submit_findings when it has a verdict.
     while num_turns < MAX_TURNS:
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=SYSTEM_PROMPT,
-            tools=[SUBMIT_FINDINGS_TOOL],
+            tools=ALL_TOOLS,
             messages=messages,
         )
         num_turns += 1
@@ -150,6 +181,11 @@ def run(
             f"--- turn {num_turns} stop={response.stop_reason} "
             f"in={response.usage.input_tokens} out={response.usage.output_tokens} ---"
         )
+        for block in response.content:
+            if block.type == "text" and block.text.strip():
+                trace.append(f"  [text] {block.text.strip()[:200]}")
+            elif block.type == "tool_use":
+                trace.append(f"  [tool_use] {block.name}({_short_args(block.input)})")
 
         if response.stop_reason != "tool_use":
             break
@@ -157,14 +193,24 @@ def run(
         messages.append({"role": "assistant", "content": response.content})
         results: list[dict[str, Any]] = []
         for block in response.content:
-            if block.type == "tool_use" and block.name == SUBMIT_FINDINGS_TOOL_NAME:
+            if block.type != "tool_use":
+                continue
+            if block.name == SUBMIT_FINDINGS_TOOL_NAME:
                 raw = block.input.get("findings", [])
                 findings = [Finding(**item) for item in raw]
-                trace.append(f"submit_findings called with {len(findings)} finding(s)")
+                trace.append(f"  submit_findings → {len(findings)} finding(s)")
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
                     "content": "ok",
+                })
+            else:
+                tool_output = _dispatch_tool(repo_path, block.name, block.input)
+                trace.append(f"  {block.name} → {len(tool_output)} chars")
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": tool_output,
                 })
         messages.append({"role": "user", "content": results})
 
