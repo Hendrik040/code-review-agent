@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 035
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 25
+# cost (USD, harness-reported): 1.976591
+# cost (USD, public Opus 4 rate): 5.812924
+# usage: {'input_tokens': 39, 'cache_creation_input_tokens': 90199, 'cache_read_input_tokens': 1187805, 'output_tokens': 31192, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 90199}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 552, 'cache_read_input_tokens': 87814, 'cache_creation_input_tokens': 3239, 'cache_creation': {'ephemeral_5m_input_tokens': 3239, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 233,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "FixedQueuePool.shutdown() abandons queued items instead of gracefully draining them, defeating queue.shutdown(immediate=False) semantics.",
+    "detail": "The shutdown method sets `worker.shutdown = True` for every worker (line 234) before calling `q.shutdown(immediate=False)` on each queue (line 238). The worker's run loop checks `while not self.shutdown:` at the top of each iteration (line 129) after every successful `work_queue.get()`. Workers are normally blocked in `get()`, so the flag write at line 234 has no immediate effect. When `q.shutdown(immediate=False)` runs, Python 3.13's queue contract lets `get()` continue draining until empty before raising `queue.ShutDown` -- but as soon as the worker processes its FIRST drained item and loops back, `not self.shutdown` evaluates False and it exits, leaving every remaining queued WorkItem unprocessed. This contradicts the docstring (\"Gracefully shutdown all workers\") and has real consequences: each abandoned item already had `OffsetTracker.add_offset` called in FixedQueuePool.submit (line 211) but will never receive a matching `complete_offset` call (which only fires in OrderedQueueWorker.run's finally on line 149). Those offsets stay in `outstanding` forever, which makes `OffsetTracker.get_committable_offsets` unable to advance any partition past the first stuck offset for the rest of the pool's lifetime. SimpleQueueProcessingStrategy.close() runs `commit_thread.join()` BEFORE `queue_pool.shutdown()` (line 337-338), so the commit loop is already gone by the time the (single) extra item per worker completes, meaning even that last-completed offset never gets committed. After consumer restart everything queued at shutdown plus everything processed-but-uncommitted is reprocessed (at-least-once semantics still hold, but the drain path is broken on every redeploy).",
+    "line_end": 243,
+    "suggested_fix": "-    def shutdown(self) -> None:\n-        \"\"\"Gracefully shutdown all workers.\"\"\"\n-        for worker in self.workers:\n-            worker.shutdown = True\n-\n-        for q in self.queues:\n-            try:\n-                q.shutdown(immediate=False)\n-            except Exception:\n-                logger.exception(\"Error shutting down queue\")\n-\n-        for worker in self.workers:\n-            worker.join(timeout=5.0)\n+    def shutdown(self) -> None:\n+        \"\"\"Gracefully shutdown all workers (drain queues, then exit).\"\"\"\n+        # Stop accepting new puts and let workers drain remaining items;\n+        # get() will raise queue.ShutDown only once the queue is empty.\n+        for q in self.queues:\n+            try:\n+                q.shutdown(immediate=False)\n+            except Exception:\n+                logger.exception(\"Error shutting down queue\")\n+\n+        for worker in self.workers:\n+            worker.join(timeout=5.0)\n# (and remove the now-unused `self.shutdown` flag and its check in OrderedQueueWorker.run)"
+  }
+]
