@@ -1588,6 +1588,95 @@ def test_retrieve_for_diff_returns_empty_on_store_failure():
         per_query_k=5, threshold=0.78,
     )
     assert hits == []
+
+
+def test_render_item_escapes_cdata_terminator_in_code():
+    """A code_chunk_text containing the literal `]]>` (rare in Python,
+    common in JS/TS/SVG) must not close the CDATA section early.
+    Without the escape, the parser would see </original_code> early
+    and the rest of the chunk would inject as raw XML."""
+    h = Hit(
+        score=0.9,
+        payload=_payload("L").__dict__ | {
+            "code_chunk_text": "const html = `<svg>data]]> garbage`",
+        },
+        point_id="x",
+    )
+    out = format_for_prompt([h])
+    # The literal `]]>` from the input must be split across two CDATA
+    # sections so the FIRST `]]>` in the output belongs to our escape,
+    # not to the malicious payload.
+    assert "data]]]]><![CDATA[> garbage" in out
+    # And the closing original_code tag is still in the right place
+    # (i.e. not consumed by the early CDATA terminator).
+    assert "</original_code>" in out
+
+
+def test_applicability_filter_bails_to_threshold_on_haiku_exception():
+    """Spec §8.2: Haiku failure → skip filter, pass through threshold-only.
+    The whole step bails (NOT per-hit) so output is never a mix of judged
+    and un-judged hits."""
+    from shared.learnings import applicability_filter
+
+    hits = [
+        Hit(score=0.9, payload={"learning_text": "a"}, point_id="1"),
+        Hit(score=0.85, payload={"learning_text": "b"}, point_id="2"),
+        Hit(score=0.8, payload={"learning_text": "c"}, point_id="3"),
+    ]
+    broken_client = MagicMock()
+    broken_client.messages.create.side_effect = Exception("haiku unreachable")
+    out = applicability_filter(
+        hits,
+        anthropic_client=broken_client,
+        diff_summary="some diff",
+        keep_max=5,
+    )
+    # All 3 hits passed through unfiltered.
+    assert [h.point_id for h in out] == ["1", "2", "3"]
+
+
+def test_applicability_filter_keeps_yes_and_maybe_drops_no():
+    """Happy path: Haiku verdicts route the hits."""
+    from shared.learnings import applicability_filter
+
+    hits = [
+        Hit(score=0.9, payload={"learning_text": "a"}, point_id="1"),
+        Hit(score=0.85, payload={"learning_text": "b"}, point_id="2"),
+        Hit(score=0.8, payload={"learning_text": "c"}, point_id="3"),
+    ]
+    client = MagicMock()
+    # Three calls, three verdicts: yes, no, maybe.
+    msgs = [MagicMock(content=[MagicMock(text=v)]) for v in ("yes", "no", "Maybe.")]
+    client.messages.create.side_effect = msgs
+    out = applicability_filter(
+        hits,
+        anthropic_client=client,
+        diff_summary="d",
+        keep_max=5,
+    )
+    assert [h.point_id for h in out] == ["1", "3"]
+
+
+def test_applicability_filter_respects_keep_max():
+    """keep_max caps the kept set even when more hits would qualify."""
+    from shared.learnings import applicability_filter
+
+    hits = [
+        Hit(score=0.9 - i * 0.01, payload={"learning_text": f"l{i}"}, point_id=str(i))
+        for i in range(8)
+    ]
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        MagicMock(content=[MagicMock(text="yes")]) for _ in range(8)
+    ]
+    out = applicability_filter(
+        hits,
+        anthropic_client=client,
+        diff_summary="d",
+        keep_max=3,
+    )
+    assert len(out) == 3
+    assert [h.point_id for h in out] == ["0", "1", "2"]
 ```
 
 - [ ] **Step 2: Run tests, verify they fail**
@@ -1634,6 +1723,13 @@ _INTRO = (
 )
 
 
+def _cdata(text: str) -> str:
+    """Wrap text in <![CDATA[...]]> safely. CDATA sections terminate on
+    `]]>`; the standard escape splits the offending sequence across two
+    sections so the parser sees the literal three characters."""
+    return f"<![CDATA[{text.replace(']]>', ']]]]><![CDATA[>')}]]>"
+
+
 def apply_threshold(hits: list[Hit], threshold: float) -> list[Hit]:
     return [h for h in hits if h.score >= threshold]
 
@@ -1675,22 +1771,25 @@ def applicability_filter(
     """Haiku judges each hit. Drop "no"; keep "yes" + "maybe". Spec §5.2.
 
     Returns up to ``keep_max`` hits, preserving original score order.
-    On any failure, returns the input unchanged (fail-open per spec §8).
+
+    Fail-open semantics (spec §8.2 — "Applicability filter (Haiku)
+    failure → Skip filter; pass through threshold-only results"): if
+    the Haiku call raises ANY exception, the whole filter step bails
+    and returns ``hits[:keep_max]`` unfiltered. Per-hit fail-open
+    would mix "Haiku said yes/maybe" with "Haiku threw — we don't know"
+    in the output and silently consume the keep_max budget with
+    un-judged hits.
     """
     if not hits:
         return []
-    kept: list[Hit] = []
-    for h in hits:
-        try:
-            verdict = _judge_applicability(anthropic_client, model, diff_summary, h)
-        except Exception:
-            kept.append(h)
-            continue
-        if verdict in ("yes", "maybe"):
-            kept.append(h)
-        if len(kept) >= keep_max:
-            break
-    return kept
+    try:
+        verdicts = [
+            _judge_applicability(anthropic_client, model, diff_summary, h)
+            for h in hits
+        ]
+    except Exception:
+        return hits[:keep_max]
+    return [h for h, v in zip(hits, verdicts) if v in ("yes", "maybe")][:keep_max]
 
 
 def _judge_applicability(client: Any, model: str, diff_summary: str, hit: Hit) -> str:
@@ -1734,9 +1833,8 @@ def _render_item(idx: int, h: Hit) -> str:
         f'pr="{escape(p.get("repo",""), quote=True)}#{p.get("pr_number","")}" '
         f'captured="{escape(p.get("captured_at","")[:10], quote=True)}">\n'
         f"    <learning>{escape(p.get('learning_text',''))}</learning>\n"
-        f'    <original_code language="{escape(p.get("language",""), quote=True)}"><![CDATA[\n'
-        f"{p.get('code_chunk_text','')}\n"
-        f"    ]]></original_code>\n"
+        f'    <original_code language="{escape(p.get("language",""), quote=True)}">'
+        f"{_cdata(p.get('code_chunk_text',''))}</original_code>\n"
         f"  </item>"
     )
 
@@ -1769,7 +1867,7 @@ If over budget, split (e.g. move `applicability_filter` body into a private modu
 - [ ] **Step 4: Run tests, verify they pass**
 
 Run: `uv run pytest tests/test_phase6/test_shared_learnings.py -v`
-Expected: 7 passed.
+Expected: 11 passed.
 
 - [ ] **Step 5: Commit**
 

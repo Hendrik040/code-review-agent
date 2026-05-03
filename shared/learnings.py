@@ -32,6 +32,13 @@ _INTRO = (
 )
 
 
+def _cdata(text: str) -> str:
+    """Wrap text in <![CDATA[...]]> safely. CDATA sections terminate on
+    `]]>`; the standard escape splits the offending sequence across two
+    sections so the parser sees the literal three characters."""
+    return f"<![CDATA[{text.replace(']]>', ']]]]><![CDATA[>')}]]>"
+
+
 def apply_threshold(hits: list[Hit], threshold: float) -> list[Hit]:
     return [h for h in hits if h.score >= threshold]
 
@@ -73,22 +80,25 @@ def applicability_filter(
     """Haiku judges each hit. Drop "no"; keep "yes" + "maybe". Spec §5.2.
 
     Returns up to ``keep_max`` hits, preserving original score order.
-    On any failure, returns the input unchanged (fail-open per spec §8).
+
+    Fail-open semantics (spec §8.2 — "Applicability filter (Haiku)
+    failure → Skip filter; pass through threshold-only results"): if
+    the Haiku call raises ANY exception, the whole filter step bails
+    and returns ``hits[:keep_max]`` unfiltered. Per-hit fail-open
+    would mix "Haiku said yes/maybe" with "Haiku threw — we don't know"
+    in the output and silently consume the keep_max budget with
+    un-judged hits.
     """
     if not hits:
         return []
-    kept: list[Hit] = []
-    for h in hits:
-        try:
-            verdict = _judge_applicability(anthropic_client, model, diff_summary, h)
-        except Exception:
-            kept.append(h)
-            continue
-        if verdict in ("yes", "maybe"):
-            kept.append(h)
-        if len(kept) >= keep_max:
-            break
-    return kept
+    try:
+        verdicts = [
+            _judge_applicability(anthropic_client, model, diff_summary, h)
+            for h in hits
+        ]
+    except Exception:
+        return hits[:keep_max]
+    return [h for h, v in zip(hits, verdicts) if v in ("yes", "maybe")][:keep_max]
 
 
 def _judge_applicability(client: Any, model: str, diff_summary: str, hit: Hit) -> str:
@@ -132,9 +142,8 @@ def _render_item(idx: int, h: Hit) -> str:
         f'pr="{escape(p.get("repo",""), quote=True)}#{p.get("pr_number","")}" '
         f'captured="{escape(p.get("captured_at","")[:10], quote=True)}">\n'
         f"    <learning>{escape(p.get('learning_text',''))}</learning>\n"
-        f'    <original_code language="{escape(p.get("language",""), quote=True)}"><![CDATA[\n'
-        f"{p.get('code_chunk_text','')}\n"
-        f"    ]]></original_code>\n"
+        f'    <original_code language="{escape(p.get("language",""), quote=True)}">'
+        f"{_cdata(p.get('code_chunk_text',''))}</original_code>\n"
         f"  </item>"
     )
 

@@ -159,3 +159,92 @@ def test_retrieve_for_diff_returns_empty_on_store_failure():
         per_query_k=5, threshold=0.78,
     )
     assert hits == []
+
+
+def test_render_item_escapes_cdata_terminator_in_code():
+    """A code_chunk_text containing the literal `]]>` (rare in Python,
+    common in JS/TS/SVG) must not close the CDATA section early.
+    Without the escape, the parser would see </original_code> early
+    and the rest of the chunk would inject as raw XML."""
+    h = Hit(
+        score=0.9,
+        payload=_payload("L").__dict__ | {
+            "code_chunk_text": "const html = `<svg>data]]> garbage`",
+        },
+        point_id="x",
+    )
+    out = format_for_prompt([h])
+    # The literal `]]>` from the input must be split across two CDATA
+    # sections so the FIRST `]]>` in the output belongs to our escape,
+    # not to the malicious payload.
+    assert "data]]]]><![CDATA[> garbage" in out
+    # And the closing original_code tag is still in the right place
+    # (i.e. not consumed by the early CDATA terminator).
+    assert "</original_code>" in out
+
+
+def test_applicability_filter_bails_to_threshold_on_haiku_exception():
+    """Spec §8.2: Haiku failure → skip filter, pass through threshold-only.
+    The whole step bails (NOT per-hit) so output is never a mix of judged
+    and un-judged hits."""
+    from shared.learnings import applicability_filter
+
+    hits = [
+        Hit(score=0.9, payload={"learning_text": "a"}, point_id="1"),
+        Hit(score=0.85, payload={"learning_text": "b"}, point_id="2"),
+        Hit(score=0.8, payload={"learning_text": "c"}, point_id="3"),
+    ]
+    broken_client = MagicMock()
+    broken_client.messages.create.side_effect = Exception("haiku unreachable")
+    out = applicability_filter(
+        hits,
+        anthropic_client=broken_client,
+        diff_summary="some diff",
+        keep_max=5,
+    )
+    # All 3 hits passed through unfiltered.
+    assert [h.point_id for h in out] == ["1", "2", "3"]
+
+
+def test_applicability_filter_keeps_yes_and_maybe_drops_no():
+    """Happy path: Haiku verdicts route the hits."""
+    from shared.learnings import applicability_filter
+
+    hits = [
+        Hit(score=0.9, payload={"learning_text": "a"}, point_id="1"),
+        Hit(score=0.85, payload={"learning_text": "b"}, point_id="2"),
+        Hit(score=0.8, payload={"learning_text": "c"}, point_id="3"),
+    ]
+    client = MagicMock()
+    # Three calls, three verdicts: yes, no, maybe.
+    msgs = [MagicMock(content=[MagicMock(text=v)]) for v in ("yes", "no", "Maybe.")]
+    client.messages.create.side_effect = msgs
+    out = applicability_filter(
+        hits,
+        anthropic_client=client,
+        diff_summary="d",
+        keep_max=5,
+    )
+    assert [h.point_id for h in out] == ["1", "3"]
+
+
+def test_applicability_filter_respects_keep_max():
+    """keep_max caps the kept set even when more hits would qualify."""
+    from shared.learnings import applicability_filter
+
+    hits = [
+        Hit(score=0.9 - i * 0.01, payload={"learning_text": f"l{i}"}, point_id=str(i))
+        for i in range(8)
+    ]
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        MagicMock(content=[MagicMock(text="yes")]) for _ in range(8)
+    ]
+    out = applicability_filter(
+        hits,
+        anthropic_client=client,
+        diff_summary="d",
+        keep_max=3,
+    )
+    assert len(out) == 3
+    assert [h.point_id for h in out] == ["0", "1", "2"]
