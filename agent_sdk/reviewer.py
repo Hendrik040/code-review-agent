@@ -61,6 +61,12 @@ from claude_agent_sdk import (  # noqa: E402
 )
 from dotenv import load_dotenv  # noqa: E402
 
+from shared.agent_tools import (  # noqa: E402
+    ast_search as _ast_search_impl,
+    write_file as _write_file_impl,
+    AST_SEARCH_TOOL,
+    WRITE_FILE_TOOL,
+)
 from shared.findings import (  # noqa: E402
     Finding,
     SUBMIT_FINDINGS_INPUT_SCHEMA,
@@ -71,6 +77,15 @@ from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 
 MODEL = "claude-opus-4-7"
 MAX_TURNS = 100  # parity with client_sdk/reviewer.py
+# Per-call output budget — informational on the Agent SDK side.
+# ClaudeAgentOptions does not expose a per-call max_tokens equivalent
+# (the harness sizes it internally), but we pin the same number the
+# Client SDK uses so any drift between SDKs is documented.
+MAX_TOKENS = 16000
+# Pin the reasoning effort so the comparison is at the same level as
+# the Client SDK reviewer (Phase 2.2). "xhigh" is the Opus-4.7
+# recommendation for coding/agentic work per the API docs.
+EFFORT = "xhigh"
 
 RESULTS_DIR = Path(__file__).parent / "results"
 TRACES_DIR = Path(__file__).parent / "traces"
@@ -89,20 +104,23 @@ SDK_ADDENDUM = """\
 <sdk_note>
 This implementation runs on the Claude Agent SDK harness. Your
 investigation tools have these exact names in this environment:
-  - Read                                 (read a file or section)
-  - Bash                                 (run a shell command in the repo)
-  - Grep                                 (regex search across files)
-  - Glob                                 (file-name pattern matching)
+  - Read                                 (file/section read; equivalent
+                                          to read_file_section)
+  - Bash                                 (shell; equivalent to `bash`)
+  - Grep                                 (regex search; equivalent to
+                                          `grep`)
+  - mcp__reviewer__ast_search            (structural code search via
+                                          ast-grep; equivalent to
+                                          `ast_search`)
+  - mcp__reviewer__write_file            (write a file; equivalent to
+                                          `write_file`)
   - mcp__reviewer__build_review_context  (the ODIS curated slice;
                                           your recommended first call)
   - mcp__reviewer__submit_findings       (the terminator)
 
 The names differ in casing/prefix from <action_space>; the *purpose*
-described there still applies. The harness's `Read` tool is the
-equivalent of `read_file_section`; `Bash` covers anything `bash`
-covered; `Grep` plus `Glob` covers what `grep` plus `ast_search`
-covered (use `Grep` for both regex and structural patterns — there is
-no separate ast_search tool here). Finish by calling
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
 mcp__reviewer__submit_findings exactly once.
 </sdk_note>
 """
@@ -369,10 +387,64 @@ async def _run_async(
         submitted[0] = True
         return {"content": [{"type": "text", "text": "ok"}]}
 
+    @tool(
+        AST_SEARCH_TOOL["name"],
+        AST_SEARCH_TOOL["description"],
+        AST_SEARCH_TOOL["input_schema"],
+    )
+    async def _ast_search(args: dict[str, Any]) -> dict[str, Any]:
+        # Same impl as Client SDK — calls the ast-grep CLI binary.
+        # Phase 2.2 added this on the Agent SDK side so the tool
+        # surface is identical between the two reviewers.
+        try:
+            text = _ast_search_impl(
+                repo_path,
+                args["pattern"],
+                args.get("language", "python"),
+            )
+            return {"content": [{"type": "text", "text": text}]}
+        except Exception as e:  # noqa: BLE001 — boundary; surface to model
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Error: ast_search failed ({type(e).__name__}): {e}",
+                    }
+                ],
+                "is_error": True,
+            }
+
+    @tool(
+        WRITE_FILE_TOOL["name"],
+        WRITE_FILE_TOOL["description"],
+        WRITE_FILE_TOOL["input_schema"],
+    )
+    async def _write_file(args: dict[str, Any]) -> dict[str, Any]:
+        # Same impl as Client SDK — path-traversal-guarded write to
+        # the materialized fixture's temp dir. Phase 2.2 parity tool.
+        try:
+            text = _write_file_impl(repo_path, args["path"], args["content"])
+            return {"content": [{"type": "text", "text": text}]}
+        except Exception as e:  # noqa: BLE001 — boundary; surface to model
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Error: write_file failed ({type(e).__name__}): {e}",
+                    }
+                ],
+                "is_error": True,
+            }
+
     server = create_sdk_mcp_server(
         name="reviewer",
         version="0.1.0",
-        tools=[_build_review_context, _submit_findings],
+        tools=[
+            _build_review_context,
+            _submit_findings,
+            _ast_search,
+            _write_file,
+        ],
     )
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
@@ -385,18 +457,39 @@ async def _run_async(
         model=MODEL,
         system_prompt=SYSTEM_PROMPT_AGENT_SDK,
         mcp_servers={"reviewer": server},
+        # Phase 2.2 — tool surface parity with Client SDK:
+        #   build_review_context  → mcp__reviewer__build_review_context
+        #   submit_findings       → mcp__reviewer__submit_findings
+        #   bash                  → Bash (harness)
+        #   read_file_section     → Read (harness)
+        #   grep                  → Grep (harness)
+        #   ast_search            → mcp__reviewer__ast_search   (NEW)
+        #   write_file            → mcp__reviewer__write_file   (NEW)
+        # Glob is dropped — the Client SDK doesn't have it; both SDKs
+        # use Bash + `find` for file pattern matching when needed.
         allowed_tools=[
             "mcp__reviewer__build_review_context",
             "mcp__reviewer__submit_findings",
+            "mcp__reviewer__ast_search",
+            "mcp__reviewer__write_file",
             "Read",
             "Bash",
             "Grep",
-            "Glob",
         ],
         permission_mode="bypassPermissions",
         max_turns=MAX_TURNS,
+        effort=EFFORT,
         cwd=str(repo_path),
     )
+    # NOTE on per-call max_tokens parity with Client SDK:
+    # ClaudeAgentOptions does not expose an API-level `max_tokens`
+    # equivalent — the harness sizes it internally based on effort
+    # level. The Client SDK pins MAX_TOKENS=32000; the Agent SDK
+    # relies on the harness's internal sizing. In practice the
+    # Anthropic docs recommend "starting at 64k tokens" for xhigh,
+    # and the harness almost certainly defaults to something at
+    # least that large. This is a real asymmetry we cannot remove
+    # at this layer; document it in PLAN.md rather than fight it.
 
     saved_api_key = os.environ.pop("ANTHROPIC_API_KEY", None) if use_oauth else None
 

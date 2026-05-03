@@ -43,7 +43,13 @@ from shared.findings import (  # noqa: E402
 from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 
 MODEL = "claude-opus-4-7"
-MAX_TOKENS = 4096
+# MAX_TOKENS bumped 4096 → 16000 in Phase 2.2 for effort="xhigh".
+# The Anthropic Opus-4.7 docs suggest "starting at 64k" for xhigh, but
+# the bare client errors out at >~19k without streaming (10-min
+# heuristic timeout). We don't stream, and our largest observed
+# per-turn output across the Phase 1.8 sweep was ~575 tokens average,
+# so 16k gives ~25x headroom and still fits the non-streaming rule.
+MAX_TOKENS = 16000
 # Safety cap. With investigation tools available the agent may take
 # several turns; we still want a hard ceiling. Caching keeps each
 # additional turn cheap (the prefix is mostly cache_read), so the
@@ -51,6 +57,11 @@ MAX_TOKENS = 4096
 # sentry_93824 ran into the 20-cap mid-investigation on the
 # multi-file flusher case).
 MAX_TURNS = 100
+# Phase 2.2 — pin reasoning effort. Anthropic recommends "xhigh" for
+# coding/agentic tasks on Opus 4.7. Both reviewers (Client + Agent SDK)
+# share this constant so the comparison is at the same effort level
+# rather than each SDK's implicit default.
+EFFORT = "xhigh"
 
 RESULTS_DIR = Path(__file__).parent / "results"
 TRACES_DIR = Path(__file__).parent / "traces"
@@ -282,6 +293,7 @@ def run(
             system=SYSTEM_BLOCKS,
             tools=ALL_TOOLS,
             messages=cached_messages,
+            output_config={"effort": EFFORT},
         )
         num_turns += 1
         for k in total_usage:
