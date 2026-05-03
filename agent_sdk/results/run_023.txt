@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 023
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_67876-9afbnpm1
+# refs: HEAD~1..HEAD
+# turns: 23
+# cost (USD, harness-reported): 1.621068
+# cost (USD, public Opus 4 rate): 4.863202
+# usage: {'input_tokens': 32, 'cache_creation_input_tokens': 60212, 'cache_read_input_tokens': 1136215, 'output_tokens': 27059, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 60212}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 368, 'cache_read_input_tokens': 65971, 'cache_creation_input_tokens': 2929, 'cache_creation': {'ephemeral_5m_input_tokens': 2929, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "medium",
+    "summary": "User-mismatch check raises KeyError when integration metadata lacks `sender`/`login`",
+    "detail": "The new check at GitHubInstallation.dispatch reads `integration.metadata[\"sender\"][\"login\"]` with bare-key indexing. The `sender` field is not guaranteed to exist on every Integration: (1) `build_integration` only writes `metadata.sender` when `state.get(\"sender\")` is truthy, and this PR never binds a \"sender\" key into pipeline state \u2014 so any Integration that gets created through the pipeline (e.g. when the webhook hasn't fired yet and we fall into `pipeline.next_step()` at line 482) will have no sender entry; (2) older Integration rows that predate the webhook handler recording `sender` will likewise be missing it. Hitting this code path on such an Integration produces a `KeyError` (or `TypeError` if `metadata` doesn't even have the key) bubbling up as an unhandled 500 instead of the intended friendly error template. The realistic scenario: a customer disconnects/deletes the OrganizationIntegration on a slightly older Integration record, then re-installs \u2014 they reach the `installations_exist == False`, status=ACTIVE branch and crash.",
+    "line_end": 505,
+    "suggested_fix": "-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n+        sender = (integration.metadata or {}).get(\"sender\") or {}\n+        if pipeline.fetch_state(\"github_authenticated_user\") != sender.get(\"login\"):\n             return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "low",
+    "summary": "Network error from `safe_urlopen` is uncaught and produces a 500 instead of the friendly error page",
+    "detail": "`safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)` is invoked outside the try/except. Only the body-read step (`safe_urlread(req).decode(...)` and `parse_qsl`) is wrapped. If GitHub is unreachable, times out, or `safe_urlopen` raises any other exception, the exception propagates out of the pipeline view, the installation flow fails with a 500, and the user sees a Sentry generic error rather than the `github-integration-failed.html` template. Given this is the OAuth token-exchange step on a third-party network call, transient failure is realistic.",
+    "line_end": 429,
+    "suggested_fix": "-        req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n-\n-        try:\n-            body = safe_urlread(req).decode(\"utf-8\")\n+        try:\n+            req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n+            body = safe_urlread(req).decode(\"utf-8\")\n             payload = dict(parse_qsl(body))\n         except Exception:\n             payload = {}"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 448,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Empty-string `installation_id` query param clobbers the pipeline-bound value and skips the install redirect",
+    "detail": "`request.GET.get(\"installation_id\", pipeline.fetch_state(\"installation_id\"))` only falls back to the bound state when the query parameter is absent. If a request arrives with `?installation_id=` (empty string), `request.GET.get` returns `\"\"`, which is not None \u2014 so the `if installation_id is None: redirect to install` guard does not fire, the `pipeline.bind_state(\"installation_id\", \"\")` call overwrites the legitimate value previously bound by OAuthLoginView, and the flow proceeds with an empty external_id. The Integration lookups then raise DoesNotExist, the user is sent through `pipeline.next_step()` \u2192 `build_integration`, which calls `get_installation_info(\"\")` and 404s. The user gets a generic install error and their previously-bound installation_id has been wiped from pipeline state, requiring them to restart. Triggering this requires only an attacker-crafted (or accidentally re-shared) URL containing an empty `installation_id` parameter.",
+    "line_end": 452,
+    "suggested_fix": "-        installation_id = request.GET.get(\n-            \"installation_id\", pipeline.fetch_state(\"installation_id\")\n-        )\n-        if installation_id is None:\n+        installation_id = request.GET.get(\"installation_id\") or pipeline.fetch_state(\n+            \"installation_id\"\n+        )\n+        if not installation_id:\n             return self.redirect(self.get_app_url())"
+  }
+]

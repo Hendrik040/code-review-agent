@@ -156,7 +156,7 @@ PHASE 1.9 — metrics commentary                                       ⏳
    evidence table; cost / latency / correctness numbers cited
    verbatim in the eventual pitch.
 
-PHASE 2 — Agent SDK reviewer MVP                                     ✓ (PR #21)
+PHASE 2 — Agent SDK reviewer + tool/effort parity                    ✓ (PRs #21, #22)
    2.1  agent_sdk/reviewer.py — identical run() contract; in-process
         MCP exposes build_review_context + submit_findings; harness
         provides Read/Bash/Grep/Glob with built-in offloading.
@@ -164,12 +164,16 @@ PHASE 2 — Agent SDK reviewer MVP                                     ✓ (PR #
         SYSTEM_PROMPT_AGENT_SDK = canonical SYSTEM_PROMPT verbatim
         plus a small <sdk_note> mapping client-SDK tool names to
         harness names. Caching is harness-managed (no manual
-        breakpoints — that's part of what we're comparing).
-   2.2  Subagent dispatch for >5-file diffs                          ⏳
-   2.3  Recitation plan.md for long runs                             ⏳
-   2.4  Run on same fixture suite, capture metrics                   ⏳ (sweep
-        in progress as of Phase 2.1 PR; results land as a follow-up
-        commit)
+        breakpoints — that's part of what we're comparing).      ✓ PR #21
+   2.2  Tool-surface parity (ast_search + write_file added as MCP
+        tools on Agent SDK; Glob dropped to match Client SDK) +
+        `effort="xhigh"` pinned on both + MAX_TOKENS=16000.       ✓ PR #22
+        Full sweep run; head-to-head doc updated. Reveals that
+        xhigh hurts Client SDK and helps Agent SDK on the same
+        fixture (sentry_93824) — asymmetric harness×effort
+        interaction is now lesson #9.
+   2.3  Subagent dispatch for >5-file diffs                          ⏳
+   2.4  Recitation plan.md for long runs                             ⏳
 
 PHASE 3 — Comparison + pitch                                         ⏳ ready
    3.1  compare.py --task review — THE Client-SDK-vs-Agent-SDK
@@ -201,11 +205,9 @@ PHASE 9 — Linters in sandbox + subagent FP validation                ⏳
 
 Caching delta on the headline fixture: **3.1× cost reduction + 0→1 finding correctness gained**.
 
-### Phase 2.1 head-to-head: Client SDK vs Agent SDK on the full 7-fixture suite
+### Phase 2.1 head-to-head: at `effort="high"` (the implicit default)
 
-Latest run per fixture per SDK, with the **category-aware matcher** from PR #20's CR review (a finding only counts as a hit if `(file, category)` matches expected, plus `line ±10` for the stricter line-hit). Sources: `client_sdk/results/run_*.txt`, `agent_sdk/results/run_*.txt`. Reproducible at any time via `uv run python scripts/headtohead.py`.
-
-The `sentry_80528` fixture's v1 baseline was patched after PR #20 review (the upstream PR moved an already-buggy function rather than introducing a bug, so the v1→v2 diff didn't reveal a regression). Numbers below are post-fix.
+First apples-to-apples sweep, both SDKs at the model's implicit `high` effort default.
 
 | Fixture | Client SDK | Agent SDK | Cost delta |
 |---|---|---|---:|
@@ -216,15 +218,42 @@ The `sentry_80528` fixture's v1 baseline was patched after PR #20 review (the up
 | sentry_93824 | 20 / $1.65 / Y/Y | 8 / $0.82 / N/N | -50%; Y→N |
 | sentry_77754 | 14 / $1.09 / Y/Y | 12 / $0.50 / Y/Y | **-55%** |
 | sentry_95633 | 13 / $2.18 / N/N | 21 / $2.05 / N/N | both miss; -6% |
-| **Totals** | **$9.09 / 89 turns / 5/7 line-hits** | **$5.96 / 85 turns / 4/7 line-hits** | **-34%** |
+| **Totals** | **$9.09 / 89 turns / 5/7** | **$5.96 / 85 turns / 4/7** | **-34%** |
 
-**Headline:** Agent SDK is **~34% cheaper end-to-end on the same fixture suite**, thanks to the harness's automatic offloading and built-in caching (vs the Client SDK's manual three-breakpoint scheme). Correctness:
+At `high`: Agent SDK ~34% cheaper end-to-end; Client SDK has one more line-hit (`sentry_93824`). Two consistent misses on both (`sentry_67876` CSRF, `sentry_95633` Python 3.13).
 
-- **Both SDKs solve 5 of 7 planted bugs** at the right (file, category, ±10 lines): contract_mismatch, sentry_80168, sentry_80528, sentry_77754, plus sentry_93824 (Client only).
-- **Two genuine misses on both SDKs**: sentry_67876 (CSRF / OAuth state) and sentry_95633 (Python-3.13-only API). The model finds *other* plausible bugs in the right files but doesn't surface the planted one. These are prompt-strategy gaps, not budget gaps — both had tool-call headroom.
-- **One Client-only hit** (sentry_93824): the Agent SDK landed on the same file but a different line for the SpawnProcess isinstance bug. Worth investigating in Phase 3.
+### Phase 2.2 head-to-head: same suite at `effort="xhigh"` (Anthropic's recommended for coding/agentic)
 
-These are the headline numbers for the Phase 3 pitch. The complete table also lives in `docs/headtohead.md` and is rebuildable via `scripts/headtohead.py`.
+Tool surface now identical between SDKs (Phase 2.2 added `ast_search` + `write_file` as MCP tools on the Agent SDK side, dropped `Glob`). `effort="xhigh"` pinned on both. `MAX_TOKENS=16000` on Client SDK; harness-managed on Agent SDK.
+
+| Fixture | Client SDK | Agent SDK | Δ vs. `high` (Client) | Δ vs. `high` (Agent) |
+|---|---|---|---|---|
+| contract_mismatch | 3 / $0.11 / Y/Y | 4 / $0.20 / Y/Y | same | same |
+| sentry_80168 | 16 / $1.76 / Y/Y | 19 / $1.30 / Y/Y | same | same |
+| sentry_80528 | 5 / $0.46 / Y/Y | 7 / $0.39 / Y/Y | same | same |
+| sentry_67876 | 42 / $6.03 / N/N | 23 / $1.62 / N/N | still miss; **3.4× cost** | still miss; +70% cost |
+| sentry_93824 | 39 / $3.57 / **N/N** | 10 / $1.22 / **Y/Y** | **REGRESSED Y→N** | **CURED N→Y** |
+| sentry_77754 | 18 / $1.44 / Y/Y | 10 / $0.54 / Y/Y | same | same |
+| sentry_95633 | 29 / $4.56 / N/N | 25 / $4.50 / N/N | same N | same N |
+| **Totals** | **$17.93 / 152 turns / 4/7** | **$9.76 / 98 turns / 5/7** | **+97% cost / -1 hit** | **+64% cost / +1 hit** |
+
+**Cost delta at xhigh:** Agent SDK total $9.76 vs Client SDK $17.93 — **-45.5%**.
+
+### The actual pitch story (much sharper than "Agent SDK is cheaper")
+
+| Effort | Client SDK | Agent SDK | Winner |
+|---|---|---|---|
+| `high` (default) | 5/7 hits, $9.09 | 4/7 hits, $5.96 | Client wins on accuracy; Agent wins on cost |
+| `xhigh` (Anthropic recommendation for coding) | 4/7, $17.93 | 5/7, $9.76 | **Agent wins on both** |
+
+Four findings worth carrying into Phase 3:
+
+1. **`xhigh` is not a free upgrade on the Client SDK.** Cost roughly doubled AND it lost a planted-bug hit (`sentry_93824` Y/Y → N/N — model over-explored, submitted a different bug from the same file). The Anthropic-docs heuristic "raise effort instead of prompting around it" is not unconditional — extra reasoning depth can backfire when the model has too much freedom to over-explore on hard fixtures.
+2. **The harness's interaction with effort is asymmetric.** Same fixture (`sentry_93824`), same effort lift, opposite outcome — Client SDK regressed while Agent SDK was cured. Plausible explanation: the harness compacts/scopes turns differently than the bare loop does, so the same effort signal produces different exploration behavior. This is the most interesting open question for Phase 3.
+3. **Two consistent misses survive across both SDKs and both effort levels** (`sentry_67876` CSRF / OAuth-state, `sentry_95633` Python-3.13-only API). Knowledge-frame gaps (security pattern recognition; cross-version Python awareness), not depth-of-reasoning gaps. xhigh + 42 Client turns / $6 didn't move them. Need a prompt addendum or a small RAG corpus to close.
+4. **Practical recommendation for this benchmark:** `effort="high"` on Client SDK, `effort="xhigh"` on Agent SDK. Best 5/7 on each side at the lowest cost: Client SDK $9.09, Agent SDK $9.76. Each SDK has its own sweet spot — don't pick a single effort number for both.
+
+These are the headline numbers for the Phase 3 pitch. The current head-to-head also lives in `docs/headtohead.md` and is rebuildable via `scripts/headtohead.py`.
 
 ## Fixture inventory
 
@@ -252,6 +281,8 @@ All 7 fixtures live on `main` and materialize via `shared.fixtures.materialize()
 6. **`compare.py --task review` is the Phase-3 deliverable, not a Phase-1 batch runner**: earlier wording in this doc conflated "sweep our fixture suite to validate the reviewer" with "compare Client SDK vs Agent SDK on the same fixture." The first is single-SDK and lands in Phase 1.8 as `run_suite.py`. The second requires both SDKs and is the literal point of the comparison pitch — it lands as `compare.py --task review` in Phase 3.1, after Phase 2 builds the Agent SDK reviewer.
 7. **Matcher must require category match** (CR catch on PR #20). Without it, a finding hitting the right file/line for the wrong reason inflates the score. New matcher: `(file, category)` for file_hit, plus `line ±N` for line_hit. Concrete impact: sentry_67876 and sentry_95633 flipped from hits to honest misses — both SDKs find different bugs in the right files.
 8. **A fixture's v1 baseline must show the bug as a regression** (CR catch on PR #20, sentry_80528). When the upstream PR *moves* an already-buggy function rather than introducing a new bug, the v1→v2 diff shows only the move and the bug-of-record is invisible to a diff-based reviewer. Patching v1 to the *intended pre-PR* behavior — even though it diverges from the literal upstream base_sha — keeps the benchmark honest. Document the divergence in the fixture file.
+9. **`effort` interacts asymmetrically with the harness** (Phase 2.2 sweep). Same effort knob (`high` → `xhigh`), same fixture (`sentry_93824`), opposite outcomes between SDKs: Client SDK regressed Y/Y → N/N (over-explored, submitted a different bug), Agent SDK cured N/N → Y/Y. The Anthropic docs' "raise effort instead of prompting around it" heuristic is not unconditional — extra reasoning depth can backfire on harder fixtures when the loop has freedom to over-explore. Practical takeaway: each SDK has its own sweet spot; don't pin a single effort number for both. For *this* benchmark, `high` on Client SDK + `xhigh` on Agent SDK gives 5/7 each at the lowest combined cost.
+10. **Two misses survive every knob we've tried** (`sentry_67876` CSRF/OAuth, `sentry_95633` Python-3.13-only API). Constant across SDK choice, effort level, tool surface, and prompt patterns. These are knowledge-frame gaps, not budget or strategy gaps — the model needs domain priming (security antipatterns; Python-version awareness) it doesn't carry by default. Cure is a prompt addendum or a small targeted retrieval corpus, not more turns or more effort.
 
 ## Open follow-ups (post-Phase 2.1)
 

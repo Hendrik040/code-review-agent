@@ -1,0 +1,30 @@
+# Client SDK reviewer run 035
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_95633-7t37dwjj
+# refs: HEAD~1..HEAD
+# turns: 29
+# cost (USD, API rate): 4.558703
+# usage: {'input_tokens': 33, 'output_tokens': 19563, 'cache_creation_input_tokens': 58957, 'cache_read_input_tokens': 1323693}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 338,
+    "category": "resource",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close()/terminate() shuts down the factory-owned queue_pool, breaking the consumer on Kafka rebalance.",
+    "detail": "The `queue_pool` is created once in `ResultsStrategyFactory.__init__` and is reused across every call to `create_with_partitions`. However, `SimpleQueueProcessingStrategy.close()` (and `terminate()`) calls `self.queue_pool.shutdown()`, which kills all worker threads and shuts down all internal `queue.Queue` instances on the shared `FixedQueuePool`. Arroyo invokes `strategy.close()` (and then `join()`, which also calls `close()`) on partition revocation/rebalance and when tearing down the strategy. After that, the next call to `factory.create_with_partitions()` (e.g. on the next partition assignment) will instantiate a new `SimpleQueueProcessingStrategy` referencing the SAME, already-dead `queue_pool`: the worker threads are gone and `queue.put()` will raise `queue.ShutDown`, so submitted messages will fail and the consumer will be permanently broken until the process restarts. Compare with `parallel_executor`/`multiprocessing_pool`, which are intentionally not shut down by their per-strategy wrappers \u2014 only by `factory.shutdown()`. The lifecycle should match: the strategy must not shut down a factory-owned resource.",
+    "line_end": 342,
+    "suggested_fix": "@@\n     def close(self) -> None:\n         self.shutdown_event.set()\n         self.commit_thread.join(timeout=5.0)\n-        self.queue_pool.shutdown()\n \n     def terminate(self) -> None:\n         self.shutdown_event.set()\n-        self.queue_pool.shutdown()\n"
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 231,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "FixedQueuePool.shutdown() can drop queued items because workers exit before the queue's drain-on-shutdown semantics kick in.",
+    "detail": "`shutdown()` first sets `worker.shutdown = True` for every worker and only afterwards calls `q.shutdown(immediate=False)`. The worker's main loop is `while not self.shutdown:` and only checks the flag between items. If a worker happens to finish processing an item and re-enters the loop after step 1 but before step 2, it will see `self.shutdown == True` and exit immediately, leaving items still sitting in its queue. `queue.Queue.shutdown(immediate=False)` is supposed to let `get()` drain the remaining items before raising `ShutDown`, but no thread is left to call `get()` \u2014 so those items are silently dropped, their offsets remain in `outstanding` forever, and any commit thread call before final shutdown won't be able to advance past them. This contradicts the docstring's \"Gracefully shutdown\" claim and means messages already enqueued (and counted as in-flight) can be lost on shutdown, requiring Kafka redelivery after restart.",
+    "line_end": 243,
+    "suggested_fix": "@@\n     def shutdown(self) -> None:\n         \"\"\"Gracefully shutdown all workers.\"\"\"\n-        for worker in self.workers:\n-            worker.shutdown = True\n-\n         for q in self.queues:\n             try:\n                 q.shutdown(immediate=False)\n             except Exception:\n                 logger.exception(\"Error shutting down queue\")\n \n+        # Now that the queues are shut-down-on-drain, also flag workers so\n+        # that if they wake up without an item they exit promptly.\n+        for worker in self.workers:\n+            worker.shutdown = True\n+\n         for worker in self.workers:\n             worker.join(timeout=5.0)\n"
+  }
+]

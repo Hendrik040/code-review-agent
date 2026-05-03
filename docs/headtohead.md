@@ -4,13 +4,13 @@ Latest run per fixture, current category-aware matcher, line tolerance ±10. Hit
 
 | fixture | client turns | client cost | client F/L | agent turns | agent cost | agent F/L |
 |---|---:|---:|:---:|---:|---:|:---:|
-| contract_mismatch | 3 | $0.0954 | Y/Y | 4 | $0.1472 | Y/Y |
-| sentry_80168 | 18 | $1.7931 | Y/Y | 14 | $1.0005 | Y/Y |
-| sentry_80528 | 5 | $0.5034 | Y/Y | 6 | $0.4986 | Y/Y |
-| sentry_67876 | 16 | $1.7766 | N/N | 20 | $0.9539 | N/N |
-| sentry_93824 | 20 | $1.6459 | Y/Y | 8 | $0.8168 | N/N |
-| sentry_77754 | 14 | $1.0900 | Y/Y | 12 | $0.4950 | Y/Y |
-| sentry_95633 | 13 | $2.1825 | N/N | 21 | $2.0512 | N/N |
-| **Totals** | **89** | **$9.0869** | **5/7 f, 5/7 l** | **85** | **$5.9631** | **4/7 f, 4/7 l** |
+| contract_mismatch | 3 | $0.1076 | Y/Y | 4 | $0.1993 | Y/Y |
+| sentry_80168 | 16 | $1.7587 | Y/Y | 19 | $1.2952 | Y/Y |
+| sentry_80528 | 5 | $0.4632 | Y/Y | 7 | $0.3902 | Y/Y |
+| sentry_67876 | 42 | $6.0257 | N/N | 23 | $1.6211 | N/N |
+| sentry_93824 | 39 | $3.5669 | N/N | 10 | $1.2177 | Y/Y |
+| sentry_77754 | 18 | $1.4447 | Y/Y | 10 | $0.5389 | Y/Y |
+| sentry_95633 | 29 | $4.5587 | N/N | 25 | $4.4991 | N/N |
+| **Totals** | **152** | **$17.9255** | **4/7 f, 4/7 l** | **98** | **$9.7615** | **5/7 f, 5/7 l** |
 
-**Cost delta:** Agent SDK total = $5.9631 vs Client SDK total = $9.0869 (-34.4%).
+**Cost delta:** Agent SDK total = $9.7615 vs Client SDK total = $17.9255 (-45.5%).
