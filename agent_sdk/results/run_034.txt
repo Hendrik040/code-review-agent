@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 034
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 15
+# cost (USD, harness-reported): 0.592804
+# cost (USD, public Opus 4 rate): 1.778413
+# usage: {'input_tokens': 23, 'cache_creation_input_tokens': 37819, 'cache_read_input_tokens': 308591, 'output_tokens': 8081, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 37819}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 425, 'cache_read_input_tokens': 46315, 'cache_creation_input_tokens': 921, 'cache_creation': {'ephemeral_5m_input_tokens': 921, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/services/assignment_source.py",
+    "line": 18,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "`queued` dataclass default is evaluated once at class definition, so every AssignmentSource shares the same import-time timestamp.",
+    "detail": "`queued: datetime = timezone.now()` is a plain default value, which Python evaluates exactly once when the class body is executed (i.e. at module import time). Every `AssignmentSource` instance \u2014 whether built via `from_integration`, `from_dict`, or the constructor \u2014 will receive the same datetime, namely the moment the worker/web process imported `assignment_source.py`. This silently defeats the purpose of the field: it cannot be used to order events, measure queue latency, or distinguish two sources, and it will look wildly incorrect any time a process has been alive for more than a few seconds. (Verified locally: two instances created 50 ms apart have identical `queued` values.) The bug compounds the fact that this field is then serialized into Celery payloads via `to_dict()` and passed across worker boundaries, so the misleading value propagates downstream rather than being caught locally. The standard fix for this pattern is `field(default_factory=...)`, which evaluates per-instance.",
+    "line_end": null,
+    "suggested_fix": "-from dataclasses import asdict, dataclass\n+from dataclasses import asdict, dataclass, field\n ...\n     source_name: str\n     integration_id: int\n-    queued: datetime = timezone.now()\n+    queued: datetime = field(default_factory=timezone.now)"
+  }
+]

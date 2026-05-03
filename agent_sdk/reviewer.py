@@ -61,11 +61,20 @@ from claude_agent_sdk import (  # noqa: E402
 )
 from dotenv import load_dotenv  # noqa: E402
 
+from sandbox.repo import Repo  # noqa: E402
 from shared.agent_tools import (  # noqa: E402
-    ast_search as _ast_search_impl,
-    write_file as _write_file_impl,
     AST_SEARCH_TOOL,
+    BASH_TOOL,
+    BUILD_REVIEW_CONTEXT_TOOL,
+    GREP_TOOL,
+    READ_FILE_SECTION_TOOL,
     WRITE_FILE_TOOL,
+    ast_search as _ast_search_impl,
+    bash as _bash_impl,
+    build_review_context as _build_context_impl,
+    grep as _grep_impl,
+    read_file_section as _read_file_section_impl,
+    write_file as _write_file_impl,
 )
 from shared.findings import (  # noqa: E402
     Finding,
@@ -102,23 +111,22 @@ TRACES_DIR = Path(__file__).parent / "traces"
 
 SDK_ADDENDUM = """\
 <sdk_note>
-This implementation runs on the Claude Agent SDK harness. Your
-investigation tools have these exact names in this environment:
-  - Read                                 (file/section read; equivalent
-                                          to read_file_section)
-  - Bash                                 (shell; equivalent to `bash`)
-  - Grep                                 (regex search; equivalent to
-                                          `grep`)
-  - mcp__reviewer__ast_search            (structural code search via
-                                          ast-grep; equivalent to
-                                          `ast_search`)
-  - mcp__reviewer__write_file            (write a file; equivalent to
-                                          `write_file`)
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
   - mcp__reviewer__build_review_context  (the ODIS curated slice;
                                           your recommended first call)
   - mcp__reviewer__submit_findings       (the terminator)
 
-The names differ in casing/prefix from <action_space>; the *purpose*
+The names differ in prefix from <action_space>; the *purpose*
 described there still applies. Tool surface is identical to the
 Client SDK reviewer. Finish by calling
 mcp__reviewer__submit_findings exactly once.
@@ -295,8 +303,13 @@ def _next_run_id() -> int:
     return (max(used) + 1) if used else 1
 
 
+def _wrap_text(text: str) -> dict[str, Any]:
+    """Standard MCP success envelope around a tool wrapper's return text."""
+    return {"content": [{"type": "text", "text": text}]}
+
+
 async def _run_async(
-    repo_path: Path,
+    repo: Repo,
     base_ref: str,
     head_ref: str,
     *,
@@ -313,39 +326,70 @@ async def _run_async(
     submitted = [False]
     duplicate_submission = [False]
 
+    # ------------------------------------------------------------------ #
+    # MCP tool proxies. Each one delegates to the corresponding wrapper
+    # in shared/agent_tools.py — the wrappers route everything through
+    # `repo.exec` / `repo.upload_bytes`, so behavior is identical to
+    # the Client SDK path. Phase 4 added `bash`, `read_file_section`,
+    # and `grep` proxies (replacing the harness's Read/Bash/Grep) so
+    # ALL repo-touching IO happens inside the sandbox.
+    # ------------------------------------------------------------------ #
+
     @tool(
-        "build_review_context",
-        (
-            "Build a curated review context for a git diff: the unified "
-            "diff plus one-hop callers and callees of the changed symbols "
-            "(the ODIS algorithm). HIGHLY RECOMMENDED as your first action "
-            "— cheap (~1-5 KB), surfaces most boundary bugs (signature "
-            "changes with un-updated callers) immediately. Pass the refs "
-            "from the user prompt."
-        ),
-        {"base_ref": str, "head_ref": str},
+        BUILD_REVIEW_CONTEXT_TOOL["name"],
+        BUILD_REVIEW_CONTEXT_TOOL["description"],
+        BUILD_REVIEW_CONTEXT_TOOL["input_schema"],
     )
     async def _build_review_context(args: dict[str, Any]) -> dict[str, Any]:
-        # Local import keeps the module load cheap and avoids any
-        # circular-import paranoia.
-        from shared.odis import build_context
+        return _wrap_text(_build_context_impl(repo, args["base_ref"], args["head_ref"]))
 
-        try:
-            text = build_context(repo_path, args["base_ref"], args["head_ref"])
-            return {"content": [{"type": "text", "text": text}]}
-        except Exception as e:  # noqa: BLE001 — boundary; surface to model
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Error: build_review_context failed "
-                            f"({type(e).__name__}): {e}"
-                        ),
-                    }
-                ],
-                "is_error": True,
-            }
+    @tool(
+        BASH_TOOL["name"],
+        BASH_TOOL["description"],
+        BASH_TOOL["input_schema"],
+    )
+    async def _bash(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap_text(_bash_impl(repo, args["command"]))
+
+    @tool(
+        READ_FILE_SECTION_TOOL["name"],
+        READ_FILE_SECTION_TOOL["description"],
+        READ_FILE_SECTION_TOOL["input_schema"],
+    )
+    async def _read_file_section(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap_text(
+            _read_file_section_impl(
+                repo, args["path"], args["start_line"], args["end_line"]
+            )
+        )
+
+    @tool(
+        GREP_TOOL["name"],
+        GREP_TOOL["description"],
+        GREP_TOOL["input_schema"],
+    )
+    async def _grep(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap_text(
+            _grep_impl(repo, args["pattern"], args.get("path_glob", ""))
+        )
+
+    @tool(
+        AST_SEARCH_TOOL["name"],
+        AST_SEARCH_TOOL["description"],
+        AST_SEARCH_TOOL["input_schema"],
+    )
+    async def _ast_search(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap_text(
+            _ast_search_impl(repo, args["pattern"], args.get("language", "python"))
+        )
+
+    @tool(
+        WRITE_FILE_TOOL["name"],
+        WRITE_FILE_TOOL["description"],
+        WRITE_FILE_TOOL["input_schema"],
+    )
+    async def _write_file(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap_text(_write_file_impl(repo, args["path"], args["content"]))
 
     @tool(
         SUBMIT_FINDINGS_TOOL_NAME,
@@ -357,14 +401,9 @@ async def _run_async(
         # the captured list (matches Client SDK behavior).
         if submitted[0]:
             duplicate_submission[0] = True
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "ok (duplicate submission ignored — first one is recorded)",
-                    }
-                ]
-            }
+            return _wrap_text(
+                "ok (duplicate submission ignored — first one is recorded)"
+            )
         # Defensive parsing (matches the Client SDK's try/except so a
         # malformed payload doesn't kill the run).
         try:
@@ -385,70 +424,24 @@ async def _run_async(
             }
         captured_findings.extend(parsed)
         submitted[0] = True
-        return {"content": [{"type": "text", "text": "ok"}]}
-
-    @tool(
-        AST_SEARCH_TOOL["name"],
-        AST_SEARCH_TOOL["description"],
-        AST_SEARCH_TOOL["input_schema"],
-    )
-    async def _ast_search(args: dict[str, Any]) -> dict[str, Any]:
-        # Same impl as Client SDK — calls the ast-grep CLI binary.
-        # Phase 2.2 added this on the Agent SDK side so the tool
-        # surface is identical between the two reviewers.
-        try:
-            text = _ast_search_impl(
-                repo_path,
-                args["pattern"],
-                args.get("language", "python"),
-            )
-            return {"content": [{"type": "text", "text": text}]}
-        except Exception as e:  # noqa: BLE001 — boundary; surface to model
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Error: ast_search failed ({type(e).__name__}): {e}",
-                    }
-                ],
-                "is_error": True,
-            }
-
-    @tool(
-        WRITE_FILE_TOOL["name"],
-        WRITE_FILE_TOOL["description"],
-        WRITE_FILE_TOOL["input_schema"],
-    )
-    async def _write_file(args: dict[str, Any]) -> dict[str, Any]:
-        # Same impl as Client SDK — path-traversal-guarded write to
-        # the materialized fixture's temp dir. Phase 2.2 parity tool.
-        try:
-            text = _write_file_impl(repo_path, args["path"], args["content"])
-            return {"content": [{"type": "text", "text": text}]}
-        except Exception as e:  # noqa: BLE001 — boundary; surface to model
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Error: write_file failed ({type(e).__name__}): {e}",
-                    }
-                ],
-                "is_error": True,
-            }
+        return _wrap_text("ok")
 
     server = create_sdk_mcp_server(
         name="reviewer",
         version="0.1.0",
         tools=[
             _build_review_context,
-            _submit_findings,
+            _bash,
+            _read_file_section,
+            _grep,
             _ast_search,
             _write_file,
+            _submit_findings,
         ],
     )
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
-        repo_path=str(repo_path),
+        repo_path="<sandbox repo root>",
         base_ref=base_ref,
         head_ref=head_ref,
     )
@@ -457,34 +450,46 @@ async def _run_async(
         model=MODEL,
         system_prompt=SYSTEM_PROMPT_AGENT_SDK,
         mcp_servers={"reviewer": server},
-        # Phase 2.2 — tool surface parity with Client SDK:
+        # Phase 4 — every tool the agent can call is now an MCP proxy
+        # routed through `repo.exec` / `repo.upload_bytes`. Harness
+        # `Read`/`Bash`/`Grep` are explicitly NOT allowed; if we
+        # included them, they would run in the local Python process
+        # and could touch the host filesystem, defeating the
+        # isolation goal.
+        #   bash                  → mcp__reviewer__bash
+        #   read_file_section     → mcp__reviewer__read_file_section
+        #   grep                  → mcp__reviewer__grep
+        #   ast_search            → mcp__reviewer__ast_search
+        #   write_file            → mcp__reviewer__write_file
         #   build_review_context  → mcp__reviewer__build_review_context
         #   submit_findings       → mcp__reviewer__submit_findings
-        #   bash                  → Bash (harness)
-        #   read_file_section     → Read (harness)
-        #   grep                  → Grep (harness)
-        #   ast_search            → mcp__reviewer__ast_search   (NEW)
-        #   write_file            → mcp__reviewer__write_file   (NEW)
-        # Glob is dropped — the Client SDK doesn't have it; both SDKs
-        # use Bash + `find` for file pattern matching when needed.
         allowed_tools=[
-            "mcp__reviewer__build_review_context",
-            "mcp__reviewer__submit_findings",
+            "mcp__reviewer__bash",
+            "mcp__reviewer__read_file_section",
+            "mcp__reviewer__grep",
             "mcp__reviewer__ast_search",
             "mcp__reviewer__write_file",
-            "Read",
-            "Bash",
-            "Grep",
+            "mcp__reviewer__build_review_context",
+            "mcp__reviewer__submit_findings",
         ],
+        # CR caught the harness auto-injecting `ToolSearch` — a tool
+        # we didn't allow but Claude was using anyway. That breaks
+        # tool-surface parity with the Client SDK (which has no such
+        # tool). Disallow explicitly so the comparison stays apples-
+        # to-apples.
+        disallowed_tools=["ToolSearch"],
         permission_mode="bypassPermissions",
         max_turns=MAX_TURNS,
         effort=EFFORT,
-        cwd=str(repo_path),
+        # `cwd` is intentionally left unset. With harness Read/Bash/
+        # Grep disallowed, there's nothing on the harness side that
+        # would honor it — every IO lives behind our MCP proxies and
+        # cwd resolution happens inside Repo.exec.
     )
     # NOTE on per-call max_tokens parity with Client SDK:
     # ClaudeAgentOptions does not expose an API-level `max_tokens`
     # equivalent — the harness sizes it internally based on effort
-    # level. The Client SDK pins MAX_TOKENS=32000; the Agent SDK
+    # level. The Client SDK pins MAX_TOKENS=16000; the Agent SDK
     # relies on the harness's internal sizing. In practice the
     # Anthropic docs recommend "starting at 64k tokens" for xhigh,
     # and the harness almost certainly defaults to something at
@@ -501,7 +506,7 @@ async def _run_async(
         trace.flush()
 
     log(f"=== Agent SDK reviewer run {run_id:03d} ===")
-    log(f"repo: {repo_path}")
+    log(f"repo: {type(repo).__name__}")
     log(f"refs: {base_ref}..{head_ref}")
     log(f"started: {datetime.now(timezone.utc).isoformat()}")
     log(f"use_oauth: {use_oauth}")
@@ -558,7 +563,7 @@ async def _run_async(
     RESULTS_DIR.mkdir(exist_ok=True)
     result_path.write_text(
         f"# Agent SDK reviewer run {run_id:03d}\n"
-        f"# repo: {repo_path}\n"
+        f"# repo: {type(repo).__name__}\n"
         f"# refs: {base_ref}..{head_ref}\n"
         f"# turns: {num_turns}\n"
         f"# cost (USD, harness-reported): {actual_cost:.6f}\n"
@@ -586,7 +591,7 @@ async def _run_async(
 
 
 def run(
-    repo_path: Path,
+    repo: Repo,
     base_ref: str,
     head_ref: str,
     *,
@@ -595,14 +600,14 @@ def run(
 ) -> dict[str, Any]:
     """Synchronous wrapper matching `client_sdk.reviewer.run` signature.
 
-    The suite runner and `compare.py` (Phase 3.1) both expect a sync
-    callable. Internally we drive the async query() generator via
-    asyncio.run().
+    Phase 4: `repo` is a `sandbox.repo.Repo`. The suite runner and
+    `compare.py` (Phase 3.1) both expect this sync entry point;
+    internally we drive the async query() generator via asyncio.run().
     """
     load_dotenv(override=True)
     return asyncio.run(
         _run_async(
-            repo_path=Path(repo_path),
+            repo=repo,
             base_ref=base_ref,
             head_ref=head_ref,
             run_id=run_id,

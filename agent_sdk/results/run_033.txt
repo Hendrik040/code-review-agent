@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 033
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 12
+# cost (USD, harness-reported): 0.929648
+# cost (USD, public Opus 4 rate): 2.788943
+# usage: {'input_tokens': 23, 'cache_creation_input_tokens': 63875, 'cache_read_input_tokens': 319478, 'output_tokens': 14823, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 63875}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 473, 'cache_read_input_tokens': 55470, 'cache_creation_input_tokens': 2117, 'cache_creation': {'ephemeral_5m_input_tokens': 2117, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 341,
+    "category": "resource",
+    "severity": "low",
+    "summary": "join()'s deadline `break` skips terminate() for remaining processes",
+    "detail": "In the new join() loop, when `remaining_time <= 0` the code does `break`, exiting the outer for-loop entirely. As a result, every process whose turn comes after the deadline expires is never `.terminate()`-ed. The previous single-process implementation unconditionally called `self.process.terminate()` after the wait. The inner `while` is already gated on `deadline > time.time()`, so it self-exits once the deadline passes \u2014 the explicit `break` is what causes terminate to be skipped. The processes are daemon=True so they do eventually die when the parent exits, but if join() is invoked in any flow where the parent keeps running (rebalancing, partial shutdown, tests), subsequent processes will be leaked \u2014 a behavior change from the prior code.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        for process_index, process in self.processes.items():\n-            if deadline is not None:\n-                remaining_time = deadline - time.time()\n-                if remaining_time <= 0:\n-                    break\n-\n-            while process.is_alive() and (deadline is None or deadline > time.time()):\n-                time.sleep(0.1)\n-\n-            if isinstance(process, multiprocessing.Process):\n-                process.terminate()\n+        for process in self.processes.values():\n+            while process.is_alive() and (deadline is None or deadline > time.time()):\n+                time.sleep(0.1)\n+\n+            if isinstance(process, multiprocessing.Process):\n+                process.terminate()"
+  },
+  {
+    "file": "tests/sentry/spans/consumers/process/test_consumer.py",
+    "line": 62,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Newly added `time.sleep(0.1)` is a no-op due to earlier monkeypatch",
+    "detail": "test_basic patches `time.sleep` to a no-op at line 15 (`monkeypatch.setattr(\"time.sleep\", lambda _: None)`). The newly added `time.sleep(0.1)` at line 62 \u2014 labelled \"Give flusher threads time to process after drift change\" \u2014 therefore returns immediately and does not give the flusher thread any wall-clock time. If the test is intermittently flaky for the reason the comment implies, this change does not actually mitigate it. Use a wall-clock-based wait that bypasses the patch (e.g. capture the original `time.sleep` before monkeypatching, or busy-poll on the expected condition with a deadline) if the intent is to wait for the thread.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]
