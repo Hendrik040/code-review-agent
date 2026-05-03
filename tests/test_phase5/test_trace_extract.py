@@ -59,6 +59,30 @@ class TestDescribeToolCall:
         # Defensive: never crash; just skip
         assert _describe_tool_call("totally_made_up", {}) is None
 
+    def test_case_insensitive_bash(self):
+        # Real traces use capitalized built-in tool names: Bash, Grep, Read
+        result = _describe_tool_call("Bash", {"command": "git diff --stat"})
+        assert result == "Inspected which files the PR changes"
+
+    def test_case_insensitive_grep(self):
+        result = _describe_tool_call("Grep", {"pattern": "@abstractmethod"})
+        assert result == "Looked for `@abstractmethod` in the codebase"
+
+    def test_case_insensitive_read(self):
+        # The harness built-in Read tool — uses file_path field name, not path
+        result = _describe_tool_call("Read", {"file_path": "src/foo.py"})
+        # Don't assert exact wording; just confirm a bullet is produced
+        assert result is not None
+        assert "src/foo.py" in result
+
+    def test_ast_search_def_pattern(self):
+        result = _describe_tool_call("ast_search", {"pattern": "def my_func"})
+        assert result == "Searched the codebase for the my_func function definition"
+
+    def test_write_file(self):
+        result = _describe_tool_call("write_file", {"path": "scratch/notes.md"})
+        assert result == "Wrote scratch notes to scratch/notes.md"
+
 
 class TestExtractTrail:
     def test_extracts_friendly_bullets_from_sample_trace(self):
@@ -95,3 +119,14 @@ class TestExtractTrail:
         f = tmp_path / "garbage.txt"
         f.write_text("this is not a trace at all")
         assert extract_trail(f) == []
+
+    def test_bash_call_produces_bullet(self):
+        # Regression test: the original fixture used capitalized Bash but
+        # the test never asserted a Bash-derived bullet appeared. Catch
+        # the case-sensitivity bug going forward.
+        trail = extract_trail(FIXTURE_DIR / "sample_trace.txt", max_bullets=8)
+        assert any(
+            "Inspected which files the PR changes" in b
+            or "Ran a shell command" in b
+            for b in trail
+        ), f"Bash call should produce a bullet; got: {trail}"

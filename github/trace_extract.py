@@ -50,6 +50,10 @@ def _describe_tool_call(tool_name: str, args: dict) -> str | None:
     Returns None for tool calls we deliberately omit (terminal calls,
     unknown tools). Never raises on bad inputs — defensive.
     """
+    # Normalise to lowercase so real traces (Bash, Grep, Read, Glob) and
+    # MCP tools (build_review_context) both hit the same branches.
+    tool_name = tool_name.lower()
+
     if tool_name == "build_review_context":
         return "Loaded the PR diff and surrounding context"
 
@@ -58,6 +62,19 @@ def _describe_tool_call(tool_name: str, args: dict) -> str | None:
         start = args.get("start_line", "?")
         end = args.get("end_line", "?")
         return f"Read {path} (lines {start}-{end})"
+
+    if tool_name == "read":
+        # Harness built-in Read tool: uses file_path (not path), offset, limit.
+        path = args.get("file_path", args.get("path", "<unknown>"))
+        offset = args.get("offset")
+        limit = args.get("limit")
+        if offset is not None and limit is not None:
+            return f"Read {path} (lines {offset}-{offset + limit - 1})"
+        return f"Read {path}"
+
+    if tool_name == "glob":
+        pattern = args.get("pattern", "")
+        return f"Searched for files matching `{pattern}`"
 
     if tool_name == "ast_search":
         pattern = args.get("pattern", "")
