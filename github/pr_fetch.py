@@ -8,9 +8,11 @@ separate token (GITHUB_REVIEW_BOT_TOKEN).
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 # https://github.com/<owner>/<repo>/pull/<n>(/)
 _PR_URL_RE = re.compile(
@@ -74,3 +76,55 @@ def _parse_patch_to_hunks(patch: str) -> list[Hunk]:
             continue  # pure deletion, nothing to anchor a comment to
         hunks.append(Hunk(new_start, new_start + new_count - 1, "RIGHT"))
     return hunks
+
+
+def _gh_json(endpoint: str) -> Any:
+    """Invoke `gh api <endpoint>` and parse stdout as JSON."""
+    out = subprocess.check_output(["gh", "api", endpoint], text=True)
+    return json.loads(out)
+
+
+def _gh_json_paginated(endpoint: str) -> list[Any]:
+    """Invoke `gh api --paginate --slurp <endpoint>` and flatten the
+    list-of-pages response into a single list. Plain `_gh_json` returns
+    only the first page (~30 items by default); large PRs lose files
+    silently without paginate."""
+    out = subprocess.check_output(
+        ["gh", "api", "--paginate", "--slurp", endpoint], text=True
+    )
+    pages = json.loads(out)
+    flat: list[Any] = []
+    for page in pages:
+        flat.extend(page)
+    return flat
+
+
+def fetch_pr(pr_url: str) -> PullRequest:
+    """Parse the PR URL and fetch metadata via `gh api`."""
+    owner, repo, number = _parse_pr_url(pr_url)
+    data = _gh_json(f"repos/{owner}/{repo}/pulls/{number}")
+    return PullRequest(
+        owner=owner,
+        repo=repo,
+        number=number,
+        base_sha=data["base"]["sha"],
+        head_sha=data["head"]["sha"],
+        title=data["title"],
+        html_url=data["html_url"],
+    )
+
+
+def fetch_diff_hunks(
+    owner: str, repo: str, pr_number: int
+) -> dict[str, list[Hunk]]:
+    """Fetch the PR's changed-file list and parse each file's patch into
+    Hunk ranges. Files with no RIGHT-side content (pure deletions, binary
+    files without a patch) are omitted from the result."""
+    files = _gh_json_paginated(f"repos/{owner}/{repo}/pulls/{pr_number}/files")
+    out: dict[str, list[Hunk]] = {}
+    for entry in files:
+        patch = entry.get("patch") or ""
+        hunks = _parse_patch_to_hunks(patch)
+        if hunks:
+            out[entry["filename"]] = hunks
+    return out

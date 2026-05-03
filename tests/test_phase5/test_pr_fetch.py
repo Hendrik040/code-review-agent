@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
+from unittest.mock import patch as mock_patch, MagicMock
 
 import pytest
 
@@ -11,6 +13,8 @@ from github.pr_fetch import (
     Hunk,
     _parse_pr_url,
     _parse_patch_to_hunks,
+    fetch_pr,
+    fetch_diff_hunks,
 )
 
 
@@ -101,3 +105,48 @@ class TestParsePatchToHunks:
         # `@@ -N,0 +M @@` form — old has explicit ,0; new defaults to count=1
         patch = "@@ -5,0 +6 @@\n+inserted line"
         assert _parse_patch_to_hunks(patch) == [Hunk(6, 6, "RIGHT")]
+
+
+class TestFetchPr:
+    def test_returns_pullrequest_from_gh_api(self):
+        gh_response = json.dumps({
+            "base": {"sha": "abc123"},
+            "head": {"sha": "def456"},
+            "title": "Demo: recreate sentry#80168",
+            "html_url": "https://github.com/Hendrik040/sentry/pull/1",
+        })
+        with mock_patch("github.pr_fetch.subprocess.check_output") as run:
+            run.return_value = gh_response
+            pr = fetch_pr("https://github.com/Hendrik040/sentry/pull/1")
+        assert pr == PullRequest(
+            owner="Hendrik040", repo="sentry", number=1,
+            base_sha="abc123", head_sha="def456",
+            title="Demo: recreate sentry#80168",
+            html_url="https://github.com/Hendrik040/sentry/pull/1",
+        )
+        # Verify the gh CLI was called with the right endpoint
+        cmd = run.call_args[0][0]
+        assert cmd[:2] == ["gh", "api"]
+        assert cmd[2] == "repos/Hendrik040/sentry/pulls/1"
+
+
+class TestFetchDiffHunks:
+    def test_aggregates_hunks_per_file(self):
+        # gh api --paginate --slurp wraps the response in an outer list (one entry per page)
+        page = [
+            {"filename": "a.py", "patch": "@@ -1,2 +1,3 @@\n line\n+added\n line"},
+            {"filename": "b.py", "patch": "@@ -10,2 +10,0 @@\n-x\n-y"},  # pure deletion
+            {"filename": "c.py", "patch": None},  # binary or no patch
+        ]
+        gh_response = json.dumps([page])
+        with mock_patch("github.pr_fetch.subprocess.check_output") as run:
+            run.return_value = gh_response
+            hunks = fetch_diff_hunks("Hendrik040", "sentry", 1)
+        assert hunks == {
+            "a.py": [Hunk(1, 3, "RIGHT")],
+            # b.py omitted (no RIGHT-side lines)
+            # c.py omitted (no patch)
+        }
+        cmd = run.call_args[0][0]
+        assert cmd[:4] == ["gh", "api", "--paginate", "--slurp"]
+        assert cmd[4] == "repos/Hendrik040/sentry/pulls/1/files"
