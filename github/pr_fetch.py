@@ -47,3 +47,30 @@ def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:
         )
     owner, repo, number = m.group(1), m.group(2), int(m.group(3))
     return owner, repo, number
+
+
+# Hunk header: @@ -<old_start>[,<old_count>] +<new_start>[,<new_count>] @@
+# We only care about the +<new_start>,<new_count> portion (the RIGHT side).
+_HUNK_HEADER_RE = re.compile(
+    r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@"
+)
+
+
+def _parse_patch_to_hunks(patch: str) -> list[Hunk]:
+    """Extract added-line ranges from a unified-diff patch string.
+
+    Returns one Hunk per `@@ ... @@` header that has a non-zero new-side
+    count. Zero-count headers (pure deletions) are omitted — there's
+    nothing on the RIGHT side to comment on.
+    """
+    hunks: list[Hunk] = []
+    for line in patch.splitlines():
+        m = _HUNK_HEADER_RE.match(line)
+        if not m:
+            continue
+        new_start = int(m.group(1))
+        new_count = int(m.group(2)) if m.group(2) is not None else 1
+        if new_count == 0:
+            continue  # pure deletion, nothing to anchor a comment to
+        hunks.append(Hunk(new_start, new_start + new_count - 1, "RIGHT"))
+    return hunks
