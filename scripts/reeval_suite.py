@@ -70,16 +70,18 @@ def _parse_suite(suite_path: Path) -> list[dict[str, Any]]:
             continue
         if in_table and line.startswith("|---"):
             continue
-        if in_table and line.startswith("| ") and "run_" in line:
+        # `"run_" in line` would skip rows that crashed or timed out
+        # (whose `run_id` cell is `-`), corrupting re-eval totals.
+        # CR's catch on PR #21. Match by leading pipe + length only;
+        # rows without a numeric run_id keep run_id=None.
+        if in_table and line.startswith("| ") and not line.startswith("|---"):
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             # cells: fixture, turns, cost, findings, expected, file_hit,
             #        line_hit, exit, latency, run_id
             if len(cells) < 10:
                 continue
-            try:
-                run_id = int(re.search(r"run_(\d+)", cells[9]).group(1))
-            except (AttributeError, ValueError):
-                run_id = None
+            m = re.search(r"run_(\d+)", cells[9])
+            run_id = int(m.group(1)) if m else None
             rows.append(
                 {
                     "fixture": cells[0],
@@ -115,8 +117,15 @@ def _reeval(
             print(f"  warning: unknown fixture {meta['fixture']!r}; skipping",
                   file=sys.stderr)
             continue
-        run_path = results_dir / f"run_{meta['run_id']:03d}.txt"
-        findings = _load_findings(run_path) if run_path.is_file() else []
+        # Crashed / timed-out rows have run_id=None; skip the result-
+        # file load and treat findings as empty so the row still
+        # contributes to the re-eval totals (with file_hit/line_hit
+        # = False for non-empty `expected`). CR's catch on PR #21.
+        if meta.get("run_id") is None:
+            findings: list[Finding] = []
+        else:
+            run_path = results_dir / f"run_{meta['run_id']:03d}.txt"
+            findings = _load_findings(run_path) if run_path.is_file() else []
         file_hit, line_hit = _expected_match(findings, fx.expected, line_tolerance)
         new_rows.append({**meta, "file_hit": file_hit, "line_hit": line_hit})
         print(

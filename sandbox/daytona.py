@@ -166,7 +166,23 @@ class DaytonaRepo:
         """
         if self._sandbox is None:
             raise RuntimeError("DaytonaRepo.exec called outside context manager")
-        abs_cwd = REPO_ROOT if cwd in (".", "") else f"{REPO_ROOT}/{cwd.lstrip('/')}"
+        # Path-traversal guard on cwd: a malicious / buggy tool call
+        # could pass `cwd="../../tmp"` and escape REPO_ROOT. Normalize
+        # the candidate path and require it to live at or under
+        # REPO_ROOT before letting Daytona run anything in it.
+        # CR's catch on PR #23.
+        if cwd in (".", ""):
+            abs_cwd = REPO_ROOT
+        else:
+            import posixpath
+            candidate = posixpath.normpath(f"{REPO_ROOT}/{cwd.lstrip('/')}")
+            if candidate != REPO_ROOT and not candidate.startswith(REPO_ROOT + "/"):
+                return ExecResult(
+                    stdout="",
+                    stderr=f"Error: cwd escapes repo root: {cwd!r}",
+                    exit_code=126,
+                )
+            abs_cwd = candidate
         # ast-grep was installed via `pip install --user`, so its binary
         # lives at ~/.local/bin/ — not on the default sandbox PATH.
         # Daytona MERGES env vars (verified empirically) so we can
@@ -204,15 +220,33 @@ class DaytonaRepo:
         """
         if self._sandbox is None:
             raise RuntimeError("DaytonaRepo.upload_bytes called outside context manager")
+        # String-level guards — block absolute paths and explicit `..`.
         if remote_path.startswith("/") or any(seg == ".." for seg in remote_path.split("/")):
             raise PermissionError(
                 f"upload_bytes path escapes repo root: {remote_path!r}"
             )
-        abs_path = f"{REPO_ROOT}/{remote_path}"
-        # Ensure parent dir exists. Daytona's upload_file won't mkdir
-        # for us, so we do it here.
-        parent = abs_path.rsplit("/", 1)[0]
+        import posixpath
+        abs_path = posixpath.normpath(f"{REPO_ROOT}/{remote_path}")
+        # Even after normpath, the *parent* directory inside the
+        # sandbox could be a symlink to somewhere outside REPO_ROOT
+        # (planted earlier by an attacker tool). Resolve symlinks
+        # inside the sandbox and require the resolved parent to stay
+        # under REPO_ROOT before writing. CR's catch on PR #23.
+        parent = abs_path.rsplit("/", 1)[0] or REPO_ROOT
         self._sandbox.process.exec(f"mkdir -p {parent}", timeout=15)
+        resolved = self._sandbox.process.exec(
+            f"readlink -f {parent}",
+            timeout=15,
+        )
+        resolved_parent = (getattr(resolved, "result", "") or "").strip()
+        if resolved_parent and not (
+            resolved_parent == REPO_ROOT
+            or resolved_parent.startswith(REPO_ROOT + "/")
+        ):
+            raise PermissionError(
+                f"upload_bytes parent dir resolves outside repo root: "
+                f"{remote_path!r} → {resolved_parent}"
+            )
         self._sandbox.fs.upload_file(data, abs_path)
 
     # --- bootstrap ------------------------------------------------------ #

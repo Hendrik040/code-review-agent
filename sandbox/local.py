@@ -81,17 +81,24 @@ class LocalRepo:
         message rather than raising.
         """
         target_cwd = self._resolve_cwd(cwd)
-        # Ensure the agent's `python -m shared.odis_cli ...` resolves to
-        # the same venv we're running in, with `shared/` on the path.
-        # Sandbox image bakes the same env, so the wrapper layer above
-        # us doesn't have to know which backend is running.
-        env = os.environ.copy()
-        existing_pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            str(_PROJECT_ROOT) + (os.pathsep + existing_pp if existing_pp else "")
-        )
+        # Build a MINIMAL env from scratch — DO NOT inherit the host
+        # process's full environment. The agent's `bash` tool is
+        # model-callable; if we forwarded `os.environ`, the model
+        # could trivially exfiltrate ANTHROPIC_API_KEY, DAYTONA_API_KEY,
+        # GH_TOKEN, etc. via `echo $ANTHROPIC_API_KEY`. CR's catch on
+        # PR #23. Forward only what the agent's invocations need:
+        #   PATH       — to resolve git, sed, awk, ast-grep, python
+        #   PYTHONPATH — for `python -m shared.odis_cli ...`
+        #   HOME, LANG, LC_ALL — minimal locale + ~ resolution
         bin_dir = str(Path(sys.executable).parent)
-        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+        host_path = os.environ.get("PATH", "")
+        env: dict[str, str] = {
+            "PATH": bin_dir + os.pathsep + host_path,
+            "PYTHONPATH": str(_PROJECT_ROOT),
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        }
         try:
             proc = subprocess.run(
                 ["bash", "-c", cmd],

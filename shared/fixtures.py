@@ -98,8 +98,26 @@ def _populate(repo: Repo, name: str) -> None:
     # which gave the reviewer a free hint about which commit introduced
     # the bug. CR's catch on PR #22; affects every sweep produced before
     # this fix.
-    for tag, label in (("v1", "baseline"), ("v2", "head")):
+    for i, (tag, label) in enumerate((("v1", "baseline"), ("v2", "head"))):
         snapshot_dir = src / tag
+        # Before the v2 iteration, clear the working tree so files that
+        # exist in v1 but NOT in v2 actually disappear in the v2 commit.
+        # Without this, deleted files leak forward and the head commit
+        # doesn't match the fixture's intended state. CR's catch on
+        # PR #23; doesn't bite the current 7 fixtures (no deletions),
+        # but would silently poison any future fixture that exercises
+        # deletion semantics.
+        if i > 0:
+            clear = repo.exec(
+                "git rm -r -q --ignore-unmatch . && git clean -fdq",
+                timeout=30,
+            )
+            if not clear.ok:
+                raise RuntimeError(
+                    f"git working-tree reset failed in fixture {name} "
+                    f"between {tag} commits: exit {clear.exit_code} "
+                    f"stderr={clear.stderr!r}"
+                )
         for path in snapshot_dir.rglob("*"):
             if not path.is_file():
                 continue
