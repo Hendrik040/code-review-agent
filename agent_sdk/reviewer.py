@@ -472,6 +472,12 @@ async def _run_async(
             "mcp__reviewer__build_review_context",
             "mcp__reviewer__submit_findings",
         ],
+        # CR caught the harness auto-injecting `ToolSearch` — a tool
+        # we didn't allow but Claude was using anyway. That breaks
+        # tool-surface parity with the Client SDK (which has no such
+        # tool). Disallow explicitly so the comparison stays apples-
+        # to-apples.
+        disallowed_tools=["ToolSearch"],
         permission_mode="bypassPermissions",
         max_turns=MAX_TURNS,
         effort=EFFORT,
@@ -483,7 +489,7 @@ async def _run_async(
     # NOTE on per-call max_tokens parity with Client SDK:
     # ClaudeAgentOptions does not expose an API-level `max_tokens`
     # equivalent — the harness sizes it internally based on effort
-    # level. The Client SDK pins MAX_TOKENS=32000; the Agent SDK
+    # level. The Client SDK pins MAX_TOKENS=16000; the Agent SDK
     # relies on the harness's internal sizing. In practice the
     # Anthropic docs recommend "starting at 64k tokens" for xhigh,
     # and the harness almost certainly defaults to something at

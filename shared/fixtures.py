@@ -93,7 +93,12 @@ def _populate(repo: Repo, name: str) -> None:
             f"exit {init.exit_code} stderr={init.stderr!r}"
         )
 
-    for tag, label in (("v1", "v1"), ("v2", "v2 (planted bug)")):
+    # Commit messages must NOT leak oracle metadata — the agent can run
+    # `git log` and read them. Earlier versions used "v2 (planted bug)"
+    # which gave the reviewer a free hint about which commit introduced
+    # the bug. CR's catch on PR #22; affects every sweep produced before
+    # this fix.
+    for tag, label in (("v1", "baseline"), ("v2", "head")):
         snapshot_dir = src / tag
         for path in snapshot_dir.rglob("*"):
             if not path.is_file():
