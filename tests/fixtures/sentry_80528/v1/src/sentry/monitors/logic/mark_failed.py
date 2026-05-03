@@ -325,6 +325,15 @@ def get_failure_reason(failed_checkins: Sequence[SimpleCheckIn]):
 
 
 def get_monitor_environment_context(monitor_environment: MonitorEnvironment):
+    # FIXTURE EDIT: this v1 baseline diverges from the upstream
+    # base_sha to keep the benchmark honest. Upstream had this same
+    # bug at the function's earlier home, so the v1->v2 diff would
+    # have shown the function being moved (not introduced) — and the
+    # bug-of-record would not have appeared as a regression. We patch
+    # v1 to the *intended* pre-PR behavior so the regression is
+    # visible to a diff-based reviewer. See CodeRabbit comment on
+    # PR #20:tests/fixtures/sentry_80528/v1/.../mark_failed.py:339
+    # for the full diagnosis.
     config = monitor_environment.monitor.config.copy()
     if "schedule_type" in config:
         config["schedule_type"] = monitor_environment.monitor.get_schedule_type_display()
@@ -333,7 +342,7 @@ def get_monitor_environment_context(monitor_environment: MonitorEnvironment):
         "id": str(monitor_environment.monitor.guid),
         "slug": str(monitor_environment.monitor.slug),
         "name": monitor_environment.monitor.name,
-        "config": monitor_environment.monitor.config,
+        "config": config,  # patched: was monitor_environment.monitor.config
         "status": monitor_environment.get_status_display(),
         "type": monitor_environment.monitor.get_type_display(),
     }
