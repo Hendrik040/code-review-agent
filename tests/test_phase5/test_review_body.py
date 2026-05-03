@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from shared.findings import Finding
-from github.review_body import render_inline_comment, render_review_summary, SEVERITY_BADGES
+from github.review_body import render_inline_comment, SEVERITY_BADGES
+from github.review_summary import render_review_summary
 
 
 @dataclass(frozen=True)
