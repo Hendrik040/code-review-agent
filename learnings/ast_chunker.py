@@ -158,3 +158,41 @@ def _fallback_window(
     e = min(n, line_end + _FALLBACK_WINDOW)
     text = "\n".join(src_lines[s - 1 : e])
     return Chunk(text=text, kind=kind, line_start=s, line_end=e)
+
+
+def chunks_for_diff(repo_path: Path, changed: dict[str, list[int]]) -> list[Chunk]:
+    """Map {file: [changed_line_numbers]} → deduped enclosing AST units.
+
+    Per-line semantics mirror chunk_for_anchor: function/method enclosing
+    the line wins; otherwise module-scope fallback. Missing files and
+    ast-grep failures are skipped silently (caller logs upstream).
+    """
+    out: list[Chunk] = []
+    seen: set[tuple[str, int, int]] = set()
+    for file_path, lines in changed.items():
+        full_path = repo_path / file_path
+        if not full_path.exists():
+            continue
+        try:
+            nodes = _collect_nodes(full_path)
+        except Exception:
+            continue
+        funcs = [n for n in nodes if n.kind == "function"]
+        for line in lines:
+            enclosing = [n for n in funcs if n.line_start <= line <= n.line_end]
+            if enclosing:
+                n = min(enclosing, key=lambda x: x.line_end - x.line_start)
+                key = (file_path, n.line_start, n.line_end)
+                if key in seen:
+                    continue
+                seen.add(key)
+                kind = "method" if n.parent_class_line_start is not None else "function"
+                out.append(Chunk(text=n.text, kind=kind, line_start=n.line_start, line_end=n.line_end))
+            else:
+                c = _fallback_window(full_path, line, line, kind="module-scope")
+                key = (file_path, c.line_start, c.line_end)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(c)
+    return out

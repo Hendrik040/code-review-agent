@@ -69,3 +69,40 @@ def test_chunk_for_anchor_uses_fallback_window_on_ast_failure(tmp_path):
         c = chunk_for_anchor(src, line_start=1, line_end=1)
     assert c.kind == "fallback_window"
     assert "def foo" in c.text
+
+
+from learnings.ast_chunker import chunks_for_diff
+
+
+def test_chunks_for_diff_returns_changed_function():
+    # Hand-roll the changed-line map directly: one file, one changed line.
+    repo_path = FIXTURES  # treat fixtures dir as repo root
+    changed = {"tiny_module.py": [7]}
+    chunks = chunks_for_diff(repo_path, changed)
+    assert len(chunks) == 1
+    c = chunks[0]
+    assert c.kind == "function"
+    assert "first_function" in c.text
+
+
+def test_chunks_for_diff_dedupes_within_one_function():
+    # Multiple changed lines inside the same function -> one chunk.
+    changed = {"tiny_module.py": [6, 7]}
+    chunks = chunks_for_diff(FIXTURES, changed)
+    assert len(chunks) == 1
+
+
+def test_chunks_for_diff_skips_missing_files():
+    chunks = chunks_for_diff(FIXTURES, {"does_not_exist.py": [1]})
+    assert chunks == []
+
+
+def test_chunks_for_diff_handles_module_scope_changes():
+    # Line 3 (GLOBAL_CONST) — no enclosing function. Should still
+    # produce a chunk via the fallback path.
+    chunks = chunks_for_diff(FIXTURES, {"tiny_module.py": [3]})
+    assert len(chunks) == 1
+    # Note: Task 5's recent fix split kind semantics; module-scope
+    # changes here go through _fallback_window with default kind,
+    # which is "fallback_window".
+    assert chunks[0].kind in ("module-scope", "fallback_window")
