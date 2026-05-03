@@ -163,20 +163,24 @@ at runtime from `LEARNINGS_HANDLE` and `LEARNINGS_CALL_WORDS` (both
 `re.escape`'d):
 
 ```
-{escaped_handle}\s+({call_word_alternation})\b\s*[:.\-]?\s*(.+)
+{escaped_handle}\s+({call_word_alternation})\b\s*[:.\-]?\s*(.+?)(?:\n\s*\n|\Z)
 ```
 
 with the default config that resolves to:
 
 ```
-@working-ant\s+(learn|remember|note|teach)\b\s*[:.\-]?\s*(.+)
+@working-ant\s+(learn|remember|note|teach)\b\s*[:.\-]?\s*(.+?)(?:\n\s*\n|\Z)
 ```
 
 - Handle: `@Working-Ant`, case-insensitive (regex compiled with `re.IGNORECASE`).
 - Call words: configurable list in `learnings/extractor.py`, default
   `["learn", "remember", "note", "teach"]`.
-- Captured group `(.+)` is the learning text. Whitespace stripped, multi-line
+- Captured group `(.+?)` is the learning text. Whitespace stripped, multi-line
   comments collapsed via standard whitespace normalization.
+- The `(.+?)(?:\n\s*\n|\Z)` terminator bounds the captured text at the first
+  blank line so trailing PR-comment prose is dropped (e.g. "@Working-Ant learn
+  X.\n\nLGTM otherwise" captures only "X."). Multiple mentions in one comment
+  body are NOT supported — only the first is captured.
 - Anchor (file + line range) comes from GitHub's comment payload, not parsed
   from the body.
 - Comments not matching the regex are ignored (skip + advance cursor).

@@ -61,3 +61,48 @@ def test_extractor_escapes_handle_with_regex_chars():
     assert ex.parse("@bot.x+y learn ok") == Mention(call_word="learn", text="ok")
     # The literal regex shouldn't loosely match a different handle.
     assert ex.parse("@botxxxy learn no") is None
+
+
+def test_only_first_mention_captured(ex: Extractor):
+    """Pin the contract: bodies with multiple mentions yield only the first.
+    See Spec §4 — one learning per comment body."""
+    body = (
+        "@Working-Ant learn first lesson\n\n"
+        "@Working-Ant note second lesson"
+    )
+    m = ex.parse(body)
+    assert m is not None
+    assert m.call_word == "learn"
+    assert m.text == "first lesson"
+    # The second mention is dropped, not concatenated.
+    assert "@Working-Ant" not in m.text
+    assert "second" not in m.text
+
+
+def test_trailing_prose_after_blank_line_is_dropped(ex: Extractor):
+    """Maintainers often write a learning then continue normal review prose;
+    the prose must not end up embedded in the learning text."""
+    body = (
+        "@Working-Ant teach use .$apply not Reflect.apply\n\n"
+        "LGTM otherwise — please also rename foo to bar."
+    )
+    m = ex.parse(body)
+    assert m is not None
+    assert m.call_word == "teach"
+    assert m.text == "use .$apply not Reflect.apply"
+    assert "LGTM" not in m.text
+    assert "rename" not in m.text
+
+
+def test_single_line_body_still_works(ex: Extractor):
+    """The blank-line terminator must not break the single-line common case."""
+    m = ex.parse("@Working-Ant learn always X")
+    assert m == Mention(call_word="learn", text="always X")
+
+
+def test_multi_line_within_one_paragraph_collapsed(ex: Extractor):
+    """Newlines INSIDE the same paragraph (no blank line between) collapse
+    into spaces — already covered by test_multi_line_body_collapsed but
+    pin it here in the new termination semantics too."""
+    m = ex.parse("@Working-Ant teach line one\nline two\nline three")
+    assert m == Mention(call_word="teach", text="line one line two line three")

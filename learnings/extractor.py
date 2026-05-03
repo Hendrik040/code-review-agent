@@ -22,12 +22,20 @@ class Extractor:
         words_alt = "|".join(re.escape(w) for w in call_words)
         pattern = (
             re.escape(handle)
-            + r"\s+(" + words_alt + r")\b\s*[:.\-]?\s*(.+)"
+            + r"\s+(" + words_alt + r")\b\s*[:.\-]?\s*(.+?)(?:\n\s*\n|\Z)"
         )
-        # DOTALL lets the body span multiple lines (we collapse whitespace below).
+        # DOTALL lets the body span multiple lines; the (?:\n\s*\n|\Z)
+        # terminator stops the capture at the first blank line so trailing
+        # PR-comment prose doesn't end up embedded in the learning text.
         self._re = re.compile(pattern, re.IGNORECASE | re.DOTALL)
 
     def parse(self, body: str) -> Mention | None:
+        """Return the FIRST mention in body, or None.
+
+        Bodies with multiple `@handle <call-word> ...` mentions are not
+        supported — only the first is captured. This matches Spec §4's
+        "one learning per comment" contract.
+        """
         m = self._re.search(body)
         if not m:
             return None
