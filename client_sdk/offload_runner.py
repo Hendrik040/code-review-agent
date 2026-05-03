@@ -23,6 +23,10 @@ PROMPT = (
 )
 UA = "tool-offload-compare/0.1 httpx"
 MAX_TOKENS = 1024
+# Safety cap on the agent loop. Real exits come from `stop_reason !=
+# "tool_use"`. This number just prevents a runaway if the model keeps
+# requesting tools.
+MAX_TURNS = 5
 TRACES_DIR = Path(__file__).parent / "traces"
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -160,18 +164,21 @@ def run(url: str, run_id: int | None = None) -> dict[str, Any]:
     }
     num_turns = 0
 
-    turn = 0
+    # `num_turns` is the loop guard: each model call is one "turn".
+    # `box_n` is purely for the trace-file box numbering (request /
+    # response / tool_exec each get a numbered box) — separate concern.
+    box_n = 0
     try:
-        for iteration in range(1, 6):
-            turn += 1
-            _draw_box(log, f"TURN {turn:02d}  [request]", _request_box_lines(messages))
+        while num_turns < MAX_TURNS:
+            box_n += 1
+            _draw_box(log, f"TURN {box_n:02d}  [request]", _request_box_lines(messages))
             response = client.messages.create(
                 model=MODEL, max_tokens=MAX_TOKENS,
                 tools=TOOL_SCHEMA, messages=messages,
             )
-            turn += 1
-            _draw_box(log, f"TURN {turn:02d}  [response]", _response_box_lines(response))
             num_turns += 1
+            box_n += 1
+            _draw_box(log, f"TURN {box_n:02d}  [response]", _response_box_lines(response))
             for k in total_usage:
                 total_usage[k] += getattr(response.usage, k, 0) or 0
 
@@ -185,8 +192,8 @@ def run(url: str, run_id: int | None = None) -> dict[str, Any]:
             for block in response.content:
                 if block.type == "tool_use" and block.name == "fetch_url":
                     body = _fetch_url(block.input["url"])
-                    turn += 1
-                    _draw_box(log, f"TURN {turn:02d}  [tool_exec]", [
+                    box_n += 1
+                    _draw_box(log, f"TURN {box_n:02d}  [tool_exec]", [
                         f"fetch_url({block.input['url']!r})",
                         f"-> {len(body):,} chars",
                     ])
