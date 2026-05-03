@@ -1,0 +1,40 @@
+# Client SDK reviewer run 022
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_67876-geiv55bh
+# refs: HEAD~1..HEAD
+# turns: 16
+# cost (USD, API rate): 1.776562
+# usage: {'input_tokens': 20, 'output_tokens': 9206, 'cache_creation_input_tokens': 29971, 'cache_read_input_tokens': 349237}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Unhandled KeyError when integration metadata lacks 'sender' breaks re-install flow",
+    "detail": "GitHubInstallation.dispatch compares `pipeline.fetch_state(\"github_authenticated_user\") != integration.metadata[\"sender\"][\"login\"]`. However, `sender` is only conditionally written into the integration metadata in build_integration (`if state.get(\"sender\"): integration[\"metadata\"][\"sender\"] = state[\"sender\"]`) and is never written by older code paths. Any pre-existing/legacy GitHub Integration whose stored metadata doesn't include a `sender` key (or whose `sender` dict lacks `login`) will raise an unhandled KeyError here, returning a 500 to the user instead of the intended friendly `error(...)` page. This breaks the legitimate re-installation / multi-org flow for existing installations rather than denying the request as designed.",
+    "line_end": null,
+    "suggested_fix": "-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n-            return error(request, self.active_organization)\n+        sender_login = integration.metadata.get(\"sender\", {}).get(\"login\")\n+        if (\n+            sender_login is None\n+            or pipeline.fetch_state(\"github_authenticated_user\") != sender_login\n+        ):\n+            return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "low",
+    "summary": "safe_urlopen call is outside the try/except, so transport errors surface as HTTP 500",
+    "detail": "In OAuthLoginView.dispatch, `safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)` is invoked at line 423 before the try block. The try/except at lines 425-429 only covers safe_urlread and parse_qsl. Any exception raised during the HTTP request itself (DNS failure, connection error, SSL error, GitHub outage, etc.) will propagate out of dispatch and produce a 500 server error to the end user, instead of rendering the intended `error(request, self.active_organization)` page that the rest of this view uses for failure cases. This is a degraded-reliability issue during GitHub outages or transient network problems.",
+    "line_end": null,
+    "suggested_fix": "-        # similar to OAuth2CallbackView.exchange_token\n-        req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n-\n-        try:\n-            body = safe_urlread(req).decode(\"utf-8\")\n-            payload = dict(parse_qsl(body))\n-        except Exception:\n-            payload = {}\n+        # similar to OAuth2CallbackView.exchange_token\n+        try:\n+            req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n+            body = safe_urlread(req).decode(\"utf-8\")\n+            payload = dict(parse_qsl(body))\n+        except Exception:\n+            payload = {}"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 434,
+    "category": "error",
+    "severity": "low",
+    "summary": "get_user_info exception not handled, causes HTTP 500 instead of friendly error",
+    "detail": "After successfully exchanging the code for an access_token, OAuthLoginView calls `authenticated_user_info = get_user_info(payload[\"access_token\"])` with no try/except. If GitHub's /user endpoint returns an error or get_user_info raises (e.g., network error, ApiError, JSON decode error), the exception will propagate and the user will see an HTTP 500 instead of the friendly install-failure page that every other branch in this view returns via `error(...)`. Additionally, if get_user_info returns something other than a dict on error, `\"login\" not in authenticated_user_info` could itself raise TypeError.",
+    "line_end": null,
+    "suggested_fix": "-        authenticated_user_info = get_user_info(payload[\"access_token\"])\n-        if \"login\" not in authenticated_user_info:\n-            return error(request, self.active_organization)\n+        try:\n+            authenticated_user_info = get_user_info(payload[\"access_token\"])\n+        except Exception:\n+            return error(request, self.active_organization)\n+        if not isinstance(authenticated_user_info, dict) or \"login\" not in authenticated_user_info:\n+            return error(request, self.active_organization)"
+  }
+]

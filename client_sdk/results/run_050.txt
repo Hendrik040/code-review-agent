@@ -1,0 +1,20 @@
+# Client SDK reviewer run 050
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 21
+# cost (USD, API rate): 2.090243
+# usage: {'input_tokens': 25, 'output_tokens': 9870, 'cache_creation_input_tokens': 31824, 'cache_read_input_tokens': 501945}
+# findings: 1
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 341,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "join() leaks remaining flusher processes when the deadline expires mid-loop",
+    "detail": "In `SpanFlusher.join`, when the per-process wait loop runs out of time, the `if remaining_time <= 0: break` exits the for-loop without calling `terminate()` on any of the still-pending processes. The original single-process implementation always called `self.process.terminate()` after the wait. With the new multi-process design, only processes whose wait loop completes (or which were already dead before the deadline) get `terminate()`'d; everything iterated after the deadline expires is left running.\n\nBecause the underlying processes are daemon multiprocessing.Process instances, they will be reaped only when the parent process eventually exits. During an arroyo rebalance the parent does NOT exit, so leaked flusher processes keep polling Redis and producing to Kafka \u2014 duplicate segment emissions and double Redis traffic until the consumer is restarted. Additionally, since `process_to_shards_map` and `processes` get rebuilt by the next `create_with_partitions`, the orphaned processes are no longer tracked at all.\n\nTrigger: any `join(timeout=...)` call where the cumulative wait across processes exceeds `timeout` (very easy with N processes each potentially waiting up to the full timeout).",
+    "line_end": 347,
+    "suggested_fix": "@@\n-        # Wait for all processes to finish\n-        for process_index, process in self.processes.items():\n-            if deadline is not None:\n-                remaining_time = deadline - time.time()\n-                if remaining_time <= 0:\n-                    break\n-\n-            while process.is_alive() and (deadline is None or deadline > time.time()):\n-                time.sleep(0.1)\n-\n-            if isinstance(process, multiprocessing.Process):\n-                process.terminate()\n+        # Wait for all processes to finish\n+        for process_index, process in self.processes.items():\n+            while process.is_alive() and (deadline is None or deadline > time.time()):\n+                time.sleep(0.1)\n+\n+        # Always terminate any still-alive multiprocessing.Process so we don't\n+        # leak background workers across rebalances.\n+        for process in self.processes.values():\n+            if isinstance(process, multiprocessing.Process):\n+                process.terminate()"
+  }
+]

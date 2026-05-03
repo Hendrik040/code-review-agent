@@ -1,0 +1,40 @@
+# Client SDK reviewer run 044
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 14
+# cost (USD, API rate): 2.544606
+# usage: {'input_tokens': 18, 'output_tokens': 11711, 'cache_creation_input_tokens': 48460, 'cache_read_input_tokens': 504924}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 149,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Processor exceptions are swallowed and offsets advanced anyway \u2014 silent message loss",
+    "detail": "In `OrderedQueueWorker.run` (lines 127\u2013156), exceptions thrown by `result_processor` are caught by `except Exception` and only logged. The `finally` block then unconditionally calls `self.offset_tracker.complete_offset(...)`. As a result, the committer thread sees these offsets as fully processed and commits them, even though the message was never successfully handled. This contradicts the strategy's own docstring (`SimpleQueueProcessingStrategy`: \"Only commits offsets after successful processing\") and is a behavioral regression vs. the existing serial mode (where `process_single` lets the exception bubble up to `RunTask`, blocking commits). Any transient processing error (DB outage, network blip, deserialization issue inside `handle_result`, etc.) will silently drop user data. The unit test `test_thread_queue_parallel_error_handling` only avoids surfacing this because it races `factory.shutdown()` against the 1-second commit-loop tick and asserts a permissive `len(committed_offsets) == 0 or test_partition not in committed_offsets`.",
+    "line_end": 149,
+    "suggested_fix": "@@\n             except Exception:\n                 logger.exception(\n                     \"Unexpected error in queue worker\", extra={\"worker_id\": self.worker_id}\n                 )\n+                # Do NOT mark offset complete on failure; let the message be retried.\n+                metrics.gauge(\n+                    \"remote_subscriptions.queue_worker.queue_depth\",\n+                    self.work_queue.qsize(),\n+                    tags={\"identifier\": self.identifier},\n+                )\n+                continue\n             finally:\n                 self.offset_tracker.complete_offset(work_item.partition, work_item.offset)\n"
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 338,
+    "category": "resource",
+    "severity": "high",
+    "summary": "Strategy close shuts down the shared queue_pool, breaking subsequent partition assignments",
+    "detail": "`SimpleQueueProcessingStrategy.close()` (and `terminate()`) calls `self.queue_pool.shutdown()`, which terminates every worker thread and shuts down every internal `queue.Queue`. However, the `queue_pool` is owned by `ResultsStrategyFactory` (created once in `__init__`) and is reused across calls to `create_with_partitions`. When arroyo revokes partitions and later assigns new ones (e.g. on rebalance), it calls `close()` on the old strategy and then `factory.create_with_partitions(...)` again. The factory still has a reference to the (now-dead) pool: `assert self.queue_pool is not None` succeeds, a new `SimpleQueueProcessingStrategy` is constructed, but its workers are stopped and its queues are shut down \u2014 every subsequent `submit()` will eventually fail (`queue.put` on a shut-down queue raises) and no messages will be processed. Other modes don\u2019t have this problem because their per-strategy state (e.g. `BatchStep`, `RunTask`) is local to the strategy, while the factory-level `parallel_executor` / `multiprocessing_pool` are only torn down in `factory.shutdown()`.",
+    "line_end": 338,
+    "suggested_fix": "Either (a) build the FixedQueuePool inside `create_thread_queue_parallel_worker` so it\u2019s owned by the strategy and can safely be shut down on close, or (b) remove `self.queue_pool.shutdown()` from `SimpleQueueProcessingStrategy.close()`/`terminate()` and rely solely on `ResultsStrategyFactory.shutdown()` to tear it down."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 274,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Commit loop runs one more commit cycle after shutdown_event is set",
+    "detail": "`_commit_loop` checks `while not self.shutdown_event.is_set()` at the top, then calls `self.shutdown_event.wait(1.0)` and unconditionally proceeds to call `self.commit_function(committable)` and `mark_committed(...)`. When `close()`/`terminate()` set the event, the wait returns immediately and one extra commit is issued before the loop re-checks the condition. Because `terminate()` does not join the commit thread (and `close()` only joins after `queue_pool.shutdown()` was about to happen), this trailing commit can race with consumer teardown and call back into arroyo\u2019s commit function after the strategy is meant to be torn down, potentially raising or committing offsets the consumer has already abandoned.",
+    "line_end": 291,
+    "suggested_fix": "@@\n     def _commit_loop(self) -> None:\n         while not self.shutdown_event.is_set():\n-            try:\n-                self.shutdown_event.wait(1.0)\n+            try:\n+                if self.shutdown_event.wait(1.0):\n+                    return\n                 committable = self.queue_pool.offset_tracker.get_committable_offsets()\n"
+  }
+]

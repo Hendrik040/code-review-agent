@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 014
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_93824-86quhpjo
+# refs: HEAD~1..HEAD
+# turns: 8
+# cost (USD, harness-reported): 0.816756
+# cost (USD, public Opus 4 rate): 2.450267
+# usage: {'input_tokens': 22, 'cache_creation_input_tokens': 68294, 'cache_read_input_tokens': 299816, 'output_tokens': 9596, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 68294}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 291, 'cache_read_input_tokens': 54134, 'cache_creation_input_tokens': 1191, 'cache_creation': {'ephemeral_5m_input_tokens': 1191, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 341,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "join() may leak unterminated flusher processes when timeout expires partway",
+    "detail": "In SpanFlusher.join(), the new loop iterates over self.processes.items() and breaks out when remaining_time <= 0. As a result, any process not yet visited at the moment the deadline elapses will neither be waited on nor have terminate() called on it. The original (single-process) implementation always called self.process.terminate() unconditionally after the wait loop, so terminate() was guaranteed to fire at shutdown. With multiple processes (especially when flusher_processes is large and shutdown timeouts are tight, e.g. during rebalances), this can leave one or more SpawnProcess children running with stale state, holding Redis/Kafka resources, until the parent eventually exits. It also subtly changes contract: the daemon=True flag prevents leaks if the parent exits, but during rolling rebalances the parent keeps running and the orphaned processes will keep producing to Kafka with the now-stopped flag eventually noticed (or not, if they hang). The fix is to always call terminate() for each process even if the deadline has already passed; only the wait loop should be skipped.",
+    "line_end": 347,
+    "suggested_fix": "         for process_index, process in self.processes.items():\n-            if deadline is not None:\n-                remaining_time = deadline - time.time()\n-                if remaining_time <= 0:\n-                    break\n-\n-            while process.is_alive() and (deadline is None or deadline > time.time()):\n-                time.sleep(0.1)\n+            while process.is_alive() and (deadline is None or deadline > time.time()):\n+                time.sleep(0.1)\n \n             if isinstance(process, multiprocessing.Process):\n                 process.terminate()"
+  }
+]

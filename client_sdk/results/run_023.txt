@@ -1,0 +1,20 @@
+# Client SDK reviewer run 023
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_93824-wjya5y8y
+# refs: HEAD~1..HEAD
+# turns: 20
+# cost (USD, API rate): 1.645924
+# usage: {'input_tokens': 24, 'output_tokens': 7567, 'cache_creation_input_tokens': 24031, 'cache_read_input_tokens': 418305}
+# findings: 1
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Restart path no longer kills the unhealthy/hung flusher process (isinstance check excludes SpawnProcess), leaking duplicate processes that keep flushing to Kafka.",
+    "detail": "In `_ensure_processes_alive`, when a flusher process is detected unhealthy, the old code unconditionally called `self.process.kill()`. The new code wraps the call in `if isinstance(process, multiprocessing.Process): process.kill()`. However, the flusher uses `multiprocessing.get_context(\"spawn\")` and creates instances via `mp_context.Process`, which produces `multiprocessing.context.SpawnProcess`. `isinstance(SpawnProcess_instance, multiprocessing.Process)` is False (multiprocessing.Process is the default-context's Process class, not SpawnProcess). So in production this branch never executes: the hung/crashed child is never killed, while `_create_process_for_shards` immediately spawns a *new* process for the same shards. The orphaned old process can still be running (e.g. if the cause was \"hang\" rather than \"no_process_*\"), producing duplicate Kafka segments, holding Redis connections, and consuming CPU/memory. The previous unconditional `kill()` worked because BaseProcess (the parent of SpawnProcess) defines `.kill()`. The `isinstance` guard is unnecessary for the production path and was presumably added to avoid calling `kill()` on `threading.Thread` in tests; but the consequence in production is a real resource/correctness regression. Tests don't catch this because they use `produce_to_pipe`, which forces Thread workers (where skipping kill is desired).",
+    "line_end": 257,
+    "suggested_fix": "-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            try:\n+                if isinstance(process, multiprocessing.process.BaseProcess):\n+                    process.kill()\n+            except (ValueError, AttributeError):\n+                pass  # Process already closed, ignore"
+  }
+]

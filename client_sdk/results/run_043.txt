@@ -1,0 +1,20 @@
+# Client SDK reviewer run 043
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 15
+# cost (USD, API rate): 1.334877
+# usage: {'input_tokens': 19, 'output_tokens': 5846, 'cache_creation_input_tokens': 24280, 'cache_read_input_tokens': 293928}
+# findings: 1
+# ---
+[
+  {
+    "file": "src/sentry/integrations/services/assignment_source.py",
+    "line": 18,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "AssignmentSource.queued default is evaluated once at class-definition time, so every instance shares the same stale timestamp",
+    "detail": "`queued: datetime = timezone.now()` invokes `timezone.now()` exactly once when the dataclass is being constructed at module import time, not for each instantiation. Every `AssignmentSource(...)` (including those produced by `from_integration`, which never passes `queued`) will get the same `queued` value -- the moment the worker process imported this module, possibly hours or days earlier. The field name (\"queued\") and the docstring-implied semantics suggest it is meant to record when the assignment event was queued, but in practice it records when the module was imported. The bug is latent today because no consumer reads `.queued`, but as soon as anyone uses it (for latency metrics, debouncing by time, log correlation, etc.) they will get wrong data. Additionally, when this dict is round-tripped through Celery JSON serialization, `queued` deserializes as a string, not a datetime, because `from_dict` does no type coercion -- exacerbating any future use. The standard fix for a dataclass is `field(default_factory=timezone.now)`.",
+    "line_end": null,
+    "suggested_fix": "@@\n-from dataclasses import asdict, dataclass\n+from dataclasses import asdict, dataclass, field\n@@\n     source_name: str\n     integration_id: int\n-    queued: datetime = timezone.now()\n+    queued: datetime = field(default_factory=timezone.now)\n"
+  }
+]

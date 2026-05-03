@@ -104,9 +104,15 @@ Each finding must include:
 - file: path where the bug manifests most directly.
 - line: specific primary line.
 - category and severity from the allowed values.
-- summary: one concise sentence.
-- detail: explain what is wrong, why it matters, and the triggering
-  scenario.
+- summary (1 line, max 100 chars): a directive recommendation phrased as
+  the action a developer should take. Start with a verb (Implement,
+  Revert, Replace, Guard, Move, Drop, Add, Use). Do NOT phrase as a bug
+  headline ("X is broken"). Example: "Guard the deserialization path
+  against untrusted input or revert to the safe loader."
+- detail (exactly 3 sentences): Sentence 1 diagnoses the failure mode.
+  Sentence 2 names the concrete trigger or call site. Sentence 3 ends
+  with a binary fix recommendation. Do NOT walk through the diff in
+  prose — that belongs in `suggested_fix` as a code block.
 - suggested_fix: short concrete fix if clear; otherwise "".
 Every finding must be supported by evidence you can cite — either from
 the ODIS context you fetched or from a file you read.

@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 040
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 18
+# cost (USD, harness-reported): 1.603831
+# cost (USD, public Opus 4 rate): 4.811494
+# usage: {'input_tokens': 32, 'cache_creation_input_tokens': 54145, 'cache_read_input_tokens': 1321680, 'output_tokens': 24177, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 54145}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 441, 'cache_read_input_tokens': 93079, 'cache_creation_input_tokens': 2850, 'cache_creation': {'ephemeral_5m_input_tokens': 2850, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 199,
+    "category": "other",
+    "severity": "low",
+    "summary": "Inconsistent metric tag key: 'shards' vs 'shard' for the same shard_tag value",
+    "detail": "In SpanFlusher.main(), `metrics.timer('spans.buffer.flusher.produce', tags={'shard': shard_tag})` (line 185) and `metrics.timing('spans.buffer.segment_size_bytes', ..., tags={'shard': shard_tag})` (line 195) use the singular tag key 'shard'. But `metrics.timer('spans.buffer.flusher.wait_produce', tags={'shards': shard_tag})` (line 199) uses the plural 'shards' for the identical comma-joined value. Downstream metric pipelines (Datadog/StatsD) treat these as different tag dimensions, so dashboards/alerts that filter or group by tag name will not unify these metrics. Pick one key consistently \u2014 'shard' matches the rest of the change (e.g., the per-shard 'spans.buffer.flusher_unhealthy' increment at line 244 also uses 'shard').",
+    "line_end": 199,
+    "suggested_fix": "-                with metrics.timer(\"spans.buffer.flusher.wait_produce\", tags={\"shards\": shard_tag}):\n+                with metrics.timer(\"spans.buffer.flusher.wait_produce\", tags={\"shard\": shard_tag}):"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 341,
+    "category": "resource",
+    "severity": "low",
+    "summary": "join() early-break skips terminate() on remaining processes when timeout is exceeded mid-iteration",
+    "detail": "In SpanFlusher.join(), the loop checks `if remaining_time <= 0: break` (line 340-341), which exits the for-loop entirely before reaching the unconditional `process.terminate()` at line 346-347 for any subsequent processes. The original single-process implementation always terminated the worker at end of join(). With multiple processes, if the deadline expires partway through the iteration, processes at higher indices are left without a terminate() call. They are daemon processes so the OS will eventually reap them when the parent exits, but during a graceful shutdown that explicit terminate() was the signal that bounded shutdown latency. This is a regression from the original join() semantics. Also note: `remaining_time` is computed but never actually passed to the wait loop \u2014 the `while ... deadline > time.time()` check below already covers it, so the early-break is the only behavior the upper check adds.",
+    "line_end": 347,
+    "suggested_fix": "-        for process_index, process in self.processes.items():\n-            if deadline is not None:\n-                remaining_time = deadline - time.time()\n-                if remaining_time <= 0:\n-                    break\n-\n-            while process.is_alive() and (deadline is None or deadline > time.time()):\n-                time.sleep(0.1)\n-\n-            if isinstance(process, multiprocessing.Process):\n-                process.terminate()\n+        for process_index, process in self.processes.items():\n+            while process.is_alive() and (deadline is None or deadline > time.time()):\n+                time.sleep(0.1)\n+\n+            if isinstance(process, multiprocessing.Process):\n+                process.terminate()"
+  },
+  {
+    "file": "tests/sentry/spans/consumers/process/test_consumer.py",
+    "line": 62,
+    "category": "other",
+    "severity": "low",
+    "summary": "time.sleep(0.1) added as a 'give flusher threads time' workaround is a no-op due to monkeypatching",
+    "detail": "Line 15 does `monkeypatch.setattr(\"time.sleep\", lambda _: None)` to make the test fast. Line 62 then calls `time.sleep(0.1)` with the comment 'Give flusher threads time to process after drift change'. Because of the monkeypatch this sleep does NOT actually delay \u2014 the call returns immediately. If the test is currently passing, it is passing for some other reason (e.g. step.poll() doing the work synchronously in the threaded test mode), and this 'workaround' contributes nothing. If the test ever truly needs wall-clock time for the flusher thread to make progress (e.g. when a real condition.wait or producer round-trip is involved), removing the monkeypatch on time.sleep just for this call (e.g. via `monkeypatch.context()` or by calling the original function) would be required. As written the line is misleading and may hide flakiness rather than fix it.",
+    "line_end": 62,
+    "suggested_fix": ""
+  }
+]

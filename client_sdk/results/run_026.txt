@@ -1,0 +1,30 @@
+# Client SDK reviewer run 026
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_95633-u32h7w99
+# refs: HEAD~1..HEAD
+# turns: 13
+# cost (USD, API rate): 2.182527
+# usage: {'input_tokens': 17, 'output_tokens': 10886, 'cache_creation_input_tokens': 40930, 'cache_read_input_tokens': 398923}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 233,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Worker shutdown order causes queued items to be skipped; remaining items are not drained despite immediate=False shutdown.",
+    "detail": "In FixedQueuePool.shutdown, worker.shutdown is set to True BEFORE q.shutdown(immediate=False) is called. OrderedQueueWorker.run uses `while not self.shutdown:` as its loop condition, so after the worker finishes its currently in-flight item (or returns from its blocked get() with one more item), the loop re-checks self.shutdown, sees True, and exits \u2014 even though queue.shutdown(immediate=False) is supposed to keep delivering the rest of the queued items until empty. As a result, any items already enqueued at shutdown time remain in the queue and their offsets remain in OffsetTracker.outstanding, so they will never be marked complete. They get re-read on consumer restart (so it isn't data loss), but it defeats the documented graceful drain (\"Items within a queue are processed in FIFO order\" + immediate=False) and causes large reprocessing windows on every deploy/rebalance, plus stale entries in OffsetTracker until shutdown completes. The fix is to drain by relying solely on queue.shutdown(immediate=False) and removing the self.shutdown flag from the loop predicate (or only setting it after the queue is observed empty).",
+    "line_end": 243,
+    "suggested_fix": "@@\n-    def run(self) -> None:\n-        \"\"\"Process items from the queue in order.\"\"\"\n-        while not self.shutdown:\n-            try:\n-                work_item = self.work_queue.get()\n-            except queue.ShutDown:\n-                break\n+    def run(self) -> None:\n+        \"\"\"Process items from the queue in order.\"\"\"\n+        while True:\n+            try:\n+                work_item = self.work_queue.get()\n+            except queue.ShutDown:\n+                break\n@@\n-        for worker in self.workers:\n-            worker.shutdown = True\n-\n-        for q in self.queues:\n+        for q in self.queues:\n             try:\n                 q.shutdown(immediate=False)\n             except Exception:\n                 logger.exception(\"Error shutting down queue\")\n"
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 184,
+    "category": "resource",
+    "severity": "high",
+    "summary": "Per-group queues are unbounded (no maxsize), so there is no backpressure to arroyo and memory grows without bound under load.",
+    "detail": "FixedQueuePool creates queue.Queue() with no maxsize, so queue.put() never blocks. SimpleQueueProcessingStrategy.submit unconditionally puts work onto these queues and never raises arroyo's MessageRejected, so the consumer cannot exert backpressure on the upstream Kafka source. The class docstring even claims 'Natural backpressure when queues fill up,' but with unbounded queues that never happens. If the result_processor falls behind (e.g., DB slowdown), the strategy will accept messages unboundedly: memory usage of the pending WorkItems (each holding the original Message) and OffsetTracker.outstanding/all_offsets grows linearly with the lag, eventually OOM-killing the consumer. Bound the queue (e.g., queue.Queue(maxsize=N)) and either block in submit() or raise MessageRejected when full so arroyo pauses consumption.",
+    "line_end": 185,
+    "suggested_fix": "@@\n-        for i in range(num_queues):\n-            work_queue: queue.Queue[WorkItem[T]] = queue.Queue()\n+        for i in range(num_queues):\n+            work_queue: queue.Queue[WorkItem[T]] = queue.Queue(maxsize=MAX_PER_QUEUE)\n             self.queues.append(work_queue)\n"
+  }
+]
