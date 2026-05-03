@@ -1,0 +1,156 @@
+"""Shared retrieval-side learnings module — used by BOTH reviewers.
+
+Responsibilities (spec §3):
+  - retrieve_for_diff(repo, chunks)        -> threshold-filtered hits
+  - applicability_filter(hits, diff)        -> Haiku-judged subset
+  - format_for_prompt(hits)                 -> <past_learnings> XML
+  - search_tool_handler(query, repo, k)    -> <item ...> XML for the tool
+
+Strictly additive: any failure returns an empty result so the reviewer
+keeps running (spec §8).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from html import escape
+from typing import Any, Protocol
+
+from learnings.ast_chunker import Chunk
+from learnings.qdrant_store import Hit, QdrantStore, collection_for
+
+
+class Embedder(Protocol):
+    def embed_one(self, text: str, *, input_type: str = "document") -> list[float]: ...
+
+
+_INTRO = (
+    "These are corrections previous maintainers have given for code with "
+    "similar shape. Treat them as priors, not rules. If a learning clearly "
+    "applies to a finding you're about to make, cite it; if it suggests a "
+    "finding you'd otherwise miss, raise that finding. If it doesn't apply, "
+    "ignore it silently."
+)
+
+
+def apply_threshold(hits: list[Hit], threshold: float) -> list[Hit]:
+    return [h for h in hits if h.score >= threshold]
+
+
+def retrieve_for_diff(
+    *,
+    repo: str,
+    chunks: list[Chunk],
+    store: QdrantStore,
+    embedder: Embedder,
+    collection_override: str | None = None,
+    per_query_k: int = 5,
+    threshold: float = 0.78,
+) -> list[Hit]:
+    """One embed + query per AST chunk; merge, dedupe, threshold."""
+    collection = collection_override or collection_for(repo)
+    by_id: dict[str, Hit] = {}
+    for chunk in chunks:
+        try:
+            vec = embedder.embed_one(chunk.text, input_type="query")
+            hits = store.search(collection, query_vector=vec, k=per_query_k)
+        except Exception:
+            continue  # fail-open per spec §8
+        for h in hits:
+            existing = by_id.get(h.point_id)
+            if existing is None or h.score > existing.score:
+                by_id[h.point_id] = h
+    return apply_threshold(list(by_id.values()), threshold)
+
+
+def applicability_filter(
+    hits: list[Hit],
+    *,
+    anthropic_client: Any,
+    diff_summary: str,
+    model: str = "claude-haiku-4-5-20251001",
+    keep_max: int = 5,
+) -> list[Hit]:
+    """Haiku judges each hit. Drop "no"; keep "yes" + "maybe". Spec §5.2.
+
+    Returns up to ``keep_max`` hits, preserving original score order.
+    On any failure, returns the input unchanged (fail-open per spec §8).
+    """
+    if not hits:
+        return []
+    kept: list[Hit] = []
+    for h in hits:
+        try:
+            verdict = _judge_applicability(anthropic_client, model, diff_summary, h)
+        except Exception:
+            kept.append(h)
+            continue
+        if verdict in ("yes", "maybe"):
+            kept.append(h)
+        if len(kept) >= keep_max:
+            break
+    return kept
+
+
+def _judge_applicability(client: Any, model: str, diff_summary: str, hit: Hit) -> str:
+    p = hit.payload
+    prompt = (
+        "Is the past learning below applicable to the diff hunk below?\n"
+        "Answer EXACTLY one word: yes, no, or maybe.\n\n"
+        f"PAST LEARNING:\n{p.get('learning_text','')}\n\n"
+        f"PAST CODE ANCHOR ({p.get('file_path','')}:"
+        f"{p.get('line_start','')}-{p.get('line_end','')}):\n"
+        f"{p.get('code_chunk_text','')}\n\n"
+        f"NEW DIFF SUMMARY:\n{diff_summary}\n\n"
+        "Answer:"
+    )
+    msg = client.messages.create(
+        model=model, max_tokens=8,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    word = (msg.content[0].text or "").strip().lower()
+    if word.startswith("yes"):
+        return "yes"
+    if word.startswith("no"):
+        return "no"
+    return "maybe"
+
+
+def format_for_prompt(hits: list[Hit]) -> str:
+    if not hits:
+        return ""
+    items = "\n".join(_render_item(i + 1, h) for i, h in enumerate(hits))
+    return f"<past_learnings>\n  <intro>\n    {_INTRO}\n  </intro>\n{items}\n</past_learnings>"
+
+
+def _render_item(idx: int, h: Hit) -> str:
+    p = h.payload
+    return (
+        f'  <item id="{idx}" score="{h.score:.2f}" '
+        f'file="{escape(p.get("file_path",""), quote=True)}" '
+        f'lines="{p.get("line_start","")}-{p.get("line_end","")}" '
+        f'author="{escape(p.get("author",""), quote=True)}" '
+        f'pr="{escape(p.get("repo",""), quote=True)}#{p.get("pr_number","")}" '
+        f'captured="{escape(p.get("captured_at","")[:10], quote=True)}">\n'
+        f"    <learning>{escape(p.get('learning_text',''))}</learning>\n"
+        f'    <original_code language="{escape(p.get("language",""), quote=True)}"><![CDATA[\n'
+        f"{p.get('code_chunk_text','')}\n"
+        f"    ]]></original_code>\n"
+        f"  </item>"
+    )
+
+
+def search_tool_handler(
+    *, query: str, repo: str, store: QdrantStore, embedder: Embedder,
+    collection_override: str | None = None, k: int = 5,
+) -> str:
+    """Body of the `search_learnings` tool. Returns an XML-fragment string."""
+    collection = collection_override or collection_for(repo)
+    try:
+        vec = embedder.embed_one(query, input_type="query")
+        hits = store.search(collection, query_vector=vec, k=k)
+    except Exception:
+        return "<results/>"
+    if not hits:
+        return "<results/>"
+    items = "\n".join(_render_item(i + 1, h) for i, h in enumerate(hits))
+    return f"<results>\n{items}\n</results>"
