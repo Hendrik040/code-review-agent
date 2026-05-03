@@ -96,3 +96,24 @@ class TestClassifyDefensive:
     def test_empty_findings_returns_empty(self):
         inlines, orphans = _classify([], {"a.py": [Hunk(1, 10, "RIGHT")]})
         assert inlines == [] and orphans == []
+
+
+def test_classify_passes_per_finding_trail_when_trace_path_given(tmp_path):
+    """When trace_path is provided, _classify enriches each inline comment
+    body with the per-finding trail."""
+    trace = tmp_path / "t.txt"
+    trace.write_text(
+        "│ tool_use: mcp__reviewer__build_review_context\n"
+        "│   args: {}\n"
+        "└─\n"
+        "│ tool_use: mcp__reviewer__bash\n"
+        "│   args: {\"command\": \"head -100 a.py\"}\n"
+        "└─\n"
+    )
+    f = Finding(file="a.py", line=5, line_end=None,
+                category="other", severity="low",
+                summary="x", detail="y", suggested_fix="")
+    hunks = {"a.py": [Hunk(1, 10, "RIGHT")]}
+    inlines, _ = _classify([f], hunks, trace_path=trace)
+    assert "Analysis trail" in inlines[0].body
+    assert "a.py" in inlines[0].body

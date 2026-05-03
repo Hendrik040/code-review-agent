@@ -18,9 +18,12 @@ brainstorming).
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable, Union
 
 from shared.findings import Finding
+
+if TYPE_CHECKING:
+    from github.trace_extract import TrailExtract
 
 SEVERITY_BADGES: dict[str, str] = {
     "high": "🟥 High risk",
@@ -45,13 +48,23 @@ def _location(f: Finding) -> str:
 def render_inline_comment(
     finding: Finding,
     *,
-    analysis_trail: Iterable[str] = (),
+    analysis_trail: "Union[Iterable[str], TrailExtract, None]" = (),
 ) -> str:
     """Render one Finding as inline-comment markdown.
 
-    `analysis_trail` is accepted for backward compat; v1 callers pass ()
-    because the trail moved to the wrapping review's summary.
+    `analysis_trail` may be a plain iterable of bullet strings (legacy) or a
+    TrailExtract (new). When non-empty, a collapsible "Analysis trail" details
+    block is inserted after the detail paragraph and before the AI agents block.
     """
+    # Normalise: accept TrailExtract or plain iterable
+    from github.trace_extract import TrailExtract
+    if isinstance(analysis_trail, TrailExtract):
+        trail_bullets = analysis_trail.bullets
+        tool_summary = analysis_trail.tool_summary
+    else:
+        trail_bullets = list(analysis_trail or [])
+        tool_summary = ""
+
     loc = _location(finding)
     sev = SEVERITY_BADGES.get(finding.severity, finding.severity.title())
 
@@ -64,8 +77,18 @@ def render_inline_comment(
         "",
     ]
 
-    # The "Prompt for AI agents" block — copyable handoff prompt that
-    # downstream agents can paste directly into a fix session.
+    if trail_bullets:
+        lines += [
+            "<details>",
+            f"<summary>🔎 Analysis trail ({len(trail_bullets)} steps)</summary>",
+            "",
+        ]
+        if tool_summary:
+            lines += [tool_summary, ""]
+        for bullet in trail_bullets:
+            lines.append(f"- {bullet}")
+        lines += ["", "</details>", ""]
+
     fix_goal = (
         finding.suggested_fix.strip()
         or "Fix the bug while preserving the intended behavior."
@@ -74,7 +97,8 @@ def render_inline_comment(
         "<details>",
         "<summary>🤖 Prompt for AI agents</summary>",
         "",
-        "```text",
+        # 4-backtick fence so finding text containing ``` doesn't break Markdown.
+        "````text",
         "Verify this finding against the current code before editing.",
         "",
         f"Location: {loc}",
@@ -94,7 +118,7 @@ def render_inline_comment(
         f"- Inspect {loc} directly.",
         "- Confirm the relevant caller/callee contracts involved in the finding.",
         "- Add or update a focused test that would fail before the fix.",
-        "```",
+        "````",
         "",
         "</details>",
     ]

@@ -49,9 +49,12 @@ def _preflight(pr_url: str) -> pr_fetch.PullRequest:
     if not os.environ.get("GITHUB_REVIEW_BOT_TOKEN"):
         _exit(2, "ERROR: GITHUB_REVIEW_BOT_TOKEN not set. "
                   "Add it to .env (Working-Ant token).")
-    if shutil.which("gh") is None:
+    gh = shutil.which("gh")
+    if gh is None:
         _exit(2, "ERROR: `gh` CLI not on PATH. Install it and run `gh auth login`.")
-    auth = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+    auth = subprocess.run(
+        [gh, "auth", "status"], capture_output=True, text=True, timeout=10,
+    )
     if auth.returncode != 0:
         _exit(2, "ERROR: gh CLI not authenticated. Run `gh auth login`.")
     try:
@@ -65,9 +68,9 @@ def _preflight(pr_url: str) -> pr_fetch.PullRequest:
     # check, posting fails opaquely with 403 after a 2-min clone + $1+
     # reviewer run. Fail fast here instead.
     perm_check = subprocess.run(
-        ["gh", "api",
+        [gh, "api",
          f"repos/{pr.owner}/{pr.repo}/collaborators/{BOT_USER}/permission"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=15,
     )
     if perm_check.returncode != 0:
         _exit(2, f"ERROR: {BOT_USER} is not a collaborator on "
@@ -140,11 +143,12 @@ def main() -> None:
         if truncated:
             print("      WARN: reviewer hit MAX_TURNS before submitting findings")
 
+        trace_path = Path(result["trace_path"])
         if args.dry_run:
             print(f"[4/4] --dry-run: payload below, not posting to GH")
             payload = post_review.render_payload_for_inspection(
                 pr, result["findings"], hunks, run_meta, trail,
-                repo_path=repo.path, truncated=truncated,
+                repo_path=repo.path, truncated=truncated, trace_path=trace_path,
             )
             print(json.dumps(payload, indent=2))
             return
@@ -155,6 +159,7 @@ def main() -> None:
             url = post_review.submit_review(
                 pr, result["findings"], hunks, run_meta, trail,
                 token=token, repo_path=repo.path, truncated=truncated,
+                trace_path=trace_path,
             )
         except RuntimeError as e:
             _exit(1, f"ERROR: GH POST failed: {e}\n"

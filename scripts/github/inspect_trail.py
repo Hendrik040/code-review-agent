@@ -21,12 +21,15 @@ def main() -> None:
     trace_path = PROJECT_ROOT / "agent_sdk" / "traces" / f"run_{run_id:03d}.txt"
     if not trace_path.exists():
         sys.exit(f"trace file not found: {trace_path}")
-    bullets = trace_extract.extract_trail(trace_path)
-    if not bullets:
+    trail = trace_extract.extract_trail(trace_path)
+    if not trail.bullets:
         print("(empty trail — file unparseable or no recognized tool calls)")
         return
-    print(f"Trail for run #{run_id} ({len(bullets)} bullets):\n")
-    for b in bullets:
+    print(f"Trail for run #{run_id} ({len(trail.bullets)} bullets):\n")
+    if trail.tool_summary:
+        print(trail.tool_summary)
+        print()
+    for b in trail.bullets:
         print(f"  - {b}")
 
 
