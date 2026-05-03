@@ -37,10 +37,18 @@ def _test_a_structural() -> None:
     # gh CLI
     if shutil.which("gh") is None:
         sys.exit("FAIL: gh CLI not on PATH")
-    auth = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+    auth = subprocess.run(
+        ["gh", "auth", "status"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
     if auth.returncode != 0:
         sys.exit("FAIL: gh CLI not authenticated")
     print("  gh CLI: ok\n")
+
+
+# Generous: a real Phase-5 run = clone (1-3 min) + reviewer (5-15 min)
+# + post. Smoke is allowed to be slow; we just want it bounded.
+_REAL_POST_TIMEOUT_SECONDS = 1800
 
 
 def _test_b_real_post(sandbox_url: str) -> None:
@@ -49,7 +57,10 @@ def _test_b_real_post(sandbox_url: str) -> None:
     cmd = [
         "uv", "run", "python", "scripts/github/review_pr.py", sandbox_url,
     ]
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    result = subprocess.run(
+        cmd, cwd=PROJECT_ROOT,
+        timeout=_REAL_POST_TIMEOUT_SECONDS, check=False,
+    )
     if result.returncode != 0:
         sys.exit(f"FAIL: review_pr.py exited {result.returncode}")
     print("\n  Visually verify the review URL above renders correctly in GitHub.")

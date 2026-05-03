@@ -1,10 +1,11 @@
-"""Unit tests for github.pr_fetch — URL parsing + dataclasses (Task 1)."""
+"""Unit tests for github.pr_fetch — URL parsing, dataclasses, and the
+`gh api` wrappers (Tasks 1-3)."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
-from unittest.mock import patch as mock_patch, MagicMock
+from unittest.mock import patch as mock_patch
 
 import pytest
 

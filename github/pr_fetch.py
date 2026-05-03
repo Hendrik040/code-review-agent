@@ -78,9 +78,18 @@ def _parse_patch_to_hunks(patch: str) -> list[Hunk]:
     return hunks
 
 
+# Hard cap on `gh api` calls so a stalled auth/network handshake can't
+# deadlock the one-shot review workflow. Sized for the largest PR-files
+# pagination we expect (Sentry-class repos, low hundreds of files).
+_GH_API_TIMEOUT_SECONDS = 60
+
+
 def _gh_json(endpoint: str) -> Any:
     """Invoke `gh api <endpoint>` and parse stdout as JSON."""
-    out = subprocess.check_output(["gh", "api", endpoint], text=True)
+    out = subprocess.check_output(
+        ["gh", "api", endpoint],
+        text=True, timeout=_GH_API_TIMEOUT_SECONDS,
+    )
     return json.loads(out)
 
 
@@ -90,7 +99,8 @@ def _gh_json_paginated(endpoint: str) -> list[Any]:
     only the first page (~30 items by default); large PRs lose files
     silently without paginate."""
     out = subprocess.check_output(
-        ["gh", "api", "--paginate", "--slurp", endpoint], text=True
+        ["gh", "api", "--paginate", "--slurp", endpoint],
+        text=True, timeout=_GH_API_TIMEOUT_SECONDS,
     )
     pages = json.loads(out)
     flat: list[Any] = []

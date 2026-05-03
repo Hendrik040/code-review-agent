@@ -59,7 +59,17 @@ def _read_snippet(repo_path: Path | None, file_path: str,
     """
     if repo_path is None:
         return None
-    full = Path(repo_path) / file_path
+    # `file_path` ultimately comes from model output (the Finding's
+    # `file` field). A `..`-laden value would otherwise let us read
+    # files outside the cloned repo and embed them in the posted review
+    # body. Resolve both sides and require the result to stay inside.
+    root = Path(repo_path).resolve()
+    try:
+        full = (root / file_path).resolve()
+    except OSError:
+        return None
+    if not full.is_relative_to(root):
+        return None
     try:
         all_lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
     except (FileNotFoundError, OSError):

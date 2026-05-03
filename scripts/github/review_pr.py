@@ -107,9 +107,12 @@ def main() -> None:
     print(f"[2/4] Cloning {pr.owner}/{pr.repo} into a tempdir "
           f"(this may take a minute) ...")
     with repo_setup.setup_pr_repo(pr) as repo:
-        print(f"[3/4] Running Agent SDK reviewer (effort=xhigh) ...")
+        print("[3/4] Running Agent SDK reviewer (effort=xhigh) ...")
+        # reviewer.run expects a Phase-4 Repo (LocalRepo/DaytonaRepo),
+        # not a Path. setup_pr_repo wraps the cloned tempdir in a
+        # LocalRepo and exposes it as repo.repo.
         try:
-            result = reviewer.run(repo.path, repo.base_ref, repo.head_ref)
+            result = reviewer.run(repo.repo, repo.base_ref, repo.head_ref)
         except Exception as e:
             _exit(1, f"ERROR: reviewer raised: {e!r}")
 

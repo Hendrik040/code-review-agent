@@ -16,13 +16,24 @@ from pathlib import Path
 from typing import Iterator
 
 from github.pr_fetch import PullRequest
+from sandbox.local import LocalRepo
 
 # Sentry-sized clones can take 1-3 minutes. Cap so a hung network gives up.
 CLONE_TIMEOUT_SECONDS = 600
+# Cheap subprocess steps inside the clone — fail fast if git hangs.
+GIT_CHECKOUT_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True)
 class RepoState:
+    """What `setup_pr_repo` yields.
+
+    `repo` is a Phase-4 `Repo` (LocalRepo wrapping the cloned tempdir);
+    pass this into `reviewer.run(repo, base_ref, head_ref)`. `path` is
+    kept as a convenience for callers that need the on-disk root
+    (e.g. `review_summary._read_snippet` for orphan rendering).
+    """
+    repo: LocalRepo
     path: Path        # tmpdir root containing the cloned repo
     base_ref: str     # base SHA from the PR (passed to reviewer.run)
     head_ref: str     # head SHA from the PR
@@ -56,8 +67,32 @@ def setup_pr_repo(pr: PullRequest) -> Iterator[RepoState]:
         subprocess.run(
             ["git", "-C", str(repo_dir), "checkout", "--quiet",
              f"pr-{pr.number}"],
-            text=True, check=True, timeout=60,
+            text=True, check=True, timeout=GIT_CHECKOUT_TIMEOUT_SECONDS,
         )
-        yield RepoState(path=repo_dir, base_ref=pr.base_sha, head_ref=pr.head_sha)
+        # Verify HEAD matches the PR head SHA we recorded at metadata
+        # fetch time. A force-push between fetch_pr() and the clone
+        # would silently leave us on a different commit than what
+        # findings/diff anchors expect — abort instead of misaligning.
+        checked_out = subprocess.check_output(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            text=True, timeout=GIT_CHECKOUT_TIMEOUT_SECONDS,
+        ).strip()
+        if checked_out != pr.head_sha:
+            raise RuntimeError(
+                f"PR #{pr.number} head moved during clone: "
+                f"checked out {checked_out}, expected {pr.head_sha}. "
+                "Re-run to pick up the new head."
+            )
+        # Wrap the cloned dir in a LocalRepo so the reviewer (which
+        # expects a Phase-4 Repo Protocol object) can drive it via
+        # .exec()/.upload_bytes(). We own tempdir cleanup in the
+        # finally block, so the LocalRepo is given existing_path and
+        # does NOT manage its own lifecycle.
+        local_repo = LocalRepo(existing_path=repo_dir)
+        with local_repo:
+            yield RepoState(
+                repo=local_repo, path=repo_dir,
+                base_ref=pr.base_sha, head_ref=pr.head_sha,
+            )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

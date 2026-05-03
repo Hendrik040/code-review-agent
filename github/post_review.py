@@ -175,9 +175,19 @@ def submit_review(
     }
 
     for attempt in (1, 2):
-        resp = httpx.post(
-            url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS,
-        )
+        # httpx raises on transport failures (timeouts, conn refused,
+        # DNS) instead of returning a response. Fold those into the
+        # same retry-once-then-RuntimeError path so review_pr.py's
+        # `except RuntimeError` catches them.
+        try:
+            resp = httpx.post(
+                url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            if attempt == 1:
+                time.sleep(5)
+                continue
+            raise RuntimeError(f"GitHub POST transport error: {exc!r}") from exc
         if 200 <= resp.status_code < 300:
             return resp.json()["html_url"]
         # Retry once on 5xx; raise immediately on 4xx (caller's bug)
