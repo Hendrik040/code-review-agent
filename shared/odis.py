@@ -63,10 +63,18 @@ def changed_lines(repo: pathlib.Path, base_ref: str, head_ref: str) -> dict[str,
     current: str | None = None
     changes: dict[str, set[int]] = {}
     for line in diff.splitlines():
-        if line.startswith("+++ b/"):
-            current = line[6:]
+        # Reset on each new file in the diff so a deletion or rename
+        # doesn't bleed hunks into the previous file's set.
+        if line.startswith("diff --git "):
+            current = None
+        elif line.startswith("+++ "):
+            # `+++ b/<path>` for a present file; `+++ /dev/null` for a
+            # deletion. Only the former is reportable.
+            current = line[6:] if line.startswith("+++ b/") else None
         elif line.startswith("@@") and current:
-            # Hunk header looks like: @@ -old +new,count @@ context
+            # Hunk header looks like: @@ -old +new,count @@ context.
+            # `count == 0` (pure deletion) still anchors at line `start`
+            # so callers/callees of removed code stay visible to ODIS.
             plus = next((p for p in line.split() if p.startswith("+")), None)
             if not plus:
                 continue
@@ -74,6 +82,8 @@ def changed_lines(repo: pathlib.Path, base_ref: str, head_ref: str) -> dict[str,
             start_str, _, count_str = head.partition(",")
             start = int(start_str)
             count = int(count_str) if count_str else 1
+            if count == 0:
+                count = 1
             changes.setdefault(current, set()).update(range(start, start + count))
     return changes
 
