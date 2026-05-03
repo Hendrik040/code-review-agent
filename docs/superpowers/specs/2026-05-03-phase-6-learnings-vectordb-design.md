@@ -163,13 +163,13 @@ at runtime from `LEARNINGS_HANDLE` and `LEARNINGS_CALL_WORDS` (both
 `re.escape`'d):
 
 ```
-{escaped_handle}\s+({call_word_alternation})\b[:.\-]?\s*(.+)
+{escaped_handle}\s+({call_word_alternation})\b\s*[:.\-]?\s*(.+)
 ```
 
 with the default config that resolves to:
 
 ```
-@working-ant\s+(learn|remember|note|teach)\b[:.\-]?\s*(.+)
+@working-ant\s+(learn|remember|note|teach)\b\s*[:.\-]?\s*(.+)
 ```
 
 - Handle: `@Working-Ant`, case-insensitive (regex compiled with `re.IGNORECASE`).
