@@ -1062,14 +1062,16 @@ def test_chunk_for_anchor_returns_enclosing_method():
 
 
 def test_chunk_for_anchor_falls_back_for_module_scope():
-    # Anchor on the GLOBAL_CONST line (line 3) — no enclosing function.
+    # Anchor on the GLOBAL_CONST line (line 3) — ast-grep succeeds but
+    # no function encloses → kind="module-scope" (NOT "fallback_window";
+    # fallback_window is reserved for ast-grep failures).
     c = chunk_for_anchor(FIXTURES / "tiny_module.py", line_start=3, line_end=3)
-    assert c.kind in ("module-scope", "fallback_window")
+    assert c.kind == "module-scope"
     assert "GLOBAL_CONST" in c.text
 
 
 def test_chunk_for_anchor_picks_smallest_enclosing_unit():
-    # nested_class.py: line inside method_two (lines 16..21) should
+    # nested_class.py: line inside method_two (lines 13..18) should
     # return the METHOD, not the enclosing class.
     c = chunk_for_anchor(FIXTURES / "nested_class.py", line_start=18, line_end=18)
     assert c.kind == "method"
@@ -1078,11 +1080,24 @@ def test_chunk_for_anchor_picks_smallest_enclosing_unit():
 
 
 def test_chunk_for_anchor_expands_to_cover_full_range():
-    # Multi-line range that crosses two functions — return the smallest
-    # unit that fully contains it. tiny_module: range 6..11 spans both
-    # functions; smallest enclosing unit is the module → fallback.
+    # Multi-line range that crosses two functions — no single function
+    # encloses the range, so ast-grep "succeeds with no enclosing match"
+    # path fires → kind="module-scope".
     c = chunk_for_anchor(FIXTURES / "tiny_module.py", line_start=6, line_end=11)
-    assert c.kind in ("module-scope", "fallback_window")
+    assert c.kind == "module-scope"
+
+
+def test_chunk_for_anchor_uses_fallback_window_on_ast_failure(tmp_path):
+    """ast-grep returncode ≠ (0,1) raises RuntimeError, which the
+    chunker converts to kind='fallback_window' — distinct from
+    'module-scope' which means ast-grep succeeded with no enclosing match."""
+    from unittest.mock import patch
+    src = tmp_path / "x.py"
+    src.write_text("def foo():\n    return 1\n")
+    with patch("learnings.ast_chunker._collect_nodes", side_effect=RuntimeError("simulated")):
+        c = chunk_for_anchor(src, line_start=1, line_end=1)
+    assert c.kind == "fallback_window"
+    assert "def foo" in c.text
 ```
 
 - [ ] **Step 2: Run tests, verify they fail**
@@ -1107,17 +1122,21 @@ Python-only for v1. Multi-language requires per-language patterns.
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 # ast-grep patterns. $$$ matches any sequence; $NAME matches an identifier.
-# We pull functions, async functions, and class-method defs as a single
-# union — the per-match metadata tells us which kind it is.
-_PY_FUNC_PATTERN = "def $NAME($$$): $$$"
-_PY_ASYNC_FUNC_PATTERN = "async def $NAME($$$): $$$"
-_PY_CLASS_PATTERN = "class $NAME: $$$"
+# `def $NAME($$$)` catches both sync and async functions — tree-sitter
+# Python represents them both as `function_definition` nodes, so the
+# pattern matches both forms. Each captured node's range covers the
+# entire definition (header + body) — there is no ":" or trailing
+# `: $$$` in the pattern because that confuses ast-grep's matcher in
+# 0.42.x and produces zero matches.
+_PY_FUNC_PATTERN = "def $NAME($$$)"
+_PY_CLASS_PATTERN = "class $NAME"
 
 _AST_TIMEOUT_S = 15.0
 _FALLBACK_WINDOW = 50  # lines on each side when no AST unit fits
@@ -1168,7 +1187,7 @@ def _collect_nodes(file: Path) -> list[_AstNode]:
     src = file.read_text()
     src_lines = src.splitlines()
     classes = _run_ast_grep(file, _PY_CLASS_PATTERN)
-    funcs = _run_ast_grep(file, _PY_FUNC_PATTERN) + _run_ast_grep(file, _PY_ASYNC_FUNC_PATTERN)
+    funcs = _run_ast_grep(file, _PY_FUNC_PATTERN)
 
     def _span(node: dict) -> tuple[int, int, str]:
         # ast-grep uses 0-indexed line numbers in `range.start.line`.
@@ -1206,23 +1225,33 @@ def _collect_nodes(file: Path) -> list[_AstNode]:
 
 def chunk_for_anchor(file: Path, *, line_start: int, line_end: int) -> Chunk:
     """Find the smallest AST unit (function/method) fully containing
-    [line_start, line_end]. Returns a fallback ±50-line window if no
-    AST unit fits or if the range crosses unit boundaries.
+    [line_start, line_end].
+
+    Returns:
+      - kind="function" or "method" if a function/method encloses the range
+      - kind="module-scope" if ast-grep succeeded but no function encloses
+        the anchor (the anchor IS at module level — top-level statements,
+        constants, etc.)
+      - kind="fallback_window" if ast-grep itself failed (timeout, parse
+        error, etc.) — we don't actually know where the anchor sits.
     """
     if line_end < line_start:
         line_start, line_end = line_end, line_start
 
     try:
         nodes = _collect_nodes(file)
-    except Exception:
-        return _fallback_window(file, line_start, line_end)
+    except Exception as exc:
+        # Spec §8.1 — log + fall back, never block the pipeline.
+        logging.warning("ast chunker fell back: file=%s err=%s", file, exc)
+        return _fallback_window(file, line_start, line_end, kind="fallback_window")
 
     enclosing = [
         n for n in nodes
         if n.line_start <= line_start and line_end <= n.line_end and n.kind == "function"
     ]
     if not enclosing:
-        return _fallback_window(file, line_start, line_end)
+        # ast-grep ran fine; the anchor really is at module scope.
+        return _fallback_window(file, line_start, line_end, kind="module-scope")
 
     # Smallest function that fully contains the range.
     n = min(enclosing, key=lambda x: x.line_end - x.line_start)
@@ -1230,23 +1259,23 @@ def chunk_for_anchor(file: Path, *, line_start: int, line_end: int) -> Chunk:
     return Chunk(text=n.text, kind=kind, line_start=n.line_start, line_end=n.line_end)
 
 
-def _fallback_window(file: Path, line_start: int, line_end: int) -> Chunk:
+def _fallback_window(
+    file: Path, line_start: int, line_end: int, *, kind: str = "fallback_window"
+) -> Chunk:
+    """Build a ±50-line window around the anchor. Caller chooses `kind`
+    to communicate WHY the fallback fired (see chunk_for_anchor docstring)."""
     src_lines = file.read_text().splitlines()
     n = len(src_lines)
     s = max(1, line_start - _FALLBACK_WINDOW)
     e = min(n, line_end + _FALLBACK_WINDOW)
     text = "\n".join(src_lines[s - 1 : e])
-    # If the original anchor lines are completely outside any function and
-    # the file is small, "module-scope" is more accurate; otherwise call
-    # it a fallback_window so the consumer can filter on `chunk_kind`.
-    kind = "module-scope" if e - s + 1 == n else "fallback_window"
     return Chunk(text=text, kind=kind, line_start=s, line_end=e)
 ```
 
 - [ ] **Step 4: Run tests, verify they pass**
 
 Run: `uv run pytest tests/test_phase6/test_ast_chunker.py -v`
-Expected: 5 passed. If `ast-grep` not installed, install via `brew install ast-grep` or `cargo install ast-grep`.
+Expected: 6 passed. If `ast-grep` not installed, install via `brew install ast-grep` or `cargo install ast-grep`.
 
 - [ ] **Step 5: Commit**
 
