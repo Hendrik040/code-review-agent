@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 037
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 29
+# cost (USD, harness-reported): 1.519860
+# cost (USD, public Opus 4 rate): 4.559581
+# usage: {'input_tokens': 43, 'cache_creation_input_tokens': 42325, 'cache_read_input_tokens': 1961878, 'output_tokens': 10967, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 42325}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 224, 'cache_read_input_tokens': 80233, 'cache_creation_input_tokens': 1530, 'cache_creation': {'ephemeral_5m_input_tokens': 1530, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/incidents/grouptype.py",
+    "line": 11,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "MetricAlertDetectorHandler became uninstantiable: it now inherits from StatefulDetectorHandler (which has 4 abstract methods) but overrides none, so `MetricAlertDetectorHandler(detector)` raises TypeError.",
+    "detail": "Before this change, `MetricAlertDetectorHandler` extended `DetectorHandler[QuerySubscriptionUpdate]` and concretely implemented the only abstract method (`evaluate`), so it could be instantiated as a stub that returned `[]`.\n\nAfter the change, it extends `StatefulDetectorHandler[QuerySubscriptionUpdate]`, which declares four abstract members (visible in src/sentry/workflow_engine/processors/detector.py): the `counter_names` abstract property (line 142), `get_dedupe_value` (line 150), `get_group_key_values` (line 158), and the newly added `build_occurrence_and_event_data` (line 166). `MetricAlertDetectorHandler` overrides none of them \u2014 its body is `pass`.\n\n`Detector.detector_handler` (src/sentry/workflow_engine/models/detector.py:86) instantiates the registered class with `return group_type.detector_handler(self)`. `MetricAlertFire` is registered with `detector_handler = MetricAlertDetectorHandler`. The result is that any code path that materializes the handler for a `Detector(type=\"metric_alert_fire\")` \u2014 including `process_detectors` (src/sentry/workflow_engine/processors/detector.py:53) \u2014 now raises `TypeError: Can't instantiate abstract class MetricAlertDetectorHandler with abstract methods build_occurrence_and_event_data, counter_names, get_dedupe_value, get_group_key_values` instead of returning a working no-op stub.\n\nEven though the comment notes \"We don't create these issues yet,\" the class is still wired up as the live handler for the registered group type, and the regression turns a benign stub into a hard runtime error the moment any caller looks up its handler. Either provide trivial concrete implementations (or raise NotImplementedError from the body) or unregister `detector_handler` on `MetricAlertFire` until real implementations land.",
+    "line_end": 12,
+    "suggested_fix": "@@\n-class MetricAlertDetectorHandler(StatefulDetectorHandler[QuerySubscriptionUpdate]):\n-    pass\n+class MetricAlertDetectorHandler(StatefulDetectorHandler[QuerySubscriptionUpdate]):\n+    counter_names: list[str] = []\n+\n+    def get_dedupe_value(self, data_packet):\n+        raise NotImplementedError\n+\n+    def get_group_key_values(self, data_packet):\n+        raise NotImplementedError\n+\n+    def build_occurrence_and_event_data(self, group_key, value, new_status):\n+        raise NotImplementedError\n"
+  }
+]

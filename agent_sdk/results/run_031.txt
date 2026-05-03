@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 031
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 9
+# cost (USD, harness-reported): 0.552610
+# cost (USD, public Opus 4 rate): 1.657828
+# usage: {'input_tokens': 22, 'cache_creation_input_tokens': 47718, 'cache_read_input_tokens': 229024, 'output_tokens': 5590, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 47718}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 293, 'cache_read_input_tokens': 40272, 'cache_creation_input_tokens': 1285, 'cache_creation': {'ephemeral_5m_input_tokens': 1285, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/monitors/logic/incident_occurrence.py",
+    "line": 168,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "get_monitor_environment_context returns the original monitor.config instead of the locally-modified copy, dropping the schedule_type display substitution.",
+    "detail": "The new file's get_monitor_environment_context (lines 159-171) makes a copy of monitor.config into the local `config` variable and replaces config['schedule_type'] with monitor.get_schedule_type_display(). However, the returned dict assigns `\"config\": monitor_environment.monitor.config` \u2014 the *original*, unmodified mapping \u2014 so the local `config` variable is dead code and the schedule_type substitution is silently dropped.\n\nThe diff itself documents this as a regression: the removed code in mark_failed.py had `\"config\": config,` (the modified copy), and the inline fixture-edit comment in the diff explicitly flagged this exact line as the bug-of-record. The new file reverts that fix.\n\nUser-visible impact: the monitor incident occurrence event sent to Kafka (event_data['contexts']['monitor']['config']) carries the raw stored schedule_type (an integer enum value such as ScheduleType.CRONTAB=0 or ScheduleType.INTERVAL=1) rather than the human-readable display string ('crontab' / 'interval'). Any downstream consumer that renders or filters on monitor.config.schedule_type \u2014 including the Sentry issue UI and notification templates \u2014 will see the wrong value, making issues harder to triage and breaking any dashboards keyed on the human-readable type.",
+    "line_end": 168,
+    "suggested_fix": "@@\n     return {\n         \"id\": str(monitor_environment.monitor.guid),\n         \"slug\": str(monitor_environment.monitor.slug),\n         \"name\": monitor_environment.monitor.name,\n-        \"config\": monitor_environment.monitor.config,\n+        \"config\": config,\n         \"status\": monitor_environment.get_status_display(),\n         \"type\": monitor_environment.monitor.get_type_display(),\n     }"
+  }
+]

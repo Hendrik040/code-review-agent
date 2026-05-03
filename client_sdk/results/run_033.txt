@@ -1,0 +1,20 @@
+# Client SDK reviewer run 033
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_93824-emcdukmk
+# refs: HEAD~1..HEAD
+# turns: 39
+# cost (USD, API rate): 3.566894
+# usage: {'input_tokens': 43, 'output_tokens': 16535, 'cache_creation_input_tokens': 41709, 'cache_read_input_tokens': 1029387}
+# findings: 1
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "concurrency",
+    "severity": "high",
+    "summary": "isinstance(process, multiprocessing.Process) is always False for SpawnProcess, so hung/crashed flusher processes are never killed before being replaced.",
+    "detail": "In `_ensure_processes_alive`, the diff replaced the unconditional `self.process.kill()` with:\n\n```\nif isinstance(process, multiprocessing.Process):\n    process.kill()\n```\n\n`multiprocessing.Process` is `multiprocessing.context.Process`, which is a *sibling* of `multiprocessing.context.SpawnProcess` (both inherit from `multiprocessing.process.BaseProcess`). Because `SpanFlusher` builds processes with `mp_context = multiprocessing.get_context(\"spawn\")` and then `mp_context.Process(...)`, every production flusher process is a `SpawnProcess`, and `isinstance(spawn_process, multiprocessing.Process)` returns False (verified on Python 3.11). \n\nConsequence: when a flusher process is detected as dead or hung, the guard skips `kill()` entirely, then `_create_process_for_shards` immediately starts a *new* process and overwrites `self.processes[process_index]`. The old hung/zombie process is leaked and, if it was merely hanging (not actually exited), it keeps running in parallel with the replacement. Two processes covering the same shard subset will both call `buffer.flush_segments` against the same Redis state and both `produce()` to the buffered-segments Kafka topic, leading to duplicate segment messages, Redis state races, and unbounded process accumulation across MAX_PROCESS_RESTARTS cycles.\n\nBefore this change, `self.process.kill()` was called unconditionally and SpawnProcess.kill() works (inherited from BaseProcess), so this is a regression introduced by the diff. The intended exclusion was probably for the test path that uses `threading.Thread` (which lacks `kill()`); the check should be against the common base class or explicitly exclude threads.",
+    "line_end": null,
+    "suggested_fix": "-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            try:\n+                if isinstance(process, multiprocessing.process.BaseProcess):\n+                    process.kill()\n+            except (ValueError, AttributeError):\n+                pass  # Process already closed, ignore"
+  }
+]

@@ -1,0 +1,214 @@
+=== Client SDK reviewer run 051 ===
+repo: DaytonaRepo
+refs: HEAD~1..HEAD
+started: 2026-05-03T21:22:41.221016+00:00
+
+--- system prompt (4547 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+--- user prompt (363 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: HEAD~1..HEAD
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+--- turn 1 stop=tool_use in=5 out=116 ---
+  [text] I'll start by building the review context to see what changed.
+  [tool_use] build_review_context({"base_ref": "HEAD~1", "head_ref": "HEAD"})
+  build_review_context → 36639 chars
+--- turn 2 stop=tool_use in=1 out=484 ---
+  [text] Let me analyze the diff more carefully. I see several potential issues:
+
+1. **`AssignmentSource.queued: datetime = timezone.now()`** - This is a class-level default for a frozen dataclass. `timezone.n
+  [tool_use] ast_search({"pattern": "def sync_status_outbound(self, $$$): $$$"})
+  [tool_use] ast_search({"pattern": "def sync_assignee_outbound(self, $$$): $$$"})
+  ast_search → 244 chars
+  ast_search → 83 chars
+--- turn 3 stop=tool_use in=1 out=179 ---
+  [tool_use] grep({"pattern": "def sync_status_outbound", "path_glob": "*.py"})
+  [tool_use] grep({"pattern": "def sync_assignee_outbound", "path_glob": "*.py"})
+  grep → 74 chars
+  grep → 163 chars
+--- turn 4 stop=tool_use in=1 out=202 ---
+  [text] Interesting — the search only finds the abstract `sync_status_outbound` and `sync_assignee_outbound` definitions in `mixins/issues.py`. Let me also check for them being defined as functions outside th
+  [tool_use] bash({"command": "grep -rn \"sync_status_outbound\\|sync_assignee_outbound\" --include=\"*.py\" src/ | h…)
+  bash → 829 chars
+--- turn 5 stop=tool_use in=1 out=239 ---
+  [text] Hmm only one set of matches in src/ - let me check tests too and see if there's a search index issue. This is suspicious - sentry should have many concrete integration implementations of these abstrac
+  [tool_use] bash({"command": "find . -name \"*.py\" -path \"*/integrations/*\" | xargs grep -l \"sync_status_outboun…)
+  [tool_use] bash({"command": "ls src/sentry/integrations/"})
+  bash → 140 chars
+  bash → 27 chars
+--- turn 6 stop=tool_use in=1 out=392 ---
+  [text] OK — this is a stripped-down repo for review purposes. Only the affected modules are checked in. So I can't verify concrete implementations exist for the changed signatures, but since `IssueSyncIntegr
+  [tool_use] bash({"command": "find . -name \"example\" -type d 2>/dev/null; find . -path \"*example*\" -name \"*.py\…)
+  bash → 19 chars
+--- turn 7 stop=tool_use in=1 out=106 ---
+  [tool_use] bash({"command": "find . -name \"*.py\" 2>/dev/null | xargs grep -l \"ExampleIntegration\" 2>/dev/null |…)
+  bash → 43 chars
+--- turn 8 stop=tool_use in=1 out=190 ---
+  [text] OK — the broader sentry codebase is not present here. I'll focus on what's verifiable in the diff itself.
+
+Let me focus on the `AssignmentSource` dataclass issues:
+  [tool_use] read_file_section({"path": "src/sentry/integrations/services/assignment_source.py", "start_line": 1, "end_line": 35})
+  read_file_section → 1190 chars
+--- turn 9 stop=tool_use in=1 out=556 ---
+  [text] Confirmed bug: **line 18** - `queued: datetime = timezone.now()` evaluates `timezone.now()` ONCE at module/class definition time. All `AssignmentSource` instances created without an explicit `queued` 
+  [tool_use] bash({"command": "python3 -c \"\nfrom dataclasses import asdict, dataclass\nfrom datetime import datetim…)
+  bash → 161 chars
+--- turn 10 stop=tool_use in=1 out=302 ---
+  [text] Confirmed. Two issues coming together:
+
+1. `queued: datetime = timezone.now()` is evaluated once at module import time.
+2. `to_dict()` produces a dict with a `datetime` value, which is then passed to 
+  [tool_use] read_file_section({"path": "src/sentry/integrations/tasks/sync_assignee_outbound.py", "start_line": 1, "end_line": 80})
+  read_file_section → 2894 chars
+--- turn 11 stop=tool_use in=1 out=398 ---
+  [text] Let me also verify: `from_dict` will fail when the dict comes from `to_dict()` if `queued` is included as a datetime. Actually wait — if we do `to_dict()` (which gives us a datetime), serialize throug
+  [tool_use] grep({"pattern": "\\.queued", "path_glob": "*.py"})
+  [tool_use] grep({"pattern": "queued", "path_glob": "*.py"})
+  grep → 35 chars
+  grep → 206 chars
+--- turn 12 stop=tool_use in=1 out=554 ---
+  [text] `queued` is never read by application code. But it's still serialized to the celery dict, and the `datetime` may fail JSON serialization.
+
+Let me verify if Sentry uses JSON serialization for celery — 
+  [tool_use] read_file_section({"path": "src/sentry/integrations/mixins/issues.py", "start_line": 395, "end_line": 425})
+  read_file_section → 1040 chars
+--- turn 13 stop=tool_use in=1 out=412 ---
+  [text] Good — `sync_assignee_outbound` already has `**kwargs: Any` so callers passing `assignment_source=...` works fine for the abstract base. Concrete implementations would need to either accept the kwarg 
+  [tool_use] read_file_section({"path": "tests/sentry/models/test_groupassignee.py", "start_line": 140, "end_line": 230})
+  read_file_section → 3923 chars
+--- turn 14 stop=tool_use in=1 out=177 ---
+  [text] Now let me also check the `to_dict`/`from_dict` round-trip via Celery serialization more carefully. Let's check the broader sync.py path:
+  [tool_use] read_file_section({"path": "src/sentry/integrations/utils/sync.py", "start_line": 120, "end_line": 145})
+  read_file_section → 990 chars
+--- turn 15 stop=tool_use in=1 out=355 ---
+  [text] So the kwargs dict goes through Celery `apply_async`. Whether this fails depends on Celery serializer. Sentry historically uses pickle... but let me check if there's any indication. Since the broader 
+  [tool_use] read_file_section({"path": "src/sentry/integrations/mixins/issues.py", "start_line": 63, "end_line": 75})
+  read_file_section → 521 chars
+--- turn 16 stop=tool_use in=1 out=895 ---
+  [text] The base method calls the parameter `sync_source`, while the subclass `IssueSyncIntegration.should_sync` also calls it `sync_source`. Both use `sync_source`. Good — consistent.
+
+But wait: callers (in 
+  [tool_use] bash({"command": "python3 -c \"\n# Simulate what kombu's JSON serializer does (kombu adds datetime suppo…)
+  bash → 33 chars
+--- turn 17 stop=tool_use in=1 out=1190 ---
+  [text] Can't verify locally. Kombu (used by Celery) does support datetime in its JSON encoder via custom serialization, so the JSON serializer wouldn't fail outright. After roundtrip, `queued` becomes a stri
+  [tool_use] submit_findings({"findings": [{"file": "src/sentry/integrations/services/assignment_source.py", "line": 18, "catego…)
+  submit_findings → 1 finding(s)
+--- turn 18 stop=end_turn in=1 out=371 ---
+  [text] I submitted one finding: the `AssignmentSource.queued` default is evaluated at class-definition time rather than per-instance, making it a process-import-time constant rather than the per-assignment t
+
+finished: 2026-05-03T21:24:38.288050+00:00  turns=18  submitted=True  findings=1  exit_reason=stop_reason_end_turn  cost=$1.5649

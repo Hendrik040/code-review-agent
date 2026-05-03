@@ -1,0 +1,30 @@
+# Client SDK reviewer run 032
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_67876-l7v4yw1h
+# refs: HEAD~1..HEAD
+# turns: 42
+# cost (USD, API rate): 6.025725
+# usage: {'input_tokens': 46, 'output_tokens': 29563, 'cache_creation_input_tokens': 66308, 'cache_read_input_tokens': 1709690}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "high",
+    "summary": "`integration.metadata[\"sender\"][\"login\"]` raises KeyError when sender metadata is absent, breaking the install flow.",
+    "detail": "In `GitHubInstallation.dispatch`, after confirming an ACTIVE `Integration` exists with no associated `OrganizationIntegration`, the code unconditionally indexes `integration.metadata[\"sender\"][\"login\"]` to compare against the OAuth-authenticated user. However nothing in this PR guarantees that `metadata[\"sender\"]` is present:\n\n- `build_integration` (lines 376-377) only sets `metadata[\"sender\"]` if `state.get(\"sender\")` is truthy. The newly added `OAuthLoginView` only binds `github_authenticated_user` to pipeline state \u2014 it never binds `sender`. So any integration freshly created through this PR's pipeline has no `sender` key.\n- Pre-existing GitHub integrations created before sender tracking was added likewise have no `sender` key.\n\nReachable scenario: a user creates a GitHub integration via the new pipeline (no `sender` written), the `OrganizationIntegration` is later removed (e.g., org wipe / migration), the underlying `Integration` row is left orphaned in ACTIVE status, then any user attempts to claim it through the install flow. Execution reaches line 501-503, `integration.metadata[\"sender\"]` raises `KeyError`, the request 500s, and the user is permanently unable to (re)install \u2014 the dialog cannot show the friendly error template either.\n\nThe check should use `.get(...)` defensively and treat a missing sender as a verification failure (return `error(...)`), since we cannot assert the installer matches if we don't know who the installer was.",
+    "line_end": 503,
+    "suggested_fix": "@@\n-        # Check that the authenticated GitHub user is the same as who installed the app.\n-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n-            return error(request, self.active_organization)\n+        # Check that the authenticated GitHub user is the same as who installed the app.\n+        sender_login = integration.metadata.get(\"sender\", {}).get(\"login\")\n+        if (\n+            sender_login is None\n+            or pipeline.fetch_state(\"github_authenticated_user\") != sender_login\n+        ):\n+            return error(request, self.active_organization)\n"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 399,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "`installation_id` from the query string is bound to pipeline state before the OAuth `state` is validated, so a forged request still mutates server-side state.",
+    "detail": "In `OAuthLoginView.dispatch` the order is:\n\n1. `pipeline.bind_state(\"installation_id\", installation_id)` (line 399) using whatever `installation_id` is in the URL,\n2. then the CSRF-style `state` check at line 412.\n\nBecause the bind happens before the `state != pipeline.signature` check, an attacker can send `setup_path?installation_id=<victim_id>&state=garbage&code=garbage` to a victim and persist `installation_id=<victim_id>` into the victim's pipeline state, even though the request is rejected with the \"Invalid installation request\" page. If the victim then completes a legitimate OAuth round-trip in the same pipeline (no `installation_id` in the URL), `GitHubInstallation` will read the poisoned `installation_id` from `pipeline.fetch_state(...)` and operate on the attacker-chosen installation. The downstream `metadata[\"sender\"][\"login\"]` check is the only thing preventing an actual takeover, and as noted in the other finding it can crash with KeyError instead of returning an error page on integrations without a `sender`.\n\nThe fix is to validate `state` first and only bind pipeline state once the request has been authenticated.",
+    "line_end": 399,
+    "suggested_fix": "@@\n-        installation_id = request.GET.get(\"installation_id\")\n-        if installation_id:\n-            pipeline.bind_state(\"installation_id\", installation_id)\n-\n-        if not request.GET.get(\"state\"):\n+        if not request.GET.get(\"state\"):\n+            installation_id = request.GET.get(\"installation_id\")\n+            if installation_id:\n+                pipeline.bind_state(\"installation_id\", installation_id)\n             state = pipeline.signature\n@@\n         # At this point, we are past the GitHub \"authorize\" step\n         if request.GET.get(\"state\") != pipeline.signature:\n             return error(request, self.active_organization)\n"
+  }
+]

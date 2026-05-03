@@ -1,0 +1,287 @@
+=== Client SDK reviewer run 041 ===
+repo: DaytonaRepo
+refs: HEAD~1..HEAD
+started: 2026-05-03T19:54:34.197260+00:00
+
+--- system prompt (4547 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+--- user prompt (363 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: HEAD~1..HEAD
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+--- turn 1 stop=tool_use in=5 out=116 ---
+  [text] I'll start by getting the review context for this PR.
+  [tool_use] build_review_context({"base_ref": "HEAD~1", "head_ref": "HEAD"})
+  build_review_context → 39767 chars
+--- turn 2 stop=tool_use in=1 out=282 ---
+  [text] Let me dig deeper into the actual integration.py file to understand the full context of the new OAuthLoginView and the GitHubInstallation flow.
+  [tool_use] read_file_section({"path": "src/sentry/integrations/github/integration.py", "start_line": 385, "end_line": 510})
+  [tool_use] bash({"command": "find . -path ./node_modules -prune -o -name \"*.py\" -print | xargs grep -l \"class Gi…)
+  read_file_section → 5528 chars
+  bash → 19 chars
+--- turn 3 stop=tool_use in=1 out=214 ---
+  [tool_use] bash({"command": "grep -rn \"class GitHubIdentityProvider\\|def get_user_info\" src/sentry/identity/gith…)
+  [tool_use] bash({"command": "grep -rn \"get_oauth_client_id\\|get_oauth_authorize_url\\|get_oauth_access_token_url\…)
+  bash → 28 chars
+  bash → 19 chars
+--- turn 4 stop=tool_use in=1 out=210 ---
+  [tool_use] bash({"command": "find . -path ./node_modules -prune -o -type d -name github -print 2>/dev/null | head"})
+  [tool_use] bash({"command": "find . -path ./node_modules -prune -o -name \"*.py\" -print 2>/dev/null | xargs grep -…)
+  bash → 67 chars
+  bash → 47 chars
+--- turn 5 stop=tool_use in=1 out=240 ---
+  [text] Interesting — `from sentry.identity.github import GitHubIdentityProvider, get_user_info` is the import, but I don't see those modules in the local filesystem. Let me check more broadly.
+  [tool_use] bash({"command": "find . -path \"*sentry/identity*\" -type f 2>/dev/null | head -30"})
+  [tool_use] bash({"command": "grep -rn \"GitHubIdentityProvider\\|get_user_info\" --include=\"*.py\" 2>/dev/null | h…)
+  bash → 19 chars
+  bash → 334 chars
+--- turn 6 stop=tool_use in=1 out=108 ---
+  [tool_use] bash({"command": "find . -path ./node_modules -prune -o -path \"*identity*\" -type f -name \"*.py\" -pri…)
+  bash → 19 chars
+--- turn 7 stop=tool_use in=1 out=74 ---
+  [tool_use] bash({"command": "ls src/sentry/ | head -40"})
+  bash → 16 chars
+--- turn 8 stop=tool_use in=1 out=236 ---
+  [text] The repo is a sandbox checkout that only has the `integrations` and `web` portions. We can't audit the module contents of `sentry.identity.github` here, but the `integration.py` and the test are prese
+  [tool_use] bash({"command": "find . -name \"*.py\" 2>/dev/null | xargs grep -l \"class PipelineView\\|def signature…)
+  bash → 47 chars
+--- turn 9 stop=tool_use in=1 out=1275 ---
+  [text] The base PipelineView class isn't in this slice. Let me focus on possible issues by reasoning about the code.
+
+Let me re-examine the OAuthLoginView code path:
+
+1. **Line 397-399**: `installation_id = 
+  [tool_use] read_file_section({"path": "src/sentry/web/frontend/pipeline_advancer.py", "start_line": 1, "end_line": 70})
+  read_file_section → 2908 chars
+--- turn 10 stop=tool_use in=1 out=322 ---
+  [text] Now let me investigate a potential subtle bug. In `OAuthLoginView.dispatch` line 397, `installation_id = request.GET.get("installation_id")` ONLY binds if installation_id is present in GET. But this i
+  [tool_use] bash({"command": "grep -rn \"integration-installation\\|sentry-extension-setup\" --include=\"*.py\" 2>/d…)
+  bash → 406 chars
+--- turn 11 stop=tool_use in=1 out=986 ---
+  [text] Now let me focus on real bugs in the flow.
+
+**Potential bug 1: SSRF / unsafe redirect** — `redirect_uri` in line 404-406 uses `absolute_uri(reverse(...))`. The `reverse` lookup should be safe.
+
+**Pote
+  [tool_use] bash({"command": "find . -name \"*.py\" 2>/dev/null | xargs grep -l \"def safe_urlopen\" 2>/dev/null"})
+  bash → 32 chars
+--- turn 12 stop=tool_use in=1 out=1527 ---
+  [text] Not in our slice. The test mocks GitHub OAuth as `responses.POST`, so it's expected to be POST.
+
+**Potential bug 7: `request.GET.get("code")` could be None/empty** — if attacker gets state right but n
+  [tool_use] read_file_section({"path": "tests/sentry/integrations/github/test_integration.py", "start_line": 220, "end_line": 270})
+  read_file_section → 2308 chars
+--- turn 13 stop=tool_use in=1 out=1896 ---
+  [text] So `init_path` does NOT have installation_id (it's just `self.init_path`, not `self.init_path_2` which has the installation_id). Looking at the test flow:
+
+1. `init_path` (no installation_id) → OAuthL
+  [tool_use] read_file_section({"path": "tests/sentry/integrations/github/test_integration.py", "start_line": 300, "end_line": 385})
+  read_file_section → 4166 chars
+--- turn 14 stop=tool_use in=1 out=360 ---
+  [text] OK. Now a key finding I want to confirm — let me consider whether **the user mismatch check could be bypassed**.
+
+The user check only runs if Integration with this external_id already exists. If it do
+  [tool_use] read_file_section({"path": "src/sentry/integrations/github/integration.py", "start_line": 350, "end_line": 390})
+  read_file_section → 1848 chars
+--- turn 15 stop=tool_use in=1 out=199 ---
+  [text] Note: `state.get("sender")` is referenced in `build_integration`, but I don't see anywhere in the diff where `pipeline.bind_state("sender", ...)` is called. The sender appears to come from the webhook
+  [tool_use] bash({"command": "grep -rn \"bind_state.*sender\\|\\\"sender\\\"\" --include=\"*.py\" src/sentry/integra…)
+  bash → 300 chars
+--- turn 16 stop=tool_use in=1 out=255 ---
+  [text] So `metadata["sender"]` is populated via webhook installation events (the webhook handler). This is consistent with the test.
+
+Now let me look for actual bugs:
+
+**Real potential bug — `installation_id
+  [tool_use] bash({"command": "grep -rn \"integration-installation\\|integration_installation\" --include=\"*.py\" --…)
+  bash → 136 chars
+--- turn 17 stop=tool_use in=1 out=790 ---
+  [text] Not in slice. But this URL probably initiates a fresh pipeline. The new OAuthLoginView would run first, see installation_id in GET, bind it, redirect to GitHub OAuth.
+
+**Now look at line 397-399 with 
+  [tool_use] bash({"command": "find . -name \"*.py\" 2>/dev/null | xargs grep -ln \"def safe_urlopen\\|def safe_urlre…)
+  bash → 19 chars
+--- turn 18 stop=tool_use in=1 out=378 ---
+  [text] Not in slice. This is a minor concern, not a clear bug.
+
+**Now let me examine what happens when `authenticated_user_info` is None or not a dict**:
+
+`get_user_info(payload["access_token"])` — what's th
+  [tool_use] read_file_section({"path": "src/sentry/integrations/github/integration.py", "start_line": 128, "end_line": 156})
+  read_file_section → 1013 chars
+--- turn 19 stop=tool_use in=1 out=4394 ---
+  [text] Alright — let me now re-read the top of the diff carefully because there's an interesting issue with `pipeline.signature` and state validation timing:
+
+```python
+if not request.GET.get("state"):
+    s
+  [tool_use] bash({"command": "grep -rn \"metadata\\[.sender.\\]\\|\\\"sender\\\":\" --include=\"*.py\" src/sentry/in…)
+  bash → 104 chars
+--- turn 20 stop=tool_use in=1 out=254 ---
+  [text] Hmm — the `metadata["sender"]` is only populated if `state.get("sender")` is set in `build_integration` (line 376-377). Where does state get "sender"? Looking at the diff and the existing code, I don'
+  [tool_use] bash({"command": "grep -rn \"sender\" --include=\"*.py\" src/sentry/integrations/github/ 2>/dev/null | h…)
+  bash → 300 chars
+--- turn 21 stop=tool_use in=1 out=167 ---
+  [text] So in the integration code itself, `metadata["sender"]` is set conditionally based on `state.get("sender")`. The webhook handler must set it on the existing integration record directly. Let me search:
+  [tool_use] bash({"command": "grep -rn \"INSTALLATION_EVENT_EXAMPLE\" --include=\"*.py\" 2>/dev/null | head"})
+  bash → 230 chars
+--- turn 22 stop=tool_use in=1 out=153 ---
+  [tool_use] bash({"command": "find . -name \"github.py\" -path \"*fixtures*\" 2>/dev/null"})
+  [tool_use] bash({"command": "find . -name \"fixtures\" -type d 2>/dev/null | head"})
+  bash → 19 chars
+  bash → 19 chars
+--- turn 23 stop=tool_use in=1 out=117 ---
+  [text] Not in our slice. Let me check fields for Integration model:
+  [tool_use] bash({"command": "grep -rn \"class Integration\\|integration.metadata\" --include=\"*.py\" 2>/dev/null |…)
+  bash → 202 chars
+--- turn 24 stop=tool_use in=1 out=2045 ---
+  [text] Without the webhook handler in slice, I can verify the contract by what test expects: the test sets `webhook_event["sender"]["login"] = "attacker"`, hits `/extensions/github/webhook/`, expects `resp.s
+  [tool_use] ast_search({"pattern": "OAuthLoginView()"})
+  [tool_use] ast_search({"pattern": "GitHubInstallation()"})
+  ast_search → 122 chars
+  ast_search → 130 chars
+--- turn 25 stop=tool_use in=1 out=160 ---
+  [text] Both only used in get_pipeline_views. No external callers.
+
+Let me check the file one last time for the new `error()` function shadowing any builtin or causing trouble:
+  [tool_use] bash({"command": "grep -n \"^def error\\|^class.*error\\|from.*import.*error\\|^error = \" src/sentry/in…)
+  bash → 14 chars
+--- turn 26 stop=tool_use in=1 out=706 ---
+  [text] "error" is a generic name but not shadowing imports.
+
+**Now let me check — in the `error()` helper, is `error_short` already wrapped in `_()` translation in callsites?**
+
+Looking at callsites:
+- Line 
+  [tool_use] bash({"command": "grep -rn \"Github installed on another Sentry\\|GitHub installation pending deletion\\…)
+  bash → 19 chars
+--- turn 27 stop=tool_use in=1 out=937 ---
+  [text] No .po files in slice. Probably low-severity i18n concern. Not worth reporting unless I'm sure.
+
+Let me look for one more potentially concerning thing. The new `error()` function is named `error` whic
+  [tool_use] bash({"command": "grep -rn \"determine_active_organization\\|active_organization\" --include=\"*.py\" 2>…)
+  bash → 1148 chars
+--- turn 28 stop=tool_use in=1 out=2127 ---
+  [text] determine_active_organization is from base PipelineView (not in slice).
+
+OK here's something I haven't fully examined — **the OAuth callback URL `setup_path` is `/extensions/github/setup/`**. It's a g
+  [tool_use] submit_findings({"findings": []})
+  submit_findings → 0 finding(s)
+--- turn 29 stop=end_turn in=1 out=488 ---
+  [text] I reviewed the GitHub integration PR which adds a new `OAuthLoginView` step before `GitHubInstallation` to verify the GitHub user matches the app installer (security hardening against unauthorized ins
+
+finished: 2026-05-03T19:59:54.157654+00:00  turns=29  submitted=True  findings=0  exit_reason=stop_reason_end_turn  cost=$3.7012

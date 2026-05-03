@@ -1,5 +1,5 @@
 def add(a, b, c):
-    """Sum three numbers. PLANTED BUG: callers in main.py only pass 2."""
+    """Sum three numbers."""
     return a + b + c
 
 

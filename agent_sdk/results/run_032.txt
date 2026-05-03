@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 032
+# repo: DaytonaRepo
+# refs: HEAD~1..HEAD
+# turns: 17
+# cost (USD, harness-reported): 1.378553
+# cost (USD, public Opus 4 rate): 4.135658
+# usage: {'input_tokens': 29, 'cache_creation_input_tokens': 63997, 'cache_read_input_tokens': 390203, 'output_tokens': 31333, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 63997}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 320, 'cache_read_input_tokens': 61939, 'cache_creation_input_tokens': 11475, 'cache_creation': {'ephemeral_5m_input_tokens': 11475, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 481,
+    "category": "security",
+    "severity": "medium",
+    "summary": "First-time install path bypasses the new authenticated-user vs. installation-sender check.",
+    "detail": "The PR's stated goal is to ensure the OAuth-authenticated GitHub user matches the user who installed the GitHub App (line 500-505 comment: \"Check that the authenticated GitHub user is the same as who installed the app.\"). However, this check only runs when an Integration row already exists. In the `Integration.DoesNotExist` branch at lines 481-482, control jumps directly to `pipeline.next_step()` (i.e. `build_integration`) with no user verification.\n\n`build_integration` (lines 351-379) creates the Integration purely from `state[\"installation_id\"]` via `get_installation_info()`. It only persists a `sender` field when `state.get(\"sender\")` is truthy, but `OAuthLoginView` never binds `\"sender\"` into pipeline state \u2014 it only binds `\"github_authenticated_user\"`. So during the race window between the attacker triggering a GitHub App install (which yields an `installation_id`) and GitHub's `installation` webhook arriving at Sentry, an attacker who phishes a victim into completing the install pipeline against `attacker's installation_id` can have the victim's org adopt that GitHub App installation, exactly the threat this PR is intended to block. After the webhook later arrives with `sender.login=attacker`, the OrganizationIntegration is already linked to the victim's org.\n\nAdditionally, because `build_integration` never sets `metadata[\"sender\"]`, integrations created through this code path leave subsequent installs vulnerable to a `KeyError` at line 503 (`integration.metadata[\"sender\"][\"login\"]`) until the webhook patches metadata in.",
+    "line_end": 482,
+    "suggested_fix": "Move the authenticated-user check above the `try` block (or duplicate it in the DoesNotExist branch) so build_integration only runs after we've validated `pipeline.fetch_state(\"github_authenticated_user\")` against an authoritative GitHub-side identity (e.g. the installation's `account.login` returned by `get_installation_info`). Also bind `state[\"sender\"]` from the OAuth-authenticated user so future re-install attempts have a sender to compare against."
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "medium",
+    "summary": "`safe_urlopen` is called outside the try/except, so transient network failures during OAuth token exchange surface as uncaught 500s instead of the user-friendly error page.",
+    "detail": "Line 423 calls `safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)` outside the surrounding try block. If the POST raises (DNS failure, TLS error, ConnectionError, ReadTimeout \u2014 all of which `safe_urlopen` is known to propagate when the underlying `requests` call fails before a response is received), the exception escapes `OAuthLoginView.dispatch` and the user sees a 500 instead of the intended fallback path that shows the `\"Invalid installation request.\"` template via `error(request, self.active_organization)`.\n\nThe surrounding `try: ... except Exception: payload = {}` was clearly intended to cover the entire token-exchange step (the comment on line 422 says \"similar to OAuth2CallbackView.exchange_token\"), but only the `safe_urlread`/`parse_qsl` portion is inside the guard.",
+    "line_end": 429,
+    "suggested_fix": "--- a/src/sentry/integrations/github/integration.py\n+++ b/src/sentry/integrations/github/integration.py\n-        # similar to OAuth2CallbackView.exchange_token\n-        req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n-\n-        try:\n-            body = safe_urlread(req).decode(\"utf-8\")\n-            payload = dict(parse_qsl(body))\n-        except Exception:\n-            payload = {}\n+        # similar to OAuth2CallbackView.exchange_token\n+        try:\n+            req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n+            body = safe_urlread(req).decode(\"utf-8\")\n+            payload = dict(parse_qsl(body))\n+        except Exception:\n+            payload = {}"
+  }
+]

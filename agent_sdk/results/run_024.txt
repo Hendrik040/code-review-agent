@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 024
+# repo: /var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-sentry_93824-qlk2_4u0
+# refs: HEAD~1..HEAD
+# turns: 10
+# cost (USD, harness-reported): 1.217675
+# cost (USD, public Opus 4 rate): 3.653024
+# usage: {'input_tokens': 19, 'cache_creation_input_tokens': 79579, 'cache_read_input_tokens': 459972, 'output_tokens': 19609, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 79579}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 402, 'cache_read_input_tokens': 64190, 'cache_creation_input_tokens': 2180, 'cache_creation': {'ephemeral_5m_input_tokens': 2180, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Unhealthy SpawnProcess never gets kill()'d due to wrong isinstance check, leaking the old process on every restart.",
+    "detail": "The new `_ensure_processes_alive` gates `process.kill()` behind `isinstance(process, multiprocessing.Process)`. The flusher creates its workers via `mp_context = multiprocessing.get_context(\"spawn\")` / `mp_context.Process`, which produces `multiprocessing.context.SpawnProcess` instances. `multiprocessing.Process` (i.e. `multiprocessing.context.Process`) and `SpawnProcess` are sibling subclasses of `BaseProcess`, not parent/child \u2014 verified with a one-liner: `isinstance(spawn_ctx.Process(...), multiprocessing.Process)` is `False`. This means in production (where `produce_to_pipe is None`), the gate is always False and `process.kill()` is never invoked. The old `_ensure_process_alive` called `self.process.kill()` unconditionally (only catching `ValueError`). Combined with `self._create_process_for_shards(...)` immediately overwriting `self.processes[process_index]` with a freshly spawned process, every \"restart\" leaks the old (still-running) process \u2014 it holds Redis connections, file descriptors, and continues writing to Kafka with stale state until the parent exits (it's only `daemon=True`, so no automatic OS reap during normal operation). Trigger: any time the flusher hangs for more than `max-unhealthy-seconds` or its child crashes in a way that doesn't immediately propagate `is_alive() == False` until reaped \u2014 i.e. exactly the failure mode this method is supposed to recover from.",
+    "line_end": null,
+    "suggested_fix": "-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            try:\n+                process.kill()\n+            except (ValueError, AttributeError):\n+                pass  # threads have no kill(); already-closed processes raise ValueError"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 341,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "join() `break` on deadline skips terminate() for the current and all subsequent processes.",
+    "detail": "In the new multi-process `join()`, the deadline check uses `break` to exit the for-loop entirely:\n\n    for process_index, process in self.processes.items():\n        if deadline is not None:\n            remaining_time = deadline - time.time()\n            if remaining_time <= 0:\n                break              # <-- exits loop\n        while process.is_alive() and ...:\n            time.sleep(0.1)\n        if isinstance(process, multiprocessing.Process):\n            process.terminate()    # <-- skipped for this and all later processes\n\nIf the timeout has been consumed (e.g. by `self.next_step.join(timeout)` on the line above, or by waiting on process 0), `terminate()` is never called for any remaining process. The single-process predecessor always called `self.process.terminate()` after the wait loop, regardless of whether the deadline was already expired. With multiple shards this is now a graceful-shutdown regression: on a tight shutdown deadline you can leak N-1 unterminated SpawnProcesses on every consumer rebalance/exit. (Note: even where terminate() is reached, the same `isinstance(... multiprocessing.Process)` mismatch as bug #1 applies \u2014 terminate() on a SpawnProcess is also gated out.)",
+    "line_end": null,
+    "suggested_fix": "-        for process_index, process in self.processes.items():\n-            if deadline is not None:\n-                remaining_time = deadline - time.time()\n-                if remaining_time <= 0:\n-                    break\n-\n-            while process.is_alive() and (deadline is None or deadline > time.time()):\n-                time.sleep(0.1)\n-\n-            if isinstance(process, multiprocessing.Process):\n-                process.terminate()\n+        for process in self.processes.values():\n+            while process.is_alive() and (deadline is None or deadline > time.time()):\n+                time.sleep(0.1)\n+            if hasattr(process, \"terminate\"):\n+                process.terminate()"
+  }
+]
