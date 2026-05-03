@@ -1,10 +1,10 @@
-"""Client SDK reviewer (Phase 1.6 — v1, agentic loop).
+"""Client SDK reviewer (Phase 1.6 v2 — "agent with a computer").
 
-Calls `shared.odis.build_context()` to assemble the curated review
-context, then runs an agent loop: the model can call investigation
-tools (read_file_section / ast_search / grep) to dig further, and
-calls `submit_findings` when it has a verdict. No tool is forced —
-the model chooses when to investigate, when to submit, when to stop.
+The agent gets a thin user prompt (repo path + refs) and a tools list
+with bash / read_file_section / ast_search / grep / write_file /
+build_review_context / submit_findings. ODIS is offered AS A TOOL,
+not pre-baked into the user message — the model decides when to fetch
+it. No tool_choice forcing.
 
 I/O contract is the one in docs/architecture.md ("Both reviewers
 expose the identical run() signature"). The companion file is
@@ -28,8 +28,11 @@ import pricing  # noqa: E402
 from shared.agent_tools import (  # noqa: E402
     INVESTIGATION_TOOLS,
     ast_search,
+    bash,
+    build_review_context,
     grep,
     read_file_section,
+    write_file,
 )
 from shared.findings import (  # noqa: E402
     Finding,
@@ -37,7 +40,6 @@ from shared.findings import (  # noqa: E402
     SUBMIT_FINDINGS_TOOL_DESCRIPTION,
     SUBMIT_FINDINGS_TOOL_NAME,
 )
-from shared.odis import build_context  # noqa: E402
 from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 
 MODEL = "claude-opus-4-7"
@@ -64,8 +66,12 @@ def _dispatch_tool(repo: Path, name: str, args: dict[str, Any]) -> str:
     """Run an investigation tool and return its result as a string.
 
     submit_findings is handled inline in the loop (it's the terminator)
-    so this dispatcher only handles the three read-only tools.
+    so this dispatcher only handles the read-only / scratch tools.
     """
+    if name == "build_review_context":
+        return build_review_context(repo, args["base_ref"], args["head_ref"])
+    if name == "bash":
+        return bash(repo, args["command"])
     if name == "read_file_section":
         return read_file_section(
             repo, args["path"], args["start_line"], args["end_line"]
@@ -74,6 +80,8 @@ def _dispatch_tool(repo: Path, name: str, args: dict[str, Any]) -> str:
         return ast_search(repo, args["pattern"], args.get("language", "python"))
     if name == "grep":
         return grep(repo, args["pattern"], args.get("path_glob", ""))
+    if name == "write_file":
+        return write_file(repo, args["path"], args["content"])
     return f"Error: unknown tool {name!r}"
 
 
@@ -133,8 +141,14 @@ def run(
     trace_path = TRACES_DIR / f"run_{run_id:03d}.txt"
     result_path = RESULTS_DIR / f"run_{run_id:03d}.txt"
 
-    context = build_context(repo_path, base_ref, head_ref)
-    user_prompt = USER_PROMPT_TEMPLATE.format(odis_context=context)
+    # Phase 1.6 v2: ODIS is a TOOL the agent can call, not pre-baked
+    # into the prompt. The user prompt is a thin directive pointing at
+    # the repo + refs.
+    user_prompt = USER_PROMPT_TEMPLATE.format(
+        repo_path=str(repo_path),
+        base_ref=base_ref,
+        head_ref=head_ref,
+    )
 
     trace: list[str] = [
         f"=== Client SDK reviewer run {run_id:03d} ===",
@@ -145,7 +159,7 @@ def run(
         f"--- system prompt ({len(SYSTEM_PROMPT)} chars) ---",
         SYSTEM_PROMPT,
         f"--- user prompt ({len(user_prompt)} chars) ---",
-        user_prompt[:2000] + ("\n…(truncated for trace)" if len(user_prompt) > 2000 else ""),
+        user_prompt,
         "",
     ]
 
