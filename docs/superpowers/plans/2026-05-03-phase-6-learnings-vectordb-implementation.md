@@ -770,6 +770,7 @@ so reprocessing is safe).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
@@ -801,8 +802,12 @@ class State:
             self._persist()
 
     def _persist(self) -> None:
+        # Atomic rename so a mid-write crash never leaves a partial JSON
+        # file on disk (spec §8.1: "restart picks up where it left off").
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(self._cursors, indent=2, sort_keys=True))
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self._cursors, indent=2, sort_keys=True))
+        os.replace(tmp, self._path)
 ```
 
 - [ ] **Step 4: Run tests, verify they pass**

@@ -40,3 +40,13 @@ def test_corrupt_file_is_treated_as_empty(tmp_path: Path):
     assert s.cursor("owner/repo") is None
     s.advance("owner/repo", 5)
     assert s.cursor("owner/repo") == 5
+
+
+def test_load_ignores_leftover_tmp_file(tmp_path: Path):
+    """A previous crash may leave a state.json.tmp on disk. State should
+    only read the canonical state.json and ignore the .tmp orphan."""
+    p = tmp_path / "state.json"
+    p.write_text('{"owner/repo": 50}')
+    (tmp_path / "state.json.tmp").write_text("garbage")
+    s = State(p)
+    assert s.cursor("owner/repo") == 50
