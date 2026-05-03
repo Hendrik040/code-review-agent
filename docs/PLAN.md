@@ -19,7 +19,7 @@ This document is intentionally re-written end-to-end as of PRs #17 (merged), #20
 
 | Pattern | Source | Where it lives |
 |---|---|---|
-| **Give agents a computer** | Lance Martin | `shared/agent_tools.py:bash` (cwd-locked, 15s timeout, repo-relative). Phase 4 (Daytona) replaces local exec with sandbox; same surface. |
+| **Give agents a computer** | Lance Martin | Phase 4 ✓: `sandbox/repo.py` defines a `Repo` protocol; `LocalRepo` (subprocess+tempdir) and `DaytonaRepo` (remote Daytona sandbox) implement it. Tools never touch the host filesystem; everything that operates on repo bytes runs through `repo.exec` / `repo.upload_bytes`. |
 | **Multi-layer action space** | LM / CodeAct | `bash` is the primitive; typed wrappers (`read_file_section`, `ast_search`, `grep`, `build_review_context`, `write_file`) are sugar with cleaner schemas the model picks for common ops. |
 | **Progressive disclosure** | LM / Anthropic | `shared/skills/ast_grep.md` is read on demand by the agent; not pre-injected. Tool descriptions stay terse. |
 | **Offload context** | LM / Manus | Agent SDK provides automatically (Phase 0 `compare.py` proved 99.7% reduction). Client SDK manually mimics via `read_file_section` + `bash head/tail`. |
@@ -270,8 +270,36 @@ PHASE 3 — Comparison + pitch                                         ⏳ ready
    3.3  Pitch document (`docs/pitch.md`) with the headline numbers
         and the four-panel effort-frontier grid from Phase 2.3
 
-PHASE 4 — Daytona sandbox layer                                      ⏳
-PHASE 5 — GitHub PR integration                                      ⏳
+PHASE 4 — Sandbox layer (Repo protocol + Daytona backend)            ✓ (PR pending)
+   4.1  sandbox/repo.py — `Repo` protocol + `ExecResult` dataclass.
+        Centralized SANDBOX_BACKEND env var dispatch.            ✓
+   4.1  sandbox/local.py — `LocalRepo` (subprocess + tempdir);
+        path-traversal guard ported from old _safe_target.       ✓
+   4.1  shared/odis_cli.py — `python -m shared.odis_cli BASE..HEAD`.
+        ODIS now runs wherever the repo lives, not on the host.  ✓
+   4.1  shared/agent_tools.py refactor — every tool collapses to
+        a thin shell-idiom wrapper over Repo.exec.               ✓
+   4.1  shared/fixtures.py refactor — yields MaterializedFixture
+        with `repo: Repo`; backend selected by SANDBOX_BACKEND.  ✓
+   4.1  client_sdk/reviewer.py + agent_sdk/reviewer.py take Repo. ✓
+   4.1  Agent SDK harness Read/Bash/Grep replaced with MCP
+        proxies (so agent never touches host FS — even on the
+        Agent SDK path where the harness ships those natively).  ✓
+   4.1  sandbox/daytona.py — `DaytonaRepo`; default snapshot +
+        bootstrap (mkdir, git config, pip install --user
+        ast-grep-cli, upload shared/*). Anchors at /home/daytona/
+        because the default sandbox runs as unprivileged uid 1001
+        (no /workspace or /opt write access).                    ✓
+   4.1  tests/test_repo_conformance.py — 10 protocol-conformance
+        tests parametrized over both backends; Daytona arm
+        skipped without DAYTONA_API_KEY.                         ✓
+   4.2  Phase-4.2 deferred: custom OCI image + GHCR push, bulk
+        tar upload (vs per-file), sandbox warm pool, network
+        egress allowlist. None block 4.1.                        ⏳
+
+PHASE 5 — GitHub PR integration                                      ⏳ (parallel)
+   Built on top of Phase 4's Repo factory pattern; happens in a
+   separate worktree at ~/Desktop/code-review-agent-phase5/.
 PHASE 6 — Filesystem-based learning loop                             ⏳
 PHASE 7 — Web search                                                 ⏳
 PHASE 8 — Docs MCP servers + gateway                                 ⏳
@@ -369,6 +397,10 @@ All 7 fixtures live on `main` and materialize via `shared.fixtures.materialize()
 8. **A fixture's v1 baseline must show the bug as a regression** (CR catch on PR #20, sentry_80528). When the upstream PR *moves* an already-buggy function rather than introducing a new bug, the v1→v2 diff shows only the move and the bug-of-record is invisible to a diff-based reviewer. Patching v1 to the *intended pre-PR* behavior — even though it diverges from the literal upstream base_sha — keeps the benchmark honest. Document the divergence in the fixture file.
 9. **`effort` interacts asymmetrically with the harness** (Phase 2.2 sweep). Same effort knob (`high` → `xhigh`), same fixture (`sentry_93824`), opposite outcomes between SDKs: Client SDK regressed Y/Y → N/N (over-explored, submitted a different bug), Agent SDK cured N/N → Y/Y. The Anthropic docs' "raise effort instead of prompting around it" heuristic is not unconditional — extra reasoning depth can backfire on harder fixtures when the loop has freedom to over-explore. Practical takeaway: each SDK has its own sweet spot; don't pin a single effort number for both. For *this* benchmark, `high` on Client SDK + `xhigh` on Agent SDK gives 5/7 each at the lowest combined cost.
 10. **Two misses survive every knob we've tried** (`sentry_67876` CSRF/OAuth, `sentry_95633` Python-3.13-only API). Constant across SDK choice, effort level, tool surface, and prompt patterns. These are knowledge-frame gaps, not budget or strategy gaps — the model needs domain priming (security antipatterns; Python-version awareness) it doesn't carry by default. Cure is a prompt addendum or a small targeted retrieval corpus, not more turns or more effort.
+11. **Anything that operates on the repository runs where the repository lives** (Phase 4). Initial design routed bytes over the wire and parsed AST locally; this meant 50 file-content round-trips per ODIS call. Moving ODIS into a CLI invoked through `repo.exec` collapses every analysis op down to a single round-trip per call (the markdown blob comes back, not the file contents). Same pattern applies to bash/grep/ast-grep: the repo lives in the sandbox, so those tools live in the sandbox too. The host's only job is orchestration (model dispatch, MCP server, traces). The Repo protocol with two methods (`exec`, `upload_bytes`) is the abstraction boundary between "the agent's filesystem" and "where it actually lives".
+12. **Daytona's default sandbox is unprivileged** (uid 1001 = `daytona`, home `/home/daytona`); `/workspace` and `/opt` are root-owned and unwritable. Anchoring our repo and PYTHONPATH inside `/home/daytona/` sidesteps this without needing sudo or a custom image. The Phase-4.2 custom image will probably still anchor under `/home/daytona/` for symmetry.
+13. **Daytona's `env=` parameter MERGES with sandbox defaults** (verified empirically), so passing `env={"PYTHONPATH": "...", "PATH": "..."}` augments rather than replaces the sandbox's default environment. This is the opposite of `subprocess.run`'s semantics. Useful: a simple `PATH=$HOME/.local/bin:...` override gets `pip install --user`'d binaries on PATH without losing the sandbox's `/usr/local/python/...` defaults.
+14. **Custom OCI image is a real optimization but not a release blocker** (Phase 4 design). MVP just `pip install --user ast-grep-cli` at sandbox startup (~10s overhead per provision). Trade: faster cold start vs. baked-in tooling. We deferred to 4.2 because the cost is manageable and per-run; revisit if 7-fixture sweep wall time exceeds ~5 min budget.
 
 ## Open follow-ups (post-Phase 2.1)
 
@@ -388,7 +420,7 @@ All 7 fixtures live on `main` and materialize via `shared.fixtures.materialize()
 | 1.8 | `scripts/run_suite.py --sdk client` produces a 7-fixture suite_NNN.md unattended. | ✓ (PR #20) |
 | 2.1 | Agent SDK reviewer matches Phase 1's findings on the same suite with comparable correctness; harness handles offload+caching automatically. | ✓ (PR #21) — `5 of 7 ↔ 5 of 7 line-hits, ‑34% cost, 4 of 7 vs 5 of 7 line-hits with new category-aware matcher` |
 | 3 | `compare.py --task review` reproduces `docs/headtohead.md` verbatim from a single command. | ⏳ next |
-| 4 | Both reviewers pass the fixture suite using a Daytona sandbox. | ⏳ |
+| 4 | Both reviewers pass the fixture suite using a Daytona sandbox. | ✓ (PR pending) — contract_mismatch end-to-end on both SDKs through DaytonaRepo; full 7-fixture sweep in flight; conformance tests green on LocalRepo, Daytona arm gated on DAYTONA_API_KEY. |
 | 5 | A real PR gets a real CR-style comment at the right line. | ⏳ |
 | 6 | Diary entry → reflect → REVIEW_RULES.md → next-run citation. | ⏳ |
 | 7–9 | Each is a feature flag; tested independently. | ⏳ |
