@@ -934,7 +934,7 @@ class Extractor:
         words_alt = "|".join(re.escape(w) for w in call_words)
         pattern = (
             re.escape(handle)
-            + r"\s+(" + words_alt + r")\b[:.\-]?\s*(.+)"
+            + r"\s+(" + words_alt + r")\b\s*[:.\-]?\s*(.+)"
         )
         # DOTALL lets the body span multiple lines (we collapse whitespace below).
         self._re = re.compile(pattern, re.IGNORECASE | re.DOTALL)
