@@ -100,10 +100,16 @@ CONTRACT_MISMATCH = Fixture(
     base_ref="HEAD~1",
     head_ref="HEAD",
     expected=[
-        # The expected finding anchors at calc.py — the changed file —
-        # per shared/prompts.py "Report bugs only in <file type='changed'>".
-        # The caller in main.py is the *evidence* (it still passes 2 args)
-        # but the bug-of-record is the breaking change in calc.py.
+        # The bug-of-record is the breaking change in calc.py (added a
+        # third required parameter), but the unchanged caller in main.py
+        # is where the TypeError actually fires at runtime. The current
+        # prompt's <finding_contract> says `file` should be "the path
+        # where the bug manifests most directly" and explicitly allows
+        # callers as valid anchors when their contract is broken by the
+        # diff. So both anchors are acceptable; the matcher in
+        # scripts/client_sdk/run_suite.py treats `expected` as a
+        # union — any expected entry matched by any model finding
+        # counts as a hit.
         Finding(
             file="calc.py",
             line=1,
@@ -116,6 +122,20 @@ CONTRACT_MISMATCH = Fixture(
                 "Will raise TypeError at runtime."
             ),
             suggested_fix="def add(a, b, c=0):  # default makes the third arg optional",
+        ),
+        Finding(
+            file="main.py",
+            line=5,
+            category="contract-mismatch",
+            severity="high",
+            summary="add(1, 2) breaks after calc.add() gained a required third argument",
+            detail=(
+                "main.py:5 calls `add(1, 2)`. After the diff, calc.add "
+                "requires a third positional arg `c`, so the call raises "
+                "TypeError at runtime when report() executes. Caller-side "
+                "anchor for the same bug as the calc.py:1 entry above."
+            ),
+            suggested_fix="add(1, 2, 0)  # or update calc.add to default c=0",
         ),
     ],
 )

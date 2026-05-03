@@ -45,10 +45,12 @@ from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 MODEL = "claude-opus-4-7"
 MAX_TOKENS = 4096
 # Safety cap. With investigation tools available the agent may take
-# several turns; we still want a hard ceiling. Phase 1.7 caching makes
-# deeper turns affordable, so the cap was raised from 12 to 20 — the
-# sentry_80168 baseline run #14 hit 12 still investigating.
-MAX_TURNS = 20
+# several turns; we still want a hard ceiling. Caching keeps each
+# additional turn cheap (the prefix is mostly cache_read), so the
+# cap was raised in steps: 12 → 20 (Phase 1.7) → 100 (Phase 1.8 after
+# sentry_93824 ran into the 20-cap mid-investigation on the
+# multi-file flusher case).
+MAX_TURNS = 100
 
 RESULTS_DIR = Path(__file__).parent / "results"
 TRACES_DIR = Path(__file__).parent / "traces"

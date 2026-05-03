@@ -74,7 +74,9 @@ v1/
 │       ├── inspect_review.py  Manual test: end-to-end reviewer (1 API call)
 │       └── smoke_phase16.py   Test A (dispatch) + Test B (forced tool use)
 ├── compare.py                 Phase 0 orchestrator (offload mode only).
-│                              Phase 1.8 will add --task review.
+│                              `--task review` lands in Phase 3.1, not 1.8 —
+│                              it's the Client-vs-Agent SDK comparison and
+│                              needs both reviewers to exist first.
 ├── pricing.py                 Cost calculator (Opus 4 rates)
 ├── docs/
 │   ├── PLAN.md                this file
@@ -128,8 +130,15 @@ PHASE 1 — Client SDK reviewer MVP                                    ✓ (PR #
         CR fixes: path traversal, dispatcher try/except, additionalProperties,
                   schema/prompt alignment, snippet UnicodeDecodeError, sys.path
 
-PHASE 1.8 — wire compare.py with --task review                       ⏳ next
-PHASE 1.9 — capture metrics on full fixture suite                    ⏳
+PHASE 1.8 — Client SDK suite runner                                  ⏳ next
+   scripts/client_sdk/run_suite.py — sweeps ALL_FIXTURES, captures
+   per-fixture cost / turns / findings / expected-match, writes
+   client_sdk/results/suite_NNN.md. Single-SDK only — NOT a
+   Client-vs-Agent comparison (that's compare.py, deferred to 3.1).
+PHASE 1.9 — metrics commentary                                       ⏳
+   PLAN.md (this file) gains a per-fixture row in the empirical-
+   evidence table; cost / latency / correctness numbers cited
+   verbatim in the eventual pitch.
 
 PHASE 2 — Agent SDK reviewer MVP                                     ⏳
    2.1  agent_sdk/reviewer.py — same I/O contract, MCP tools, harness
@@ -140,10 +149,12 @@ PHASE 2 — Agent SDK reviewer MVP                                     ⏳
    2.4  Run on same fixture suite, capture metrics
 
 PHASE 3 — Comparison + pitch                                         ⏳
-   3.1  Fixture suite expansion (mostly done — see fixture inventory)
-   3.2  compare.py table extension (already extended for offload runs)
-   3.3  ASCII flow diagrams (`docs/comparison.md`)
-   3.4  Pitch document (`docs/pitch.md`) with the headline numbers
+   3.1  compare.py --task review — THE Client-SDK-vs-Agent-SDK
+        comparison, drives both reviewers across the fixture suite.
+        Requires Phase 2 to be complete; this is what produces the
+        head-to-head numbers (cost, latency, finding overlap).
+   3.2  ASCII flow diagrams (`docs/comparison.md`)
+   3.3  Pitch document (`docs/pitch.md`) with the headline numbers
 
 PHASE 4 — Daytona sandbox layer                                      ⏳
 PHASE 5 — GitHub PR integration                                      ⏳
@@ -187,6 +198,7 @@ The five "in flight" entries are being built by a subagent on branch `phase-1/se
 3. **MAX_TURNS scales with cache cost**: caching makes deeper turns affordable; raised from 12 to 20.
 4. **Stacked PR consolidation**: one merge per phase. Re-target the latest PR to main, close ancestors. CR auto-review only fires on default-base PRs; we do this consolidation when ready for review.
 5. **Fixture's expected Finding must match the prompt's localization rule**: when the prompt allows "caller/callee whose contract was broken," the fixture's `file` field becomes flexible. We may need a "matches any of these locations" matcher for future fixtures.
+6. **`compare.py --task review` is the Phase-3 deliverable, not a Phase-1 batch runner**: earlier wording in this doc conflated "sweep our fixture suite to validate the reviewer" with "compare Client SDK vs Agent SDK on the same fixture." The first is single-SDK and lands in Phase 1.8 as `run_suite.py`. The second requires both SDKs and is the literal point of the comparison pitch — it lands as `compare.py --task review` in Phase 3.1, after Phase 2 builds the Agent SDK reviewer.
 
 ## Open background work
 
