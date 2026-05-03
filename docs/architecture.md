@@ -19,17 +19,21 @@ v1/
 ├── shared/                          imported by both SDK implementations
 │   ├── odis.py                      Outside-Diff Impact Slicing (port of baseline)
 │   ├── fixtures.py                  golden test repos + expected findings
-│   ├── findings.py                  Finding dataclass + JSON serializer
+│   ├── findings.py                  Finding dataclass + JSON serializer + tool schema
 │   ├── prompts.py                   canonical system prompt + few-shot
+│   ├── agent_tools.py               build_review_context / bash /
+│   │                                read_file_section / ast_search / grep /
+│   │                                write_file + their tool schemas
+│   │                                (used by both SDKs)
 │   └── memory/                      reflective rules (Phase 6)
 │       └── REVIEW_RULES.md
 ├── client_sdk/
-│   ├── runner.py                    existing offload comparison (kept)
-│   ├── reviewer.py                  code-review agent (Phase 1)
+│   ├── offload_runner.py            Phase-0 offload comparison (existing)
+│   ├── reviewer.py                  code-review agent (Phase 1.5/1.6)
 │   ├── results/
 │   └── traces/
 ├── agent_sdk/
-│   ├── runner.py                    existing
+│   ├── offload_runner.py            existing
 │   ├── reviewer.py                  code-review agent (Phase 2)
 │   ├── results/
 │   └── traces/
@@ -38,6 +42,7 @@ v1/
 ├── docs/
 │   ├── PLAN.md                      multi-phase plan
 │   ├── architecture.md              this file
+│   ├── verification.md              evidence gates before completion claims
 │   ├── comparison.md                Phase 3: ASCII diagrams + numbers
 │   └── pitch.md                     Phase 3: presentation deck
 ├── sandbox/                         Phase 4: Daytona client wrapper
@@ -108,8 +113,8 @@ Anthropic, Manus, and the Claude-diary post) lands somewhere concrete:
 
 | Pattern | Source | Where it lives |
 |---|---|---|
-| Give agents a computer | LM | Phase 4: `sandbox/daytona_client.py`. Until then, ODIS curates context and the agent has Read/Bash/Grep tools. |
-| Multi-layer action space | LM / CodeAct | One `bash` tool composes find/grep/jq instead of N specific lints. Agent SDK only. |
+| Give agents a computer | LM | Phase 1.6 v2: the agent has `bash` (cwd-locked to the repo, 15s timeout), `read_file_section`, `write_file` (filesystem-as-memory). Phase 4 (Daytona) replaces local execution with a real sandbox; the tool surface stays identical. |
+| Multi-layer action space | LM / CodeAct | `bash` is the general primitive; typed wrappers (`read_file_section`, `ast_search`, `grep`, `build_review_context`, `write_file`) are sugar with cleaner schemas the model picks for common ops. `ast_search` is backed by [`ast-grep`](https://ast-grep.github.io) — single Rust binary, structural patterns like `add($$$)` or `def $NAME($$$): $$$`, multi-language. Phase 4 sandbox image will need ast-grep preinstalled. |
 | Progressive disclosure | LM / Anthropic | Tool definitions terse; agent runs `--help` if needed. ODIS context is the first-shot prompt; deeper reads happen on demand. |
 | Offload context | LM / Manus | Already proven in `agent_sdk/runner.py` (run 002 → 99.7% reduction). Maintained in Phase 2; manually mimicked in `client_sdk/reviewer.py` via a `read_file_section` tool in Phase 1.5. |
 | Cache context | LM / Manus | `cache_control` on system prompt + tools array. Skip caching tool_results in 2-turn flows (see `compare.py` run_008 — naive caching cost +25%). |
