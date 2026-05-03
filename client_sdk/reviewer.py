@@ -161,7 +161,7 @@ def _stamp_last_message_for_cache(
     return out
 
 
-def _dispatch_tool(repo: Path, name: str, args: dict[str, Any]) -> str:
+def _dispatch_tool(repo: Repo, name: str, args: dict[str, Any]) -> str:
     """Run an investigation tool and return its result as a string.
 
     submit_findings is handled inline in the loop (it's the terminator)
@@ -169,6 +169,10 @@ def _dispatch_tool(repo: Path, name: str, args: dict[str, Any]) -> str:
     Wraps every call in try/except so a malformed tool_use payload
     (missing required key, wrong type, etc.) cannot crash the loop —
     the model just sees an Error string and adapts.
+
+    Phase 4: `repo` is now a `sandbox.repo.Repo` (LocalRepo or
+    DaytonaRepo). The tool wrappers route everything through
+    `repo.exec` / `repo.upload_bytes`.
     """
     try:
         if name == "build_review_context":
@@ -212,7 +216,7 @@ def _write_trace(path: Path, lines: list[str]) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def _write_result(path: Path, run_id: int, repo: Path, refs: tuple[str, str],
+def _write_result(path: Path, run_id: int, repo_label: str, refs: tuple[str, str],
                   findings: list[Finding], num_turns: int, usage: dict[str, int],
                   cost_usd: float) -> None:
     path.parent.mkdir(exist_ok=True)
@@ -220,7 +224,7 @@ def _write_result(path: Path, run_id: int, repo: Path, refs: tuple[str, str],
     from json import dumps
     body = (
         f"# Client SDK reviewer run {run_id:03d}\n"
-        f"# repo: {repo}\n"
+        f"# repo: {repo_label}\n"
         f"# refs: {refs[0]}..{refs[1]}\n"
         f"# turns: {num_turns}\n"
         f"# cost (USD, API rate): {cost_usd:.6f}\n"
@@ -233,13 +237,21 @@ def _write_result(path: Path, run_id: int, repo: Path, refs: tuple[str, str],
 
 
 def run(
-    repo_path: Path,
+    repo: Repo,
     base_ref: str,
     head_ref: str,
     *,
     run_id: int | None = None,
     use_oauth: bool = False,  # ignored on Client SDK; kept for I/O symmetry
 ) -> dict[str, Any]:
+    """Drive one code review against `repo`.
+
+    Phase 4: `repo` is a `sandbox.repo.Repo` (LocalRepo for the host
+    backend, DaytonaRepo for the sandbox backend). The reviewer never
+    touches the filesystem directly — every tool call goes through
+    `_dispatch_tool(repo, ...)` which routes to `shared/agent_tools.py`
+    wrappers, which in turn call `repo.exec` / `repo.upload_bytes`.
+    """
     load_dotenv(override=True)
     if run_id is None:
         run_id = _next_run_id()
@@ -248,16 +260,18 @@ def run(
 
     # Phase 1.6 v2: ODIS is a TOOL the agent can call, not pre-baked
     # into the prompt. The user prompt is a thin directive pointing at
-    # the repo + refs.
+    # the repo + refs. The `repo_path` template field is a logical name
+    # the model uses for context; the actual filesystem is opaque
+    # behind the Repo abstraction.
     user_prompt = USER_PROMPT_TEMPLATE.format(
-        repo_path=str(repo_path),
+        repo_path="<sandbox repo root>",
         base_ref=base_ref,
         head_ref=head_ref,
     )
 
     trace: list[str] = [
         f"=== Client SDK reviewer run {run_id:03d} ===",
-        f"repo: {repo_path}",
+        f"repo: {type(repo).__name__}",
         f"refs: {base_ref}..{head_ref}",
         f"started: {datetime.now(timezone.utc).isoformat()}",
         "",
@@ -350,7 +364,7 @@ def run(
                     "content": tool_result_content,
                 })
             else:
-                tool_output = _dispatch_tool(repo_path, block.name, block.input)
+                tool_output = _dispatch_tool(repo, block.name, block.input)
                 trace.append(f"  {block.name} → {len(tool_output)} chars")
                 results.append({
                     "type": "tool_result",
@@ -372,8 +386,16 @@ def run(
     )
 
     _write_trace(trace_path, trace)
-    _write_result(result_path, run_id, repo_path, (base_ref, head_ref),
-                  findings, num_turns, total_usage, cost_usd)
+    _write_result(
+        result_path,
+        run_id,
+        type(repo).__name__,
+        (base_ref, head_ref),
+        findings,
+        num_turns,
+        total_usage,
+        cost_usd,
+    )
 
     return {
         "findings": findings,

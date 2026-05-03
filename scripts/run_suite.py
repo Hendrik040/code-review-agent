@@ -168,7 +168,7 @@ def _run_one(
         with materialize(fx) as materialized:
             result = _run_with_timeout(
                 runner,
-                materialized.repo_path,
+                materialized.repo,
                 materialized.base_ref,
                 materialized.head_ref,
                 fixture_timeout,
