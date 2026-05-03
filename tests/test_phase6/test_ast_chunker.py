@@ -102,7 +102,7 @@ def test_chunks_for_diff_handles_module_scope_changes():
     # produce a chunk via the fallback path.
     chunks = chunks_for_diff(FIXTURES, {"tiny_module.py": [3]})
     assert len(chunks) == 1
-    # Note: Task 5's recent fix split kind semantics; module-scope
-    # changes here go through _fallback_window with default kind,
-    # which is "fallback_window".
-    assert chunks[0].kind in ("module-scope", "fallback_window")
+    # Task 5's split: ast-grep ran fine but no function encloses line 3,
+    # so chunks_for_diff calls _fallback_window(kind="module-scope").
+    # Assert exact kind so a regression to default ("fallback_window") fails.
+    assert chunks[0].kind == "module-scope"
