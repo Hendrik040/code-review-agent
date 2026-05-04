@@ -71,6 +71,10 @@ submit_findings (terminator). Tool schemas are the source of truth for
 exact arguments. Prefer narrow reads and targeted searches over broad
 context dumps. Finish by calling submit_findings exactly once.
 
+- search_learnings(query): retrieve past maintainer corrections by free-text
+  query. The system also auto-injects high-confidence past learnings into the
+  user prompt under <past_learnings>; only call this tool if you need more.
+
 When you have multiple INDEPENDENT investigations to run on the same
 turn (e.g. reading two different files, searching for two different
 symbols), issue them as parallel tool_use blocks in the SAME assistant

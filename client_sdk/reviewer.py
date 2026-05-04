@@ -13,6 +13,7 @@ expose the identical run() signature"). The companion file is
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 from datetime import datetime, timezone
@@ -96,11 +97,34 @@ SUBMIT_FINDINGS_TOOL: dict[str, Any] = {
     "input_schema": SUBMIT_FINDINGS_INPUT_SCHEMA,
 }
 
+SEARCH_LEARNINGS_TOOL: dict[str, Any] = {
+    "name": "search_learnings",
+    "description": (
+        "Search past maintainer corrections by free-text query. Use when "
+        "the auto-injected <past_learnings> didn't surface something you "
+        "suspect was previously taught. Returns top-5. "
+        "For tactics on phrasing the query, read `shared/skills/learnings_search.md` first."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Code snippet OR natural-language description.",
+            },
+            "k": {"type": "integer", "default": 5, "maximum": 10, "minimum": 1},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
+
 # All tools the agent has access to: investigation tools (decide what to
 # look at) + submit_findings (terminate with structured output).
 # `cache_control` on the LAST tool caches the entire tools array.
 ALL_TOOLS: list[dict[str, Any]] = [
     *INVESTIGATION_TOOLS,
+    SEARCH_LEARNINGS_TOOL,
     {**SUBMIT_FINDINGS_TOOL, "cache_control": CACHE_CONTROL_EPHEMERAL},
 ]
 
@@ -189,6 +213,32 @@ def _dispatch_tool(repo: Repo, name: str, args: dict[str, Any]) -> str:
             return grep(repo, args["pattern"], args.get("path_glob", ""))
         if name == "write_file":
             return write_file(repo, args["path"], args["content"])
+        if name == "search_learnings":
+            try:
+                from learnings.config import load as load_cfg
+                from learnings.qdrant_store import QdrantStore
+                from learnings.voyage_client import VoyageClient
+                from shared.learnings import search_tool_handler
+                from shared.learnings_prompt import infer_repo_slug
+
+                cfg = load_cfg()
+                slug = infer_repo_slug(repo)
+                if not slug:
+                    return "<results/>"
+                return search_tool_handler(
+                    query=str(args.get("query", "")),
+                    repo=slug,
+                    store=QdrantStore(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key),
+                    embedder=VoyageClient(api_key=cfg.voyage_api_key),
+                    k=int(args.get("k", 5)),
+                )
+            except Exception as e:
+                # Sanitize: only leak the exception class name to the model
+                # and to trace files. Full repr (which may embed Voyage /
+                # Qdrant URL fragments containing API keys) goes to debug log
+                # only. Spec §8.2 — fail-open with logging.
+                logging.warning("search_learnings tool failed: %r", e)
+                return f"<results error={type(e).__name__!r}/>"
         return f"Error: unknown tool {name!r}"
     except (KeyError, TypeError, ValueError) as e:
         return f"Error: invalid args for {name}: {e}"
@@ -263,11 +313,12 @@ def run(
     # the repo + refs. The `repo_path` template field is a logical name
     # the model uses for context; the actual filesystem is opaque
     # behind the Repo abstraction.
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        repo_path="<sandbox repo root>",
-        base_ref=base_ref,
-        head_ref=head_ref,
+    from shared.learnings_prompt import (
+        build_user_prompt_with_learnings,
+        infer_repo_slug,
     )
+    repo_slug = infer_repo_slug(repo)
+    user_prompt = build_user_prompt_with_learnings(repo, base_ref, head_ref, repo_slug)
 
     trace: list[str] = [
         f"=== Client SDK reviewer run {run_id:03d} ===",
