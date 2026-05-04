@@ -396,8 +396,20 @@ async def _run_async(
         "search_learnings",
         "Search past maintainer corrections by free-text query. Use when "
         "the auto-injected <past_learnings> didn't surface something you "
-        "suspect was previously taught. Returns top-5.",
-        {"query": str, "k": int},
+        "suspect was previously taught. Returns top-5. "
+        "For tactics on phrasing the query, read `shared/skills/learnings_search.md` first.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Code snippet OR natural-language description.",
+                },
+                "k": {"type": "integer", "default": 5, "maximum": 10, "minimum": 1},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
     )
     async def _search_learnings(args: dict[str, Any]) -> dict[str, Any]:
         try:

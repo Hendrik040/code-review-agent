@@ -11,12 +11,15 @@ keeps running (spec §8).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from html import escape
 from typing import Any, Protocol
 
 from learnings.ast_chunker import Chunk
 from learnings.qdrant_store import Hit, QdrantStore, collection_for
+
+log = logging.getLogger("shared.learnings")
 
 
 class Embedder(Protocol):
@@ -66,7 +69,13 @@ def retrieve_for_diff(
             existing = by_id.get(h.point_id)
             if existing is None or h.score > existing.score:
                 by_id[h.point_id] = h
-    return apply_threshold(list(by_id.values()), threshold)
+    raw_hits = list(by_id.values())
+    log.info(
+        "learnings retrieve: repo=%s chunks=%d raw_hits=%d threshold=%.3f scores=%s",
+        repo, len(chunks), len(raw_hits), threshold,
+        [f"{h.score:.3f}" for h in sorted(raw_hits, key=lambda x: -x.score)[:10]],
+    )
+    return apply_threshold(raw_hits, threshold)
 
 
 def applicability_filter(

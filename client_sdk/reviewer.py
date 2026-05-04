@@ -102,7 +102,8 @@ SEARCH_LEARNINGS_TOOL: dict[str, Any] = {
     "description": (
         "Search past maintainer corrections by free-text query. Use when "
         "the auto-injected <past_learnings> didn't surface something you "
-        "suspect was previously taught. Returns top-5."
+        "suspect was previously taught. Returns top-5. "
+        "For tactics on phrasing the query, read `shared/skills/learnings_search.md` first."
     ),
     "input_schema": {
         "type": "object",
@@ -111,7 +112,7 @@ SEARCH_LEARNINGS_TOOL: dict[str, Any] = {
                 "type": "string",
                 "description": "Code snippet OR natural-language description.",
             },
-            "k": {"type": "integer", "default": 5, "maximum": 10},
+            "k": {"type": "integer", "default": 5, "maximum": 10, "minimum": 1},
         },
         "required": ["query"],
         "additionalProperties": False,
