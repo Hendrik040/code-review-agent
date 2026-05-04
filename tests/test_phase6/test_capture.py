@@ -113,3 +113,58 @@ def test_capture_once_fails_open_on_per_comment_error(tmp_path):
         )
     # Both comments processed — store called once for the good one.
     assert store.upsert.call_count == 1
+
+
+from learnings.voyage_client import VoyageError
+
+
+def test_capture_once_does_not_advance_on_voyage_error(tmp_path):
+    """Spec §8.1 — VoyageError after retry-exhaustion is transient infra,
+    not a per-comment problem. Cursor stays put so next iteration retries."""
+    state_path = tmp_path / "state.json"
+    adapter = MagicMock()
+    adapter.list_open_prs.return_value = [_pr()]
+    adapter.list_pr_review_comments.return_value = [_comment(42)]
+    embedder = MagicMock()
+    embedder.embed_one.side_effect = VoyageError("voyage 503 after retries")
+    store = MagicMock()
+
+    src = tmp_path / "tiny_module.py"
+    src.write_text("def first_function(x):\n    return x + 1\n")
+
+    with patch("learnings.capture._ensure_clone", return_value=tmp_path):
+        capture_once(
+            repo="o/r", adapter=adapter, embedder=embedder, store=store,
+            state_path=state_path, repo_clone_root=tmp_path,
+            handle="@Working-Ant", call_words=("learn",),
+        )
+    # Cursor was NOT advanced — file shouldn't exist (no successful upserts
+    # ever, so State never persisted) OR if it does, the cursor isn't 42.
+    if state_path.exists():
+        import json
+        assert json.loads(state_path.read_text()).get("o/r") != 42
+    store.upsert.assert_not_called()
+
+
+def test_capture_once_advances_on_anchor_failure(tmp_path):
+    """Anchor problems (FileNotFoundError → permanent) MUST advance cursor
+    so we don't retry forever on a comment whose source file is gone."""
+    state_path = tmp_path / "state.json"
+    adapter = MagicMock()
+    adapter.list_open_prs.return_value = [_pr()]
+    # Comment points at a file that never existed in the clone.
+    adapter.list_pr_review_comments.return_value = [
+        _comment(7, file_path="this_file_does_not_exist.py", line=1),
+    ]
+    embedder = MagicMock()
+    store = MagicMock()
+
+    with patch("learnings.capture._ensure_clone", return_value=tmp_path):
+        capture_once(
+            repo="o/r", adapter=adapter, embedder=embedder, store=store,
+            state_path=state_path, repo_clone_root=tmp_path,
+            handle="@Working-Ant", call_words=("learn",),
+        )
+    import json
+    assert json.loads(state_path.read_text())["o/r"] == 7
+    store.upsert.assert_not_called()

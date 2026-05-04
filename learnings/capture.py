@@ -1,11 +1,9 @@
 """Capture pipeline — single-iteration body.
 
-`capture_once` runs ONE poll cycle: list open PRs → list review
-comments since cursor → for each mention, chunk the anchor + embed +
-upsert. `capture_watch` loops `capture_once` forever. `main` is the CLI.
-
-Failure isolation per spec §8.1: per-comment errors are logged + skipped
-with the cursor advancing past them; per-PR errors don't abort the loop.
+`capture_once` runs ONE poll cycle: list PRs → list comments since
+cursor → for each mention, chunk + embed + upsert. `capture_watch`
+loops it. Spec §8.1: anchor errors advance cursor; transient infra
+(Voyage/Qdrant) bails the iteration so the daemon retries.
 """
 from __future__ import annotations
 
@@ -23,19 +21,25 @@ from learnings.ast_chunker import chunk_for_anchor
 from learnings.config import load as load_config
 from learnings.extractor import Extractor, Mention
 from learnings.github_adapter import GitHubAdapter
-from learnings.qdrant_store import (
-    LearningPayload,
-    QdrantStore,
-    collection_for,
-    point_id_for,
-)
+from learnings.qdrant_store import LearningPayload, QdrantStore, collection_for, point_id_for
 from learnings.state import State
-from learnings.voyage_client import VoyageClient
+from learnings.voyage_client import VoyageClient, VoyageError
+
+try:
+    from qdrant_client.http.exceptions import UnexpectedResponse as _QdrantHttpError
+except ImportError:
+    _QdrantHttpError = Exception  # noqa — fallback if qdrant-client moves the path
 
 log = logging.getLogger("learnings.capture")
 
 DEFAULT_STATE_PATH = Path("shared/memory/learnings_state.json")
 DEFAULT_CLONE_ROOT = Path("/tmp/learnings_clones")
+
+
+def _is_transient_infra(exc: BaseException) -> bool:
+    """Voyage retry-exhaustion or Qdrant HTTP error → transient.
+    Anchor problems (FileNotFoundError, etc.) → permanent (advance cursor)."""
+    return isinstance(exc, (VoyageError, _QdrantHttpError))
 
 
 def _ensure_clone(repo: str, head_sha: str, root: Path) -> Path:
@@ -51,6 +55,17 @@ def _ensure_clone(repo: str, head_sha: str, root: Path) -> Path:
     subprocess.run(
         ["git", "-C", str(target), "fetch", "origin", head_sha],
         check=True, capture_output=True, timeout=60,
+    )
+    # Self-heal a dirty tree from a prior daemon crash mid-checkout. We
+    # never edit the clone, so reset+clean is always safe; without this,
+    # a botched run leaves the worktree in a state `git checkout` refuses.
+    subprocess.run(
+        ["git", "-C", str(target), "reset", "--hard"],
+        check=True, capture_output=True, timeout=30,
+    )
+    subprocess.run(
+        ["git", "-C", str(target), "clean", "-fd"],
+        check=True, capture_output=True, timeout=30,
     )
     subprocess.run(
         ["git", "-C", str(target), "checkout", head_sha],
@@ -123,9 +138,18 @@ def capture_once(
                     )
                 state.advance(repo, c.comment_id)
             except Exception as e:
+                if _is_transient_infra(e):
+                    # Spec §8.1: Voyage 5xx / Qdrant errors → backoff +
+                    # requeue. Do NOT advance the cursor; bail this
+                    # iteration so we don't hammer the broken service.
+                    log.warning(
+                        "comment %d (#%d) infra failure (%s); requeueing for next iteration",
+                        c.comment_id, pr.number, type(e).__name__,
+                    )
+                    return
                 log.warning(
-                    "comment %d (#%d) processing failed: %s — advancing past it",
-                    c.comment_id, pr.number, e,
+                    "comment %d (#%d) processing failed (%s: %s) — advancing past it",
+                    c.comment_id, pr.number, type(e).__name__, e,
                 )
                 state.advance(repo, c.comment_id)
 
