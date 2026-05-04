@@ -13,6 +13,7 @@ expose the identical run() signature"). The companion file is
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 from datetime import datetime, timezone
@@ -231,7 +232,12 @@ def _dispatch_tool(repo: Repo, name: str, args: dict[str, Any]) -> str:
                     k=int(args.get("k", 5)),
                 )
             except Exception as e:
-                return f"<results error={str(e)!r}/>"
+                # Sanitize: only leak the exception class name to the model
+                # and to trace files. Full repr (which may embed Voyage /
+                # Qdrant URL fragments containing API keys) goes to debug log
+                # only. Spec §8.2 — fail-open with logging.
+                logging.warning("search_learnings tool failed: %r", e)
+                return f"<results error={type(e).__name__!r}/>"
         return f"Error: unknown tool {name!r}"
     except (KeyError, TypeError, ValueError) as e:
         return f"Error: invalid args for {name}: {e}"

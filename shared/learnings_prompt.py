@@ -11,24 +11,39 @@ The Repo abstraction (sandbox.repo.Repo) exposes:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from shared.prompts import USER_PROMPT_TEMPLATE
 
+log = logging.getLogger("learnings.prompt")
+
 
 def infer_repo_slug(repo: Any) -> str | None:
     """Best-effort owner/name from `git remote get-url origin`. Returns
-    None for non-GitHub remotes or any failure."""
+    None for non-GitHub remotes or any failure.
+
+    Boundary-aware match on `github.com` so hosts like `notgithub.com`
+    don't accidentally route into a GitHub-canonical collection
+    (cross-tenant risk in the shared Qdrant cluster — spec §6).
+    """
     try:
         url = repo.exec("git remote get-url origin", timeout=5).stdout.strip()
     except Exception:
         return None
     url = url.removesuffix(".git")
-    if "github.com" not in url:
+    # Two recognized forms:
+    #   https://github.com/owner/repo  -> "://github.com/" boundary
+    #   git@github.com:owner/repo      -> "@github.com:" boundary
+    # GitHub Enterprise (github.foo.com) is intentionally rejected for v1.
+    if "://github.com/" in url:
+        path = url.split("://github.com/", 1)[1]
+    elif "@github.com:" in url:
+        path = url.split("@github.com:", 1)[1]
+    else:
         return None
-    path = url.split("github.com")[-1].lstrip("/:")
     parts = path.split("/")
-    if len(parts) >= 2:
+    if len(parts) >= 2 and parts[0] and parts[1]:
         return f"{parts[0]}/{parts[1]}"
     return None
 
@@ -116,5 +131,6 @@ def build_user_prompt_with_learnings(
             return base
         # Insert <past_learnings> AFTER the standard prompt body.
         return f"{base}\n\n{block}"
-    except Exception:
+    except Exception as e:
+        log.warning("learnings: prompt-build skipped (%s): %s", type(e).__name__, e)
         return base
