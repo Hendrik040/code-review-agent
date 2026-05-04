@@ -14,8 +14,9 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from github.pr_fetch import Comment, PullRequest
+from github.pr_fetch import Comment, PullRequest, fetch_review_comment
 
 from learnings.ast_chunker import chunk_for_anchor
 from learnings.config import load as load_config
@@ -74,6 +75,40 @@ def _ensure_clone(repo: str, head_sha: str, root: Path) -> Path:
     return target
 
 
+def _extract_mention(
+    extractor: Extractor, body: str,
+    *, anthropic_client: Any | None,
+) -> Mention | None:
+    """Regex first (free, fast). If no match AND the configured handle
+    appears anywhere in the body AND we have an anthropic client, try
+    Haiku as a fallback classifier (Phase 6.1)."""
+    m = extractor.parse(body)
+    if m is not None:
+        return m
+    if anthropic_client is None:
+        return None
+    if extractor._handle_lower() not in body.lower():
+        return None
+    return extractor.classify_via_llm(body, anthropic_client=anthropic_client)
+
+
+def _fetch_bug_context(repo: str, comment: Comment) -> str:
+    """If the comment is a reply, fetch the parent's body for bug context.
+    Returns "" on any failure (fail-open per spec §8)."""
+    if comment.in_reply_to_id is None:
+        return ""
+    try:
+        owner, name = repo.split("/", 1)
+        parent = fetch_review_comment(owner, name, comment.in_reply_to_id)
+        return parent.body
+    except Exception as e:
+        log.warning(
+            "bug_context fetch failed for parent_id=%s: %s",
+            comment.in_reply_to_id, e,
+        )
+        return ""
+
+
 def _process_comment(
     *, repo: str, pr: PullRequest, comment: Comment, mention: Mention,
     embedder: VoyageClient, store: QdrantStore, repo_clone_root: Path,
@@ -83,6 +118,7 @@ def _process_comment(
     chunk = chunk_for_anchor(
         src, line_start=comment.line_start, line_end=comment.line_end
     )
+    bug_context = _fetch_bug_context(repo, comment)
     vec = embedder.embed_one(chunk.text, input_type="document")
     payload = LearningPayload(
         code_chunk_text=chunk.text,
@@ -97,6 +133,7 @@ def _process_comment(
         author=comment.author,
         captured_at=datetime.now(timezone.utc).isoformat(),
         commit_sha=pr.head_sha,
+        bug_context=bug_context,
     )
     store.upsert(
         collection_for(repo),
@@ -109,8 +146,15 @@ def capture_once(
     *, repo: str, adapter: GitHubAdapter, embedder: VoyageClient,
     store: QdrantStore, state_path: Path, repo_clone_root: Path,
     handle: str, call_words: tuple[str, ...],
+    anthropic_client: Any | None = None,
 ) -> None:
-    """One iteration of the capture loop."""
+    """One iteration of the capture loop.
+
+    ``anthropic_client`` enables the Phase 6.1 Haiku fallback classifier
+    for free-form ``@handle`` mentions that don't match the regex. Pass
+    None (default) to disable the fallback — useful in tests + for
+    deployments without an Anthropic key.
+    """
     state = State(state_path)
     extractor = Extractor(handle=handle, call_words=call_words)
     cursor = state.cursor(repo)
@@ -128,7 +172,7 @@ def capture_once(
             log.warning("list_pr_review_comments failed for #%d: %s", pr.number, e)
             continue
         for c in comments:
-            mention = extractor.parse(c.body)
+            mention = _extract_mention(extractor, c.body, anthropic_client=anthropic_client)
             try:
                 if mention is not None:
                     _process_comment(
@@ -180,10 +224,14 @@ def main(argv: list[str] | None = None) -> int:
     store = QdrantStore(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
     adapter = GitHubAdapter()
 
+    import anthropic
+    ant_client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
+
     common = dict(
         repo=args.repo, adapter=adapter, embedder=embedder, store=store,
         state_path=DEFAULT_STATE_PATH, repo_clone_root=DEFAULT_CLONE_ROOT,
         handle=cfg.handle, call_words=cfg.call_words,
+        anthropic_client=ant_client,
     )
 
     if args.once:

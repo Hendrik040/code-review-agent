@@ -143,6 +143,13 @@ def format_for_prompt(hits: list[Hit]) -> str:
 
 def _render_item(idx: int, h: Hit) -> str:
     p = h.payload
+    # Phase 6.1: <bug_context> is OMITTED entirely when empty (vs. an empty
+    # self-closing tag) to keep the prompt tight when no parent bot finding
+    # was attached.
+    bug_context_xml = ""
+    bc = p.get("bug_context", "")
+    if bc:
+        bug_context_xml = f"\n    <bug_context>{escape(bc)}</bug_context>"
     return (
         f'  <item id="{idx}" score="{h.score:.2f}" '
         f'file="{escape(p.get("file_path",""), quote=True)}" '
@@ -150,7 +157,8 @@ def _render_item(idx: int, h: Hit) -> str:
         f'author="{escape(p.get("author",""), quote=True)}" '
         f'pr="{escape(p.get("repo",""), quote=True)}#{p.get("pr_number","")}" '
         f'captured="{escape(p.get("captured_at","")[:10], quote=True)}">\n'
-        f"    <learning>{escape(p.get('learning_text',''))}</learning>\n"
+        f"    <learning>{escape(p.get('learning_text',''))}</learning>"
+        f"{bug_context_xml}\n"
         f'    <original_code language="{escape(p.get("language",""), quote=True)}">'
         f"{_cdata(p.get('code_chunk_text',''))}</original_code>\n"
         f"  </item>"

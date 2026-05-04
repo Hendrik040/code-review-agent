@@ -123,3 +123,37 @@ def test_list_pr_review_comments_skips_left_side_comments():
     with patch("github.pr_fetch._gh_json_paginated", return_value=fake):
         cs = list_pr_review_comments(pr)
     assert [c.comment_id for c in cs] == [2]
+
+
+def test_list_pr_review_comments_populates_in_reply_to_id():
+    fake = [
+        {"id": 100, "path": "a.py", "line": 1, "start_line": None,
+         "body": "@Working-Ant remember X", "user": {"login": "alice"},
+         "created_at": "2026-05-04T10:00:00Z", "in_reply_to_id": 50},
+        {"id": 200, "path": "a.py", "line": 2, "start_line": None,
+         "body": "@Working-Ant learn Y", "user": {"login": "alice"},
+         "created_at": "2026-05-04T11:00:00Z"},  # no in_reply_to_id
+    ]
+    pr = PullRequest(owner="o", repo="r", number=1, base_sha="b", head_sha="h",
+                     title="t", html_url="u")
+    with patch("github.pr_fetch._gh_json_paginated", return_value=fake):
+        cs = list_pr_review_comments(pr)
+    assert cs[0].in_reply_to_id == 50
+    assert cs[1].in_reply_to_id is None
+
+
+def test_fetch_review_comment_roundtrips_parent_body():
+    from github.pr_fetch import fetch_review_comment
+    fake = {
+        "id": 50, "path": "a.py", "line": 5, "start_line": None,
+        "body": "Bug analysis text from the bot.",
+        "user": {"login": "Working-Ant"},
+        "created_at": "2026-05-04T09:00:00Z",
+        "in_reply_to_id": None,
+    }
+    with patch("github.pr_fetch._gh_json", return_value=fake):
+        c = fetch_review_comment("o", "r", 50)
+    assert c.comment_id == 50
+    assert c.body == "Bug analysis text from the bot."
+    assert c.author == "Working-Ant"
+    assert c.in_reply_to_id is None

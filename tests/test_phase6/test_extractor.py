@@ -106,3 +106,74 @@ def test_multi_line_within_one_paragraph_collapsed(ex: Extractor):
     pin it here in the new termination semantics too."""
     m = ex.parse("@Working-Ant teach line one\nline two\nline three")
     assert m == Mention(call_word="teach", text="line one line two line three")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1: Haiku-based classifier fallback for free-form @mentions.
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock
+
+
+def _fake_haiku(text: str) -> MagicMock:
+    """Build an anthropic-shaped MagicMock returning the given text."""
+    client = MagicMock()
+    msg = MagicMock()
+    msg.content = [MagicMock(text=text)]
+    client.messages.create.return_value = msg
+    return client
+
+
+def test_classify_via_llm_extracts_lesson_when_yes():
+    ex = Extractor(handle="@Working-Ant", call_words=("learn",))
+    client = _fake_haiku('{"is_learning": true, "lesson_text": "always use X"}')
+    m = ex.classify_via_llm(
+        "@Working-Ant that, in this case, please remember to always use X",
+        anthropic_client=client,
+    )
+    assert m == Mention(call_word="(llm)", text="always use X")
+
+
+def test_classify_via_llm_returns_none_when_no():
+    ex = Extractor(handle="@Working-Ant", call_words=("learn",))
+    client = _fake_haiku('{"is_learning": false, "lesson_text": ""}')
+    m = ex.classify_via_llm("@Working-Ant thanks!", anthropic_client=client)
+    assert m is None
+
+
+def test_classify_via_llm_tolerates_json_code_fence():
+    ex = Extractor(handle="@Working-Ant", call_words=("learn",))
+    client = _fake_haiku('```json\n{"is_learning": true, "lesson_text": "be careful"}\n```')
+    m = ex.classify_via_llm("@Working-Ant be careful", anthropic_client=client)
+    assert m == Mention(call_word="(llm)", text="be careful")
+
+
+def test_classify_via_llm_returns_none_on_haiku_exception():
+    ex = Extractor(handle="@Working-Ant", call_words=("learn",))
+    client = MagicMock()
+    client.messages.create.side_effect = Exception("haiku unreachable")
+    m = ex.classify_via_llm("@Working-Ant remember X", anthropic_client=client)
+    assert m is None
+
+
+def test_classify_via_llm_returns_none_on_malformed_json():
+    ex = Extractor(handle="@Working-Ant", call_words=("learn",))
+    client = _fake_haiku('this is not json at all')
+    m = ex.classify_via_llm("@Working-Ant remember X", anthropic_client=client)
+    assert m is None
+
+
+def test_classify_via_llm_includes_parent_bot_finding_in_prompt():
+    ex = Extractor(handle="@Working-Ant", call_words=("learn",))
+    client = _fake_haiku('{"is_learning": true, "lesson_text": "ok"}')
+    ex.classify_via_llm(
+        "@Working-Ant this is fine here",
+        anthropic_client=client,
+        parent_bot_comment="The items table declares user_id INTEGER...",
+    )
+    # Verify the prompt included the parent text.
+    call_kwargs = client.messages.create.call_args.kwargs
+    prompt_text = call_kwargs["messages"][0]["content"]
+    assert "items table declares user_id INTEGER" in prompt_text
+    assert "MAINTAINER COMMENT:" in prompt_text
+    assert "PARENT BOT FINDING:" in prompt_text

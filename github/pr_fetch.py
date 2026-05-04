@@ -150,6 +150,7 @@ class Comment:
     body: str
     author: str
     created_at: str       # ISO-8601
+    in_reply_to_id: int | None = None  # parent review-comment id when this is a reply
 
 
 def list_open_prs(owner_repo: str, *, since: str | None = None) -> list[PullRequest]:
@@ -202,5 +203,29 @@ def list_pr_review_comments(pr: PullRequest, *, since_id: int | None = None) -> 
             body=item.get("body", ""),
             author=(item.get("user") or {}).get("login", ""),
             created_at=item.get("created_at", ""),
+            in_reply_to_id=item.get("in_reply_to_id"),
         ))
     return out
+
+
+def fetch_review_comment(owner: str, repo: str, comment_id: int) -> Comment:
+    """Fetch a single PR review comment by id. Used to walk up to a
+    parent bot comment when a mention is a reply.
+
+    Note: this single-comment endpoint can return ``line=null`` for
+    outdated/file-level comments. We DON'T skip here — the caller wants
+    the parent's body verbatim regardless. Coerce to 0 like the list path.
+    """
+    item = _gh_json(f"repos/{owner}/{repo}/pulls/comments/{comment_id}")
+    line = int(item.get("line") or 0)
+    start = int(item.get("start_line") or line)
+    return Comment(
+        comment_id=int(item["id"]),
+        file_path=item.get("path", ""),
+        line_start=start,
+        line_end=line,
+        body=item.get("body", ""),
+        author=(item.get("user") or {}).get("login", ""),
+        created_at=item.get("created_at", ""),
+        in_reply_to_id=item.get("in_reply_to_id"),
+    )

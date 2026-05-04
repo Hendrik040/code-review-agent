@@ -44,6 +44,10 @@ class LearningPayload:
     author: str
     captured_at: str      # ISO-8601 UTC
     commit_sha: str
+    # NEW (Phase 6.1): bot's parent review comment when this learning is a
+    # reply, "" otherwise. Last so existing positional construction keeps
+    # working (dataclass default-after-positional rules).
+    bug_context: str = ""
 
 
 @dataclass(frozen=True)

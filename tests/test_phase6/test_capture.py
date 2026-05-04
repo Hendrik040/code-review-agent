@@ -168,3 +168,92 @@ def test_capture_once_advances_on_anchor_failure(tmp_path):
     import json
     assert json.loads(state_path.read_text())["o/r"] == 7
     store.upsert.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1: Haiku fallback + bug_context payload field.
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock as MM
+
+
+def test_capture_once_uses_haiku_fallback_on_regex_miss(tmp_path):
+    """Body has @Working-Ant but no call word → Haiku classifies + extracts."""
+    adapter = MagicMock()
+    adapter.list_open_prs.return_value = [_pr()]
+    adapter.list_pr_review_comments.return_value = [
+        _comment(1, body="@Working-Ant that, in this case, please remember to always use X"),
+    ]
+    embedder = MagicMock(); embedder.embed_one.return_value = [0.1] * 1024
+    store = MagicMock()
+    haiku = MM()
+    haiku_msg = MM(); haiku_msg.content = [MM(text='{"is_learning": true, "lesson_text": "always use X"}')]
+    haiku.messages.create.return_value = haiku_msg
+
+    src = tmp_path / "tiny_module.py"
+    src.write_text("def first_function(x):\n    return x + 1\n")
+
+    with patch("learnings.capture._ensure_clone", return_value=tmp_path):
+        capture_once(
+            repo="o/r", adapter=adapter, embedder=embedder, store=store,
+            state_path=tmp_path / "state.json", repo_clone_root=tmp_path,
+            handle="@Working-Ant", call_words=("learn",),
+            anthropic_client=haiku,
+        )
+    store.upsert.assert_called_once()
+    payload = store.upsert.call_args.kwargs["payload"]
+    assert payload.learning_text == "always use X"
+
+
+def test_capture_once_does_not_call_haiku_when_handle_absent(tmp_path):
+    """LGTM-style replies → no Haiku call burned."""
+    adapter = MagicMock()
+    adapter.list_open_prs.return_value = [_pr()]
+    adapter.list_pr_review_comments.return_value = [_comment(1, body="LGTM, ship it")]
+    embedder = MagicMock()
+    store = MagicMock()
+    haiku = MM()
+
+    with patch("learnings.capture._ensure_clone", return_value=tmp_path):
+        capture_once(
+            repo="o/r", adapter=adapter, embedder=embedder, store=store,
+            state_path=tmp_path / "state.json", repo_clone_root=tmp_path,
+            handle="@Working-Ant", call_words=("learn",),
+            anthropic_client=haiku,
+        )
+    haiku.messages.create.assert_not_called()
+    store.upsert.assert_not_called()
+
+
+def test_capture_once_fetches_parent_bug_context_for_reply(tmp_path):
+    """When the captured comment has in_reply_to_id, fetch the parent
+    and store its body as bug_context."""
+    parent_body = "The items table declares user_id INTEGER, but ..."
+    adapter = MagicMock()
+    adapter.list_open_prs.return_value = [_pr()]
+    reply = Comment(
+        comment_id=2, file_path="tiny_module.py", line_start=1, line_end=1,
+        body="@Working-Ant remember storing username here is intentional",
+        author="alice", created_at="2026-05-04T10:00:00Z", in_reply_to_id=1,
+    )
+    adapter.list_pr_review_comments.return_value = [reply]
+    embedder = MagicMock(); embedder.embed_one.return_value = [0.1] * 1024
+    store = MagicMock()
+
+    src = tmp_path / "tiny_module.py"
+    src.write_text("def first_function(x):\n    return x + 1\n")
+
+    fake_parent = Comment(
+        comment_id=1, file_path="tiny_module.py", line_start=1, line_end=1,
+        body=parent_body, author="Working-Ant", created_at="2026-05-04T09:00:00Z",
+        in_reply_to_id=None,
+    )
+    with patch("learnings.capture._ensure_clone", return_value=tmp_path), \
+         patch("learnings.capture.fetch_review_comment", return_value=fake_parent):
+        capture_once(
+            repo="o/r", adapter=adapter, embedder=embedder, store=store,
+            state_path=tmp_path / "state.json", repo_clone_root=tmp_path,
+            handle="@Working-Ant", call_words=("remember",),
+        )
+    payload = store.upsert.call_args.kwargs["payload"]
+    assert payload.bug_context == parent_body

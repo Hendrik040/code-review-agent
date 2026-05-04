@@ -228,6 +228,29 @@ def test_applicability_filter_keeps_yes_and_maybe_drops_no():
     assert [h.point_id for h in out] == ["1", "3"]
 
 
+def test_format_for_prompt_includes_bug_context_when_present():
+    h = Hit(
+        score=0.9,
+        payload=_payload("use X").__dict__ | {
+            "bug_context": "The bot found a SQL injection risk on this line.",
+        },
+        point_id="abc",
+    )
+    out = format_for_prompt([h])
+    assert "<bug_context>The bot found a SQL injection risk on this line.</bug_context>" in out
+
+
+def test_format_for_prompt_omits_bug_context_when_empty():
+    """Default empty bug_context → no <bug_context> tag at all."""
+    h = Hit(
+        score=0.9,
+        payload=_payload("use X").__dict__ | {"bug_context": ""},
+        point_id="abc",
+    )
+    out = format_for_prompt([h])
+    assert "<bug_context>" not in out
+
+
 def test_applicability_filter_respects_keep_max():
     """keep_max caps the kept set even when more hits would qualify."""
     from shared.learnings import applicability_filter
