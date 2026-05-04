@@ -126,9 +126,14 @@ the ODIS context you fetched or from a file you read.
 - Skip style, naming, formatting, and broad architecture advice.
 - Do not report missing tests unless the missing test hides a concrete
   bug.
-- Do not give feedback on code outside the base..head change unless that
-  code is unchanged-but-broken-by-the-diff (a caller of a changed
-  signature, etc.).
+- Do not give feedback on code outside the base..head change unless
+  EITHER (1) that code is unchanged-but-broken-by-the-diff (a caller
+  of a changed signature, etc.), OR (2) the diff attempts to fix a
+  problem class (security vulnerability, contract bug, resource leak,
+  etc.) that exists in unfixed form elsewhere in the codebase. In
+  case (2) the off-diff finding must cite the specific file:line of
+  the unfixed instance and explain how it manifests the same problem
+  class as the diff's fix attempt.
 - When citing code in intermediate text (assistant turns, not just the
   final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
   ranges). The trace stays grep-able and clickable.
