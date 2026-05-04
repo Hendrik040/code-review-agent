@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: pandas#132
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# fixed_commit: bd8f07fb29d2ac819f4c8e8e1b8e6d40f8b0f40c
+# base_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5^
+# head_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# started: 2026-05-04T07:26:25+00:00
+# finished: 2026-05-04T07:32:13+00:00
+# duration_s: 348.5
+# cost_usd: 5.4131
+# num_turns: 40
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 315
+# repo: DaytonaRepo
+# refs: 2d0d58c04114b634072e9425824b34cda3aeaef5^..2d0d58c04114b634072e9425824b34cda3aeaef5
+# turns: 40
+# cost (USD, API rate): 5.413125
+# usage: {'input_tokens': 44, 'output_tokens': 19640, 'cache_creation_input_tokens': 62792, 'cache_read_input_tokens': 1841410}
+# findings: 2
+# ---
+[
+  {
+    "file": "pandas/core/nanops.py",
+    "line": 405,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Duplicate `var = nanvar(...)` call in nansem overwrites the first computation, doubling work for no correctness benefit.",
+    "detail": "Line 399 already computes `var = nanvar(values, axis, skipna, ddof=ddof)`. The diff added a second identical assignment at line 405 (after `values` may have been astype'd to 'f8'). Because `nanvar` itself handles dtype promotion internally, the two calls return the same numeric result, so the line 399 result is just discarded. The visible effect is that `nansem` does ~2x the work of `nanvar` per call (an O(N) two-pass scan each time) on every Series.sem()/DataFrame.sem() invocation. This looks like an accidental commit of a leftover edit rather than a correctness fix; either the original line 399 should be removed, or the new line 405 should be removed.",
+    "line_end": null,
+    "suggested_fix": "@@ def nansem(values, axis=None, skipna=True, ddof=1):\n-    var = nanvar(values, axis, skipna, ddof=ddof)\n-\n     mask = isnull(values)\n     if not is_float_dtype(values.dtype):\n         values = values.astype('f8')\n     count, _ = _get_counts_nanvar(mask, axis, ddof, values.dtype)\n     var = nanvar(values, axis, skipna, ddof=ddof)\n \n     return np.sqrt(var) / np.sqrt(count)"
+  },
+  {
+    "file": "pandas/tests/test_nanops.py",
+    "line": 869,
+    "category": "logic",
+    "severity": "low",
+    "summary": "test_nanstd_nans calls nanops.nanvar instead of nanops.nanstd for the skipna=False branch, so nanstd is not actually tested in that scenario.",
+    "detail": "In the new TestNanvarFixedValues.test_nanstd_nans, the first assertion at line 865 correctly calls `nanops.nanstd(samples, skipna=True)`, but the skipna=False branch at line 869 mistakenly calls `nanops.nanvar(samples, skipna=False)`. The variable is also misnamed `actual_std`. Because both nanvar and nanstd return NaN when skipna=False and the data contains NaN, the assertion happens to pass \u2014 but `nanstd`'s skipna=False behavior is silently not exercised. This is the regression test for the fix in this PR, so accidentally not exercising nanstd here weakens the test coverage that was added to guard against future regressions.",
+    "line_end": null,
+    "suggested_fix": "@@ def test_nanstd_nans(self):\n-        actual_std = nanops.nanvar(samples, skipna=False)\n+        actual_std = nanops.nanstd(samples, skipna=False)\n         np.testing.assert_almost_equal(\n             actual_std, np.nan, decimal=2)"
+  }
+]

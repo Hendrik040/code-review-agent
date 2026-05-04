@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: pandas#132
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# fixed_commit: bd8f07fb29d2ac819f4c8e8e1b8e6d40f8b0f40c
+# base_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5^
+# head_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# started: 2026-05-04T08:55:17+00:00
+# finished: 2026-05-04T09:03:59+00:00
+# duration_s: 521.1
+# cost_usd: 2.4590
+# num_turns: 47
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 344
+# repo: DaytonaRepo
+# refs: 2d0d58c04114b634072e9425824b34cda3aeaef5^..2d0d58c04114b634072e9425824b34cda3aeaef5
+# turns: 47
+# cost (USD, harness-reported): 2.459036
+# cost (USD, public Opus 4 rate): 7.377109
+# usage: {'input_tokens': 57, 'cache_creation_input_tokens': 72175, 'cache_read_input_tokens': 2122315, 'output_tokens': 37860, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 72175}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 336, 'cache_read_input_tokens': 112113, 'cache_creation_input_tokens': 2156, 'cache_creation': {'ephemeral_5m_input_tokens': 2156, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/nanops.py",
+    "line": 399,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "nansem calls nanvar twice; the first call's result is dead and the variance computation runs twice on every call.",
+    "detail": "The new line `var = nanvar(values, axis, skipna, ddof=ddof)` at line 405 was added without removing the original same call at line 399. The first assignment to `var` is overwritten by the second before it is read, so the first invocation of `nanvar` is dead code. Both calls produce the same numeric result (the only difference is that the second one runs after `values = values.astype('f8')`, which `nanvar` does internally for non-float types anyway via `is_any_int_dtype`/`_ensure_numeric`). Net effect: every `nansem` call (and therefore every `Series.sem`/`DataFrame.sem`) now performs the full two-pass variance computation twice, ~doubling the cost. This is a public reduction op, so it's a real perf regression, not just stylistic noise.",
+    "line_end": 405,
+    "suggested_fix": "@@\n-def nansem(values, axis=None, skipna=True, ddof=1):\n-    var = nanvar(values, axis, skipna, ddof=ddof)\n-\n-    mask = isnull(values)\n+def nansem(values, axis=None, skipna=True, ddof=1):\n+    mask = isnull(values)\n     if not is_float_dtype(values.dtype):\n         values = values.astype('f8')\n     count, _ = _get_counts_nanvar(mask, axis, ddof, values.dtype)\n     var = nanvar(values, axis, skipna, ddof=ddof)\n \n     return np.sqrt(var) / np.sqrt(count)"
+  },
+  {
+    "file": "pandas/tests/test_nanops.py",
+    "line": 869,
+    "category": "logic",
+    "severity": "low",
+    "summary": "test_nanstd_nans calls nanvar instead of nanstd, so nanstd's skipna=False NaN-propagation is never actually exercised.",
+    "detail": "Inside `test_nanstd_nans`, the first half correctly calls `nanops.nanstd(samples, skipna=True)`. The second half, intended to verify NaN propagation when skipna=False, mistakenly calls `nanops.nanvar(samples, skipna=False)` and stores it in `actual_std`. The assertion `assert_almost_equal(actual_std, np.nan, decimal=2)` still passes because both `nanvar` and `nanstd` propagate NaN under skipna=False, but the test is silently testing the wrong function \u2014 the `nanstd` branch this test exists for is uncovered. Low severity because it only weakens a regression test rather than affecting users, but it does mean future breakage in `nanstd`'s NaN handling could land unnoticed.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        actual_std = nanops.nanvar(samples, skipna=False)\n+        actual_std = nanops.nanstd(samples, skipna=False)\n         np.testing.assert_almost_equal(\n             actual_std, np.nan, decimal=2)"
+  }
+]

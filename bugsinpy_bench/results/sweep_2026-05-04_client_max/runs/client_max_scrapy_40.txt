@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: scrapy#40
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: scrapy/scrapy
+# introducing_commit: c76190d491fca9f35b6758bdc06c34d77f5d9be9
+# fixed_commit: f1d971a5c0cdfe0f4fe5619146cd6818324fc98e
+# base_ref: c76190d491fca9f35b6758bdc06c34d77f5d9be9^
+# head_ref: c76190d491fca9f35b6758bdc06c34d77f5d9be9
+# started: 2026-05-04T08:27:01+00:00
+# finished: 2026-05-04T08:29:09+00:00
+# duration_s: 128.4
+# cost_usd: 2.0858
+# num_turns: 24
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 332
+# repo: DaytonaRepo
+# refs: c76190d491fca9f35b6758bdc06c34d77f5d9be9^..c76190d491fca9f35b6758bdc06c34d77f5d9be9
+# turns: 24
+# cost (USD, API rate): 2.085821
+# usage: {'input_tokens': 28, 'output_tokens': 7175, 'cache_creation_input_tokens': 33254, 'cache_read_input_tokens': 615842}
+# findings: 1
+# ---
+[
+  {
+    "file": "scrapy/exporters.py",
+    "line": 267,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "PythonItemExporter._serialize_value now raises TypeError on non-string scalars (int, float, bool, None), regressing the previous pass-through behavior",
+    "detail": "Before this change `_serialize_value` ended with `return value.encode(self.encoding) if isinstance(value, unicode) else value`, so any non-unicode scalar (int, float, bool, None, datetime, etc.) was returned as-is. This was important because the docstring explicitly states the goal is to serialize items \"to built-in python types so any serialization library (like json, msgpack, binc, etc.) can be used on top of it,\" and JSON/msgpack natively handle ints, floats, bools, and None.\n\nThe new code unconditionally calls either `to_bytes(value, encoding=self.encoding)` or `to_unicode(value, encoding=self.encoding)` on the catch-all branch. Per `scrapy/utils/python.py:110-117` and `:97-104`, both helpers raise `TypeError` for any input that isn't `bytes`/`str`/`unicode`. So an Item like `TestItem(price=42)` or a dict containing `{'count': 3, 'active': True, 'note': None}` will now raise `TypeError: to_bytes must receive a unicode, str or bytes object, got int` instead of producing a usable dict. The default is `binary=True`, so existing users running this code path get the regression with no opt-in. This breaks the documented contract of the exporter and any downstream JSON/msgpack pipeline that relied on it.",
+    "line_end": 270,
+    "suggested_fix": "@@\n-        if hasattr(value, '__iter__') \\\n-                and not isinstance(value, six.string_types):\n-            return [self._serialize_value(v) for v in value]\n-        if self.binary:\n-            return to_bytes(value, encoding=self.encoding)\n-        else:\n-            return to_unicode(value, encoding=self.encoding)\n+        if hasattr(value, '__iter__') \\\n+                and not isinstance(value, six.string_types):\n+            return [self._serialize_value(v) for v in value]\n+        encode_func = to_bytes if self.binary else to_unicode\n+        if isinstance(value, six.string_types):\n+            return encode_func(value, encoding=self.encoding)\n+        return value\n"
+  }
+]

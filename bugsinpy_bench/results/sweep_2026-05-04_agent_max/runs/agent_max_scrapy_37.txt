@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: scrapy#37
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: scrapy/scrapy
+# introducing_commit: c4a607fc787b2b1d61bf309c98dc9ced38d9d445
+# fixed_commit: f701f5b0db10faef08e4ed9a21b98fd72f9cfc9a
+# base_ref: c4a607fc787b2b1d61bf309c98dc9ced38d9d445^
+# head_ref: c4a607fc787b2b1d61bf309c98dc9ced38d9d445
+# started: 2026-05-04T10:04:41+00:00
+# finished: 2026-05-04T10:06:35+00:00
+# duration_s: 114.6
+# cost_usd: 0.5707
+# num_turns: 12
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 360
+# repo: DaytonaRepo
+# refs: c4a607fc787b2b1d61bf309c98dc9ced38d9d445^..c4a607fc787b2b1d61bf309c98dc9ced38d9d445
+# turns: 12
+# cost (USD, harness-reported): 0.570744
+# cost (USD, public Opus 4 rate): 1.712231
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 20987, 'cache_read_input_tokens': 474470, 'output_tokens': 8090, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20987}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 411, 'cache_read_input_tokens': 61359, 'cache_creation_input_tokens': 1722, 'cache_creation': {'ephemeral_5m_input_tokens': 1722, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "scrapy/http/request/__init__.py",
+    "line": 63,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "New schemeless-URL validation breaks pre-existing tests that pass URLs without a colon (Request('url'), Request('scrapytest.org'), CustomRequest('example.com', ...)).",
+    "detail": "The diff adds `if ':' not in self._url: raise ValueError(...)` to `_set_url`, and updates test_url_no_scheme accordingly, but several other tests in the suite construct Requests with schemeless URLs and have NOT been updated. They will all start raising ValueError at construction time:\n\n- scrapy/tests/test_downloadermiddleware_stats.py:17 -> `Request('scrapytest.org')` runs in setUp(), so all three tests in TestDownloaderStats (test_process_request, test_process_response, test_process_exception) will error in setUp.\n- scrapy/tests/test_pipeline_media.py:39, 47, 52, 136, 150, 162, 164, 183, 190, 191, 201, 218, 244, 252 -> `Request('url')`, `Request('url1')`, `Request('url2')` used in many test methods; each of those tests will raise ValueError before exercising MediaPipeline behavior.\n- scrapy/tests/test_http_request.py:145 -> `CustomRequest('example.com', 'http://www.example.com')` passes 'example.com' as the first positional argument (`url`), which is schemeless; `test_copy_inherited_classes` will now raise ValueError instead of exercising the copy() preservation logic it was meant to test.\n\nNet effect: the diff breaks the test suite. Either the new check needs to be relaxed/removed, or these tests must be updated to pass real URLs (e.g. 'http://scrapytest.org', 'http://example.com/url', etc.) in the same commit.",
+    "line_end": 64,
+    "suggested_fix": "Update the affected tests in the same commit to use schemeful URLs, e.g.:\n\n--- a/scrapy/tests/test_downloadermiddleware_stats.py\n+++ b/scrapy/tests/test_downloadermiddleware_stats.py\n@@\n-        self.req = Request('scrapytest.org')\n+        self.req = Request('http://scrapytest.org')\n\n--- a/scrapy/tests/test_pipeline_media.py\n+++ b/scrapy/tests/test_pipeline_media.py\n@@\n-        request = Request('url')\n+        request = Request('http://url')\n(...and analogously for 'url1', 'url2' callsites)\n\n--- a/scrapy/tests/test_http_request.py\n+++ b/scrapy/tests/test_http_request.py\n@@\n-        r1 = CustomRequest('example.com', 'http://www.example.com')\n+        r1 = CustomRequest('http://example.com', 'http://www.example.com')\n"
+  },
+  {
+    "file": "scrapy/http/request/__init__.py",
+    "line": 63,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`':' not in self._url` is a coarse proxy for 'has a scheme' and accepts schemeless URLs that happen to contain a colon (e.g. 'host:8080/path', '/path:thing', 'foo:bar').",
+    "detail": "The commit message says 'Raise ValueError if url has no scheme', but the check only verifies the presence of any colon character in the URL. URLs like 'host:8080/path', '/some/path:thing', or 'foo:bar' contain ':' yet have no scheme component and will silently slip through this validation, defeating the stated intent for a class of inputs users may realistically pass.\n\nA more accurate test would parse the URL and assert that the scheme component is non-empty (e.g. via urlparse), but at minimum the check should verify a colon precedes any '/' to look like 'scheme:rest'. This is low severity because the most common schemeless cases ('foo', '/path/...') are still caught, but it weakens the guarantee the new error is meant to provide.",
+    "line_end": null,
+    "suggested_fix": "from urlparse import urlparse\n...\nif not urlparse(self._url).scheme:\n    raise ValueError('Missing scheme in request url: %s' % self._url)\n"
+  }
+]

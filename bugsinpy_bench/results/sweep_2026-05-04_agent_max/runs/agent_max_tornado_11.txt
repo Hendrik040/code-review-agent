@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: tornado#11
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-05-04T11:00:54+00:00
+# finished: 2026-05-04T11:07:59+00:00
+# duration_s: 425.1
+# cost_usd: 2.0078
+# num_turns: 25
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 378
+# repo: DaytonaRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 25
+# cost (USD, harness-reported): 2.007826
+# cost (USD, public Opus 4 rate): 6.023478
+# usage: {'input_tokens': 44, 'cache_creation_input_tokens': 60558, 'cache_read_input_tokens': 1783087, 'output_tokens': 29503, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 60558}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 410, 'cache_read_input_tokens': 97356, 'cache_creation_input_tokens': 2177, 'cache_creation': {'ephemeral_5m_input_tokens': 2177, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 240,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Chunked body parser does not consume the trailer + final CRLF terminator, corrupting the next keep-alive request.",
+    "detail": "Per RFC 2616 \u00a73.6.1, a chunked body has the form `*chunk last-chunk trailer CRLF`. `_read_chunked_body` reads the size line `0\\r\\n` for the last-chunk and returns immediately, leaving the trailer (or, in the common case, just the final empty `\\r\\n`) in the IOStream buffer. This commit newly enables chunked request bodies on the server side, and HTTP/1.1 keep-alive is the default in `_can_keep_alive`, so the very next pipelined/keep-alive request will be read with a leading `\\r\\n` prepended. `_parse_headers` then sees `start_line=\"\"` and `HTTPHeaders.parse` raises ValueError on the next non-empty line (e.g. `GET / HTTP/1.1`), which is converted to BadRequestException and the connection is closed. Net effect: any keep-alive request that follows a chunked POST will fail. Client-side responses currently use `no_keep_alive=True` so the leftover bytes don\u2019t bite there yet, but the same method is used for both directions and will mis-handle keep-alive responses too.",
+    "line_end": 240,
+    "suggested_fix": "After reading the `0\\r\\n` last-chunk, drain the trailer block by reading until `\\r?\\n\\r?\\n` (or, if trailers are not supported, at least consume the final `\\r\\n`):\n\n         if chunk_len == 0:\n+            # consume the (possibly empty) trailer terminator\n+            yield self.stream.read_until_regex(b\"\\r?\\n\")\n             return"
+  },
+  {
+    "file": "tornado/http1connection.py",
+    "line": 94,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Client-side 1xx handling forgets to skip the body, so `delegate.finish()` is invoked twice and follow-up redirects can fire twice.",
+    "detail": "When the client sees a 1xx response, the code recurses with `yield self._process_message(delegate, is_client, method=method)` to read the next message but does not set `skip_body = True`. After the recursion the inner frame has already invoked `delegate.headers_received`, `delegate.data_received` (if any), `delegate.finish()`, and (because the simple_httpclient sets `no_keep_alive=True`) closed the stream. Control then returns to the outer frame holding the 1xx headers (no Content-Length, no Transfer-Encoding). `_read_body` therefore returns `_read_body_until_close(delegate)`, which on an already-closed stream resolves immediately with `b\"\"`, and `delegate.data_received(b\"\")` plus a second `delegate.finish()` are invoked. In the simple_httpclient this is mostly wasteful (extra HTTPResponse construction; `final_callback` is already None so the user callback isn\u2019t double-fired). However, when the final response is a redirect (301/302/303/307), `_HTTPConnection.finish()` re-enters the redirect branch on the second call and runs `self.client.fetch(new_request, None)` a second time \u2014 issuing a duplicate redirected request to the upstream server. Triggering scenario: any client doing `Expect: 100-continue` (or an HTTP/1.1 server that proactively emits a 1xx) where the eventual response is a redirect.",
+    "line_end": 102,
+    "suggested_fix": "Treat 1xx as bodyless and stop processing in the outer frame after the recursion handles the final message:\n\n         if code >= 100 and code < 200:\n-            yield self._process_message(delegate, is_client, method=method)\n+            yield self._process_message(delegate, is_client, method=method)\n+            return\n"
+  }
+]

@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_max
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-05-04T05:48:39+00:00
+# finished: 2026-05-04T05:59:51+00:00
+# duration_s: 671.9
+# cost_usd: 3.6068
+# num_turns: 34
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 303
+# repo: DaytonaRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 34
+# cost (USD, harness-reported): 3.606786
+# cost (USD, public Opus 4 rate): 10.820357
+# usage: {'input_tokens': 53, 'cache_creation_input_tokens': 119980, 'cache_read_input_tokens': 3363491, 'output_tokens': 46996, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 119980}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 382, 'cache_read_input_tokens': 144931, 'cache_creation_input_tokens': 4552, 'cache_creation': {'ephemeral_5m_input_tokens': 4552, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 338,
+    "category": "resource",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close()/terminate() shuts down the factory-owned queue_pool, leaving the next strategy created after a rebalance with dead workers and silently dropping every subsequent message.",
+    "detail": "queue_pool is created once in ResultsStrategyFactory.__init__ (result_consumer.py:133) and held on the factory across the consumer's lifetime \u2014 the existing batched-parallel mode keeps `parallel_executor` long-lived and only shuts it down in factory.shutdown() (result_consumer.py:181-182). The new strategy violates that contract: both close() and terminate() invoke `self.queue_pool.shutdown()`, which sets `worker.shutdown=True`, calls `q.shutdown(immediate=False)` on every queue, and joins all workers. Arroyo's StreamProcessor calls strategy.close() on every partition revocation (e.g., during a Kafka rebalance) and then calls factory.create_with_partitions() again on the next assignment. Because factory.queue_pool is never reset, `assert self.queue_pool is not None` in create_thread_queue_parallel_worker (result_consumer.py:247) still succeeds, but the new SimpleQueueProcessingStrategy is wired to the now-dead pool: the workers are joined/exited and every internal queue.Queue is in the shut-down state. Subsequent submits will reach FixedQueuePool.submit, succeed at add_offset, then fail at work_queue.put(...) with queue.ShutDown. SimpleQueueProcessingStrategy.submit's broad `except Exception` (lines 317-325) then calls add_offset+complete_offset, marking the offset as committable. The commit thread of the new strategy keeps committing offsets while no message is ever processed \u2014 a silent, total stall after the very first rebalance. This makes the mode unusable in any real Kafka deployment that experiences rebalances.",
+    "line_end": 342,
+    "suggested_fix": "Move pool ownership to the factory only: drop `self.queue_pool.shutdown()` from SimpleQueueProcessingStrategy.close()/terminate() (only stop the commit thread there) and keep teardown in ResultsStrategyFactory.shutdown(). Alternatively, in create_thread_queue_parallel_worker, lazily (re)create self.queue_pool when it's been shut down."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 185,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "Per-queue queue.Queue() is unbounded and SimpleQueueProcessingStrategy.submit never raises MessageRejected, so there is no backpressure and the consumer can OOM under load.",
+    "detail": "FixedQueuePool creates each queue with `queue.Queue()` (no maxsize) at queue_consumer.py:185, which means maxsize=0 (unlimited). SimpleQueueProcessingStrategy.submit (line 293) puts items into these queues unconditionally and never raises arroyo.processing.strategies.MessageRejected \u2014 the standard backpressure signal used elsewhere in this repo (e.g., src/sentry/sentry_metrics/consumers/indexer/parallel.py:56, src/sentry/spans/consumers/process/flusher.py:364). The class docstring even claims \"Natural backpressure when queues fill up\" (line 253), but the queues never fill up. If the result_processor is slower than Kafka ingestion (a normal expectation behind a parallel mode), the StreamProcessor will keep submitting messages while WorkItems (each holding a reference to the original Message[KafkaPayload], cf. line 31, plus the decoded result) accumulate without bound. Memory grows linearly with the backlog and the consumer eventually OOMs. There is also no metric-based circuit breaker; only a queue-depth gauge is emitted post-hoc.",
+    "line_end": 185,
+    "suggested_fix": "Pass a maxsize to queue.Queue and convert work_queue.put(...) into work_queue.put_nowait or put with timeout in FixedQueuePool.submit; on queue.Full, raise arroyo.processing.strategies.MessageRejected from SimpleQueueProcessingStrategy.submit (without calling add_offset) so the StreamProcessor applies real backpressure."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 317,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The except branch in SimpleQueueProcessingStrategy.submit completes the offset even when queue_pool.submit failed mid-way, so an offset can be committed for a message that was never processed.",
+    "detail": "FixedQueuePool.submit (lines 204-212) does add_offset(partition, offset) BEFORE work_queue.put(work_item). If work_queue.put raises (queue.ShutDown is the realistic case in Python 3.13: the pool has been shut down by close()/terminate(), or \u2014 combined with the rebalance bug above \u2014 was shut down on a prior strategy close), the offset is already in the tracker but the WorkItem never reaches a worker. The exception bubbles up to SimpleQueueProcessingStrategy.submit's `except Exception` at line 317, which calls add_offset (idempotent) and then complete_offset \u2014 removing the offset from `outstanding`. The commit thread then sees the offset as fully processed and commits it (via commit_offsets's `+1` in result_consumer.py:251). On consumer restart Kafka resumes from the next offset, so the message is silently dropped \u2014 violating the \"No item is lost\" and \"Only commits offsets after successful processing\" guarantees in the class docstring. The grouping_fn / WorkItem construction also flow through this same handler, but those errors at least fail before any add_offset, so they don't corrupt the tracker \u2014 only the put() failure path does.",
+    "line_end": 325,
+    "suggested_fix": "In the except path, distinguish the case where queue_pool.submit had already called add_offset (i.e., the put failed) from cases where add_offset was never called, and either retry or send the message to a DLQ/raise rather than blindly completing the offset. At minimum, do not call complete_offset on a put-failure; let the offset stay outstanding so the commit point cannot advance past it."
+  }
+]

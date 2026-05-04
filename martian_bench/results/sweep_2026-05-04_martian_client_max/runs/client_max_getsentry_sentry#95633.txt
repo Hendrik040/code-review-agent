@@ -1,0 +1,67 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_max
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-05-04T05:52:50+00:00
+# finished: 2026-05-04T06:00:31+00:00
+# duration_s: 461.2
+# cost_usd: 8.4432
+# num_turns: 40
+# num_findings: 3
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 299
+# repo: DaytonaRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 40
+# cost (USD, API rate): 8.443178
+# usage: {'input_tokens': 44, 'output_tokens': 30073, 'cache_creation_input_tokens': 101451, 'cache_read_input_tokens': 2856558}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 338,
+    "category": "concurrency",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close()/terminate() shuts down the factory-owned shared queue_pool, breaking subsequent strategies after a rebalance and silently dropping messages while still committing their offsets",
+    "detail": "The queue_pool (workers + queues) is created once in ResultsStrategyFactory.__init__ and is the same instance handed to every SimpleQueueProcessingStrategy created via create_with_partitions(). However, both close() (line 338) and terminate() (line 342) call self.queue_pool.shutdown(), which permanently shuts down all per-queue workers and calls queue.shutdown() on every internal queue.\n\nArroyo's StreamProcessor closes the current strategy and creates a new one via factory.create_with_partitions on every partition (re)assignment / revocation (see arroyo/processing/processor.py: `_close_strategy()` followed by `_create_strategy()` in on_partitions_assigned and on_partitions_revoked, with the in-tree comment noting this 'can happen quite often' for cooperative-sticky rebalancing). After the first close, the factory's queue_pool is dead.\n\nWhen the new strategy then receives a message, queue_pool.submit() calls offset_tracker.add_offset() (line 211) and then work_queue.put(work_item) \u2014 the put() raises queue.ShutDown. SimpleQueueProcessingStrategy.submit (lines 317-325) catches the exception, logs it, then calls add_offset() + complete_offset() on the tracker, marking the *unprocessed* message as ready to commit. The new commit thread then calls commit_function() with that offset, advancing the Kafka committed offset past a message that was never actually delivered to the result_processor \u2014 i.e. silent data loss after every rebalance.\n\nFix: don't shut down the shared queue_pool from the strategy. Either let the factory exclusively own its lifecycle (remove queue_pool.shutdown() from close()/terminate(), and only shut it down in ResultsStrategyFactory.shutdown), or have create_with_partitions construct a fresh queue_pool for each strategy.",
+    "line_end": 342,
+    "suggested_fix": "@@ def close(self) -> None:\n-        self.shutdown_event.set()\n-        self.commit_thread.join(timeout=5.0)\n-        self.queue_pool.shutdown()\n+        self.shutdown_event.set()\n+        self.commit_thread.join(timeout=5.0)\n+        # Do NOT shut down queue_pool here \u2014 it is owned by the factory and\n+        # shared across strategy instances created on rebalance.\n@@ def terminate(self) -> None:\n-        self.shutdown_event.set()\n-        self.queue_pool.shutdown()\n+        self.shutdown_event.set()"
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 335,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "close() shuts down the commit thread before draining the workers, so offsets completed during the final drain are never committed",
+    "detail": "close() runs in this order:\n  1. shutdown_event.set() \u2014 signals the commit loop to stop on its next wakeup\n  2. commit_thread.join(timeout=5.0) \u2014 commit loop exits\n  3. queue_pool.shutdown() \u2014 workers continue draining queued items because q.shutdown(immediate=False) lets in-queue items be processed before get() raises\n\nDuring step 3 the workers call offset_tracker.complete_offset() for each drained item, but the commit thread has already exited in step 2, so those completions are never flushed to the commit_function. On a graceful shutdown of an in-flight consumer, all messages still queued at close time will be processed but their offsets will never be committed, causing those messages to be reprocessed on the next start.\n\nThe correct order is: drain workers first (queue_pool.shutdown), then perform a final synchronous commit pass, then signal/join the commit thread.",
+    "line_end": 338,
+    "suggested_fix": "     def close(self) -> None:\n-        self.shutdown_event.set()\n-        self.commit_thread.join(timeout=5.0)\n-        self.queue_pool.shutdown()\n+        # Drain workers first so all in-flight offsets are completed\n+        self.queue_pool.shutdown()\n+        # Do one final commit synchronously so we don't lose progress\n+        try:\n+            committable = self.queue_pool.offset_tracker.get_committable_offsets()\n+            if committable:\n+                self.commit_function(committable)\n+                for partition, offset in committable.items():\n+                    self.queue_pool.offset_tracker.mark_committed(partition, offset)\n+        except Exception:\n+            logger.exception(\"Error in final commit during close\")\n+        # Now stop the periodic commit thread\n+        self.shutdown_event.set()\n+        self.commit_thread.join(timeout=5.0)"
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 340,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "terminate() does not join the commit thread, so commit_function can be invoked after the queue_pool has been torn down",
+    "detail": "terminate() only sets the shutdown_event and then calls queue_pool.shutdown(); it never joins self.commit_thread. The commit thread can be inside `self.commit_function(committable)` (or about to call it) when terminate() runs. After queue_pool.shutdown() returns, the commit thread can still wake up from its 1-second wait (the wait at line 276 races with shutdown_event.set), call get_committable_offsets() on the tracker (still valid), and call commit_function() \u2014 meanwhile the rest of the system has assumed the strategy is fully torn down. The daemon commit thread is also abruptly killed by interpreter shutdown if termination is followed by process exit, possibly during a Kafka commit RPC.\n\nFor consistency with close(), terminate() should also join the commit thread.",
+    "line_end": 342,
+    "suggested_fix": "     def terminate(self) -> None:\n         self.shutdown_event.set()\n+        self.commit_thread.join(timeout=5.0)\n         self.queue_pool.shutdown()"
+  }
+]

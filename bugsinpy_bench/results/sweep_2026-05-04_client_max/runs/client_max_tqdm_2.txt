@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: tqdm#2
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: tqdm/tqdm
+# introducing_commit: bef86db56654d271838b145ad77f7040a73a7b4d
+# fixed_commit: 127af5caf19e7d29c346f5ca8a9c7ef3004b664b
+# base_ref: bef86db56654d271838b145ad77f7040a73a7b4d^
+# head_ref: bef86db56654d271838b145ad77f7040a73a7b4d
+# started: 2026-05-04T09:13:11+00:00
+# finished: 2026-05-04T09:18:30+00:00
+# duration_s: 319.4
+# cost_usd: 3.6818
+# num_turns: 43
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 352
+# repo: DaytonaRepo
+# refs: bef86db56654d271838b145ad77f7040a73a7b4d^..bef86db56654d271838b145ad77f7040a73a7b4d
+# turns: 43
+# cost (USD, API rate): 3.681818
+# usage: {'input_tokens': 47, 'output_tokens': 19690, 'cache_creation_input_tokens': 36828, 'cache_read_input_tokens': 1009225}
+# findings: 1
+# ---
+[
+  {
+    "file": "tqdm/utils.py",
+    "line": 365,
+    "category": "logic",
+    "severity": "low",
+    "summary": "disp_trim unconditionally appends \\x1b[0m when ANSI is present, producing a duplicate reset when data already ends with \\x1b[0m.",
+    "detail": "The new disp_trim ends with `if RE_ANSI.search(data): return data + \"\\033[0m\"`. When the input already ends with an ANSI reset (\\x1b[0m) and its display length is exactly `length` (so the trim loop exits without having to chop the reset), the function still appends another \\x1b[0m, yielding `...\\x1b[0m\\x1b[0m`. The previous `ansitrim` guarded against this with `if data.endswith(\"\\033[0m\"): return data`. \n\nReproducer (using format_meter, which calls disp_trim under the covers):\n\n  from tqdm.std import tqdm\n  r = tqdm.format_meter(0, 1000, 13, ncols=10,\n          bar_format='*****\\033[22m*****\\033[0m**{bar}$$$$$$$$$$')\n  # got:      '*****\\x1b[22m*****\\x1b[0m\\x1b[0m'  (25 chars)\n  # expected: '*****\\x1b[22m*****\\x1b[0m'        (21 chars)\n\nThis matches exactly the existing test case in tqdm/tests/tests_tqdm.py:306-310 (\"escape at trim zone\"), whose asserted result `'*****\\x1b[22m*****\\x1b[0m'` no longer holds. Visible terminal output remains correct because \\x1b[0m is idempotent, but the returned string is 4 bytes longer than necessary, exceeds the implicit ncols-byte budget for ANSI-free callers, and breaks the documented test contract.",
+    "line_end": 366,
+    "suggested_fix": "@@\n-    if RE_ANSI.search(data):  # assume ANSI reset is required\n-        return data + \"\\033[0m\"\n-    return data\n+    if RE_ANSI.search(data) and not data.endswith(\"\\033[0m\"):\n+        # ensure ANSI state is reset, but avoid a duplicate reset\n+        return data + \"\\033[0m\"\n+    return data\n"
+  }
+]

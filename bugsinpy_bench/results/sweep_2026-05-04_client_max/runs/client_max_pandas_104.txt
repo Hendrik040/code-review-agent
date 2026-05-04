@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: pandas#104
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# fixed_commit: 8e9b3eee812b70197341c26c40200d8a1a77ed9c
+# base_ref: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0^
+# head_ref: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# started: 2026-05-04T07:00:16+00:00
+# finished: 2026-05-04T07:02:01+00:00
+# duration_s: 105.4
+# cost_usd: 1.0390
+# num_turns: 12
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 311
+# repo: DaytonaRepo
+# refs: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0^..8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# turns: 12
+# cost (USD, API rate): 1.039027
+# usage: {'input_tokens': 16, 'output_tokens': 6368, 'cache_creation_input_tokens': 16582, 'cache_read_input_tokens': 166850}
+# findings: 1
+# ---
+[
+  {
+    "file": "pandas/core/groupby/groupby.py",
+    "line": 1950,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Reorder loop in multi-quantile groupby.quantile uses cumulative addition, producing wrong/out-of-bounds indices when ngroups >= 3",
+    "detail": "In the new list-of-quantiles branch of `GroupBy.quantile`, the post-concat reorder builds row indices as:\n\n```python\nhi = len(q) * self.ngroups\narr = np.arange(0, hi, self.ngroups)\narrays = []\nfor i in range(self.ngroups):\n    arr = arr + i        # <-- mutates arr cumulatively\n    arrays.append(arr)\n```\n\nThe statement `arr = arr + i` rebinds `arr` to the previous iteration's array plus `i`, so after iteration `i` the array is `arr_initial + (0+1+...+i)` instead of `arr_initial + i`. For `ngroups >= 3` this drifts past the valid range, e.g. with `ngroups=3, q=[0.25, 0.75]` the produced indices are `[0, 3, 1, 4, 3, 6]` instead of the intended `[0, 3, 1, 4, 2, 5]` \u2014 index 6 is out of bounds (result has 6 rows, valid indices 0\u20135) and index 2 is missing. This causes `result.take(indices)` on the next line to raise `IndexError: indices are out-of-bounds` (or, in cases where it does not go out of bounds, silently return duplicated/dropped group rows).\n\nImpact: the very regression this PR is meant to fix (`df.groupby(...).quantile([q1, q2, ...])`) still fails for any DataFrame with 3 or more groups \u2014 i.e. the common case. The new tests don't catch this because all three of `test_quantile_array`, `test_quantile_array_no_sort`, and `test_quantile_array_multiple_levels` use exactly 2 groups, the one value of `ngroups` for which the cumulative bug coincidentally produces the correct indices (since `i` only takes values 0 and 1).",
+    "line_end": 1951,
+    "suggested_fix": "@@\n-            for i in range(self.ngroups):\n-                arr = arr + i\n-                arrays.append(arr)\n+            for i in range(self.ngroups):\n+                arrays.append(arr + i)\n"
+  }
+]

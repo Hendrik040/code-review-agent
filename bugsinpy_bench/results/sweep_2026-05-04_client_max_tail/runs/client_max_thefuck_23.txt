@@ -1,0 +1,68 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: thefuck#23
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# fixed_commit: 9a02e821cdc58a4aba2c0acc521fb25cacab87a5
+# base_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^
+# head_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# started: 2026-05-04T08:46:19+00:00
+# finished: 2026-05-04T08:49:22+00:00
+# duration_s: 182.2
+# cost_usd: 1.9627
+# num_turns: 21
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 342
+# repo: DaytonaRepo
+# refs: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^..4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# turns: 21
+# cost (USD, API rate): 1.962671
+# usage: {'input_tokens': 25, 'output_tokens': 11836, 'cache_creation_input_tokens': 25319, 'cache_read_input_tokens': 399910}
+# findings: 3
+# ---
+[
+  {
+    "file": "thefuck/utils.py",
+    "line": 183,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "`with shelve.open(...)` requires Python 3.4+, but the project still supports Python 2.7 and 3.3.",
+    "detail": "`setup.py` explicitly accepts Python 2.7 and Python 3.3+, and `tox.ini` runs the test matrix on `py27,py33,py34`. However, `shelve.Shelf` only became a context manager in Python 3.4 (`__enter__`/`__exit__` were added then). On Python 2.7 and 3.3, the new `with shelve.open(cache_path) as db:` line will raise `AttributeError`/`TypeError` at the moment `Bash.get_aliases` (or `Zsh.get_aliases`) is first invoked, breaking core functionality (alias expansion) for those interpreters. The new test suite mocks `thefuck.utils.shelve.open` with a `contextmanager`, so it never exercises the real shelve and hides this incompatibility.",
+    "line_end": null,
+    "suggested_fix": "-        with shelve.open(cache_path) as db:\n-            if db.get(key, {}).get('etag') == etag:\n-                return db[key]['value']\n-            else:\n-                value = fn(*args, **kwargs)\n-                db[key] = {'etag': etag, 'value': value}\n-                return value\n+        from contextlib import closing\n+        with closing(shelve.open(cache_path)) as db:\n+            if db.get(key, {}).get('etag') == etag:\n+                return db[key]['value']\n+            else:\n+                value = fn(*args, **kwargs)\n+                db[key] = {'etag': etag, 'value': value}\n+                return value"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 178,
+    "category": "security",
+    "severity": "high",
+    "summary": "Cache stored under a predictable name in the shared system temp dir enables pickle-based code execution on multi-user hosts.",
+    "detail": "`cache_path = os.path.join(tempfile.gettempdir(), '.thefuck-cache')` puts the shelve database in `/tmp` (or another shared temp dir) under a fixed, world-known name. `/tmp` is world-writable (mode 1777), so on any multi-user system another (possibly unprivileged) user can pre-create the `.thefuck-cache*` files and populate them with arbitrary pickled payloads before the target user runs `thefuck`. Because `shelve` deserializes values with `pickle.Unpickler`, opening that cache then executes attacker-controlled code in the victim's shell context (e.g. their ssh agent / sudo session). Per-user cache state should live in the user's home directory (e.g. `~/.thefuck/cache` with `0700` perms), not in a globally writable directory under a guessable name.",
+    "line_end": null,
+    "suggested_fix": "-        cache_path = os.path.join(tempfile.gettempdir(), '.thefuck-cache')\n+        cache_dir = os.path.join(os.path.expanduser('~'), '.thefuck')\n+        if not os.path.isdir(cache_dir):\n+            os.makedirs(cache_dir, mode=0o700)\n+        cache_path = os.path.join(cache_dir, 'cache')"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Cache key built via `repr(fn).split('at')[0]` truncates whenever 'at' appears anywhere in the function repr, causing collisions.",
+    "detail": "The function repr looks like `<function module.qualname at 0x...>`. Splitting the whole repr on the literal substring `'at'` (not on `' at '`) makes the key dependent on every occurrence of 'at' in the module path or qualified name. For example a function named `concat`, `format_path`, `_at_root`, or any qualname containing `at` will get its key chopped at the first 'at' (e.g. `<function p` for `patch_fn`), so two unrelated cached functions can map to the same cache key and overwrite each other's results. It currently happens to work for `Bash.get_aliases`/`Zsh.get_aliases` only because none of those identifiers contains 'at' before the address. Splitting on the unambiguous separator `' at 0x'` (or just using `fn.__qualname__`) is needed.",
+    "line_end": null,
+    "suggested_fix": "-        key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])\n+        key = '{}.{}'.format(fn.__module__,\n+                             getattr(fn, '__qualname__', fn.__name__))"
+  }
+]

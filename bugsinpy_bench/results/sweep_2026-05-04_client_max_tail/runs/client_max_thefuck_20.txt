@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: thefuck#20
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# fixed_commit: 280751b36e715b006c631ba6c08de99ccc74f6d2
+# base_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^
+# head_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# started: 2026-05-04T08:41:58+00:00
+# finished: 2026-05-04T08:44:28+00:00
+# duration_s: 150.3
+# cost_usd: 3.7039
+# num_turns: 17
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 340
+# repo: DaytonaRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 17
+# cost (USD, API rate): 3.703921
+# usage: {'input_tokens': 21, 'output_tokens': 7921, 'cache_creation_input_tokens': 76931, 'cache_read_input_tokens': 1111383}
+# findings: 1
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "logic",
+    "severity": "high",
+    "summary": "side_effect crashes with IsADirectoryError on zips that contain directory entries",
+    "detail": "`zipfile.ZipFile.namelist()` returns BOTH file and directory entries (directory entries are paths ending in `/`, e.g. `mydir/`). Most archives created with tools such as `zip -r` include explicit directory entries. The loop calls `os.remove(file)` on every entry, but `os.remove` cannot remove a directory and raises `IsADirectoryError` (Errno 21).\n\nImpact: For the very common case of a zip containing directory entries, side_effect aborts partway through the cleanup. Because main.run_rule does not catch this, the exception propagates out of `main()`, the corrected `unzip ... -d <dir>` command is never printed (so the shell alias never runs it), and the user is left with (a) a partially cleaned working directory, (b) a Python traceback on screen, and (c) no corrected command applied. Reproduce: `mkdir tmp && cd tmp && zip -r a.zip somedir/; unzip a.zip; fuck` \u2014 the directory entry `somedir/` in `namelist()` triggers IsADirectoryError.\n\nSecondary concern: even if directory entries were skipped, `os.remove` won't remove the now-empty directories that the original unzip created, so the cwd will still contain leftover (empty) subdirs after the cleanup.",
+    "line_end": 37,
+    "suggested_fix": "@@\n def side_effect(command, settings):\n     with zipfile.ZipFile(_zip_file(command), 'r') as archive:\n-        for file in archive.namelist():\n-            os.remove(file)\n+        # Sort longest-first so files are removed before their parent dirs.\n+        for name in sorted(archive.namelist(), key=len, reverse=True):\n+            if name.endswith('/'):\n+                try:\n+                    os.rmdir(name)\n+                except OSError:\n+                    pass\n+            else:\n+                try:\n+                    os.remove(name)\n+                except OSError:\n+                    pass\n"
+  }
+]

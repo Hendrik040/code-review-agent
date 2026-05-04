@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: pandas#95
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: c38a416186b2ed789fb6ce6f1b0859d33bb57898
+# fixed_commit: c99dfea33612f44e97c2365f78c0ca6d5754a1bc
+# base_ref: c38a416186b2ed789fb6ce6f1b0859d33bb57898^
+# head_ref: c38a416186b2ed789fb6ce6f1b0859d33bb57898
+# started: 2026-05-04T08:20:49+00:00
+# finished: 2026-05-04T08:33:46+00:00
+# duration_s: 777.3
+# cost_usd: 3.6763
+# num_turns: 46
+# num_findings: 2
+# file_hit_strict: N
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 339
+# repo: DaytonaRepo
+# refs: c38a416186b2ed789fb6ce6f1b0859d33bb57898^..c38a416186b2ed789fb6ce6f1b0859d33bb57898
+# turns: 46
+# cost (USD, harness-reported): 3.676343
+# cost (USD, public Opus 4 rate): 11.029029
+# usage: {'input_tokens': 54, 'cache_creation_input_tokens': 85608, 'cache_read_input_tokens': 3202446, 'output_tokens': 61592, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 85608}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 640, 'cache_read_input_tokens': 122639, 'cache_creation_input_tokens': 5063, 'cache_creation': {'ephemeral_5m_input_tokens': 5063, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/arrays/datetimes.py",
+    "line": 153,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Strings no longer 'get a pass from tzawareness compat' despite the preserved comment \u2014 tz-naive DTA vs tz-aware string now raises TypeError.",
+    "detail": "The diff preserves the comment `# GH#18435 strings get a pass from tzawareness compat` (line 145) but the new control flow no longer enforces that pass. After `other = self._scalar_from_string(other)` (line 146), `other` is a `Timestamp`, which is a subclass of `datetime`. The very next `if isinstance(other, (datetime, np.datetime64)):` block (line 151) is therefore entered, and `self._assert_tzawareness_compat(other)` runs (line 153). This regresses comparisons of a tz-naive DatetimeArray to a tz-aware string. Concretely, `dti_naive == '2020-01-01T00:00:00+00:00'` previously worked: the old `_to_M8(other, tz=None)` path went through `key.tz_localize(None)`, which strips the tz from an aware Timestamp and proceeds with the comparison. With the new code, `self._scalar_from_string('2020-01-01T00:00:00+00:00')` resolves to `Timestamp('2020-01-01T00:00:00+00:00', tz=None)`, which returns an aware UTC Timestamp; `_assert_tzawareness_compat` then raises `TypeError: Cannot compare tz-naive and tz-aware datetime-like objects`. Either the comment is stale (and this strictness is intentional, in which case the comment should be removed) or the structure is wrong (and the str branch should compute its own `result` and `return` before the `(datetime, np.datetime64)` block); in its current form the code contradicts its own contract.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "pandas/core/arrays/timedeltas.py",
+    "line": 93,
+    "category": "error",
+    "severity": "low",
+    "summary": "Removal of try/except around Timedelta(other) lets ambiguous-unit np.timedelta64 propagate ValueError instead of returning invalid_comparison.",
+    "detail": "Old code wrapped `Timedelta(other)` inside `if _is_convertible_to_td(other) or other is NaT` with `try: other = Timedelta(other) except ValueError: return invalid_comparison(self, other, op)`. The refactor moves the try/except to the new string branch (`self._scalar_from_string`), so `Timedelta(other)` at line 93 is now unguarded for non-string convertible inputs. However, `_is_convertible_to_td` accepts any `np.timedelta64` regardless of unit, while `Timedelta(np.timedelta64(N, 'M'))` and `Timedelta(np.timedelta64(N, 'Y'))` raise `ValueError: Unit M is not supported. ...`. As a result, `tda == np.timedelta64(5, 'M')` (and similarly for 'Y') previously returned an all-False / all-True result via `invalid_comparison`, but now raises ValueError out of the comparison operator, breaking callers that relied on the silent-failure behavior.",
+    "line_end": null,
+    "suggested_fix": "         if _is_convertible_to_td(other) or other is NaT:\n-            other = Timedelta(other)\n+            try:\n+                other = Timedelta(other)\n+            except ValueError:\n+                return invalid_comparison(self, other, op)\n\n             result = op(self.view(\"i8\"), other.value)"
+  }
+]

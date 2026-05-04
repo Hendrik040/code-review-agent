@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: sanic#1
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: huge-success/sanic
+# introducing_commit: a6077a179067812766293f9ab4391b5e1499a9c6
+# fixed_commit: 44973125c15304b4262c51c78b5a86bd1daafa86
+# base_ref: a6077a179067812766293f9ab4391b5e1499a9c6^
+# head_ref: a6077a179067812766293f9ab4391b5e1499a9c6
+# started: 2026-05-04T09:14:43+00:00
+# finished: 2026-05-04T09:19:02+00:00
+# duration_s: 259.0
+# cost_usd: 0.9546
+# num_turns: 9
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 348
+# repo: DaytonaRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 9
+# cost (USD, harness-reported): 0.954588
+# cost (USD, public Opus 4 rate): 2.863762
+# usage: {'input_tokens': 15, 'cache_creation_input_tokens': 45870, 'cache_read_input_tokens': 374500, 'output_tokens': 19223, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 45870}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 361, 'cache_read_input_tokens': 78905, 'cache_creation_input_tokens': 9059, 'cache_creation': {'ephemeral_5m_input_tokens': 9059, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "sanic/app.py",
+    "line": 940,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Request middleware no longer runs for 404 / 405 responses because router.get() is invoked before the middleware chain.",
+    "detail": "handle_request was reorganized so that `handler, args, kwargs, uri, name = self.router.get(request)` runs first, and only then `_run_request_middleware` is awaited. `Router._get` raises NotFound (router.py:475) when the URL is unknown and MethodNotSupported (router.py:474) when the method does not match. Both raise *before* `_run_request_middleware` is reached and are then caught by the surrounding `except Exception` block, which jumps straight to `error_handler.response`. As a result, any global request middleware that previously short-circuited or instrumented all incoming traffic \u2014 logging, request auditing, JWT/CORS/preflight handlers, rate limiting \u2014 is now silently bypassed for every unmatched URL or wrong-method request. The previous code (`response = await self._run_request_middleware(request); if not response: handler, ... = self.router.get(request)`) explicitly ran the middleware first, and several real-world middleware patterns depend on that ordering. This is a behavior regression that is not called out in the changelog, can cause audit/security gaps, and breaks middleware-based 404 responses.",
+    "line_end": null,
+    "suggested_fix": "Call _run_request_middleware first (with request_name=None when no route is matched yet), or move router.get() inside the existing try/except path that runs after middleware. For example, run middleware first, then resolve the route; if a per-route response middleware needs the matched name, capture it after handler dispatch."
+  },
+  {
+    "file": "sanic/router.py",
+    "line": 212,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "Router._add returns None when host is an iterable, so Router.add returns [None] and Blueprint.register crashes with AttributeError.",
+    "detail": "Router.add now treats _add's return value as the route to collect: `routes.append(self._add(uri, methods, handler, host, name))` (router.py:148, 180, 183). However, the iterable-host branch in _add still bare-returns: `for host_ in host: self.add(uri, methods, handler, host_, name); return` (router.py:210-212). The recursive `self.add(...)` calls now correctly return per-host route lists, but those returns are thrown away, and the outer _add returns None. As a consequence, `add()` produces `routes = [None]`, and `add()`'s top-level guard `if not isinstance(host, str) and host is not None: return routes` (router.py:153-158) returns `[None]` to app.route()/app.websocket(), which forwards `([None], handler)` to Blueprint.register. There, `route_names = [route.name for route in routes]` (blueprints.py:146) raises `AttributeError: 'NoneType' object has no attribute 'name'`, breaking app startup for any blueprint route declared with `host=[...]` (which the existing _add docstring/branch explicitly supports). Because this happens at registration time, it is a hard failure for that configuration, not a runtime edge case.",
+    "line_end": null,
+    "suggested_fix": "Have the iterable-host branch collect and return the recursive results, e.g. `collected = []; for host_ in host: collected.extend(self.add(uri, methods, handler, host_, name) or []); return collected[0] if collected else None`, and adjust add() so the top-level call flattens or replaces its `[None]` placeholder with the collected per-host routes before returning."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 664,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Blueprint-registered response middleware now executes in FIFO order instead of the documented LIFO order used by register_middleware.",
+    "detail": "register_middleware deliberately uses `self.response_middleware.appendleft(middleware)` (app.py:647) so that response middleware runs in reverse registration order (LIFO), which is the conventional middleware-stack semantic and the behavior every existing blueprint authored against Sanic relies on. The new register_named_middleware, however, uses `self.named_response_middleware[_rn].append(middleware)` (app.py:664) for the response branch. _run_response_middleware then iterates `self.response_middleware + named_middleware` in that same forward order. Concretely, for a blueprint that registers M1 then M2 as response middleware, the previous code executed [M2, M1]; after this change it executes [M1, M2]. That silently inverts the order of blueprint response middleware (e.g. compression after JSON serialization, error wrapping after content-type fixups), creating subtle bugs that won't show up in the simple test cases shipped with the PR but will break real applications that depend on the LIFO contract.",
+    "line_end": null,
+    "suggested_fix": "Use appendleft for the response branch in register_named_middleware to match register_middleware: `self.named_response_middleware[_rn].appendleft(middleware)`. Alternatively, reverse the named response middleware deque before concatenation in _run_response_middleware."
+  }
+]

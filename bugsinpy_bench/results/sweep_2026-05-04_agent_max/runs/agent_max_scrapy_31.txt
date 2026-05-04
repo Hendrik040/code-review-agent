@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: scrapy#31
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: scrapy/scrapy
+# introducing_commit: 5f02ef82e8560242eb34b336f385addfdef3211d
+# fixed_commit: dba7e39f61cbe2c22d3c9064f32f6e36d74f14b2
+# base_ref: 5f02ef82e8560242eb34b336f385addfdef3211d^
+# head_ref: 5f02ef82e8560242eb34b336f385addfdef3211d
+# started: 2026-05-04T09:50:05+00:00
+# finished: 2026-05-04T10:02:14+00:00
+# duration_s: 729.1
+# cost_usd: 3.4821
+# num_turns: 39
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 358
+# repo: DaytonaRepo
+# refs: 5f02ef82e8560242eb34b336f385addfdef3211d^..5f02ef82e8560242eb34b336f385addfdef3211d
+# turns: 39
+# cost (USD, harness-reported): 3.482144
+# cost (USD, public Opus 4 rate): 10.446433
+# usage: {'input_tokens': 58, 'cache_creation_input_tokens': 96074, 'cache_read_input_tokens': 2801884, 'output_tokens': 59218, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 96074}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 665, 'cache_read_input_tokens': 134821, 'cache_creation_input_tokens': 3347, 'cache_creation': {'ephemeral_5m_input_tokens': 3347, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "scrapy/http/cookies.py",
+    "line": 142,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "WrappedRequest is missing the host/origin_req_host/type attributes that Python 3's http.cookiejar accesses; the diff only adds 'unverifiable' but the Py3 stdlib also reads request.host, request.origin_req_host, and request.type as attributes, so real Py3 cookie scenarios still crash.",
+    "detail": "The diff is a Python 3 compatibility migration: it switches to six.moves.http_cookiejar, adds a new `unverifiable` property because Py3 cookiejar uses `request.unverifiable` instead of `is_unverifiable()`, and removes scrapy/http/cookies.py plus the cookie test files from tests/py3-ignores.txt to declare them Py3-ready.\n\nBut Py3's http.cookiejar (verified against six.moves.http_cookiejar source) accesses three more attributes on the request object that the diff does NOT provide on WrappedRequest:\n  - request.type   (used in DefaultCookiePolicy.return_ok_secure: `if cookie.secure and request.type not in self.secure_protocols`)\n  - request.origin_req_host (used in is_third_party, called from set_ok_verifiability / return_ok_verifiability)\n  - request.host   (used in request_port, called from set_ok_port / return_ok_port / _cookie_from_cookie_tuple when a cookie carries an explicit port)\n\nWrappedRequest only exposes the legacy method forms (get_type, get_origin_req_host, get_host). On Py3 the attribute access raises AttributeError. I reproduced the failure end-to-end through scrapy.http.cookies.CookieJar (the class CookiesMiddleware uses):\n\n  jar = CookieJar()\n  jar.extract_cookies(WrappedResponse(secure_set_cookie_response), WrappedRequest(https_req))\n  jar.add_cookie_header(WrappedRequest(another_https_req))\n  # \u2192 AttributeError: 'WrappedRequest' object has no attribute 'type'\n\nTriggering scenarios in production:\n  1. HTTPS site with a `Secure` cookie in the jar \u2014 extremely common; every subsequent request through CookiesMiddleware crashes once any Secure cookie has been stored.\n  2. Any unverifiable request (meta['is_unverifiable']=True) crossing origins \u2014 crashes in extract_cookies on `request.origin_req_host`.\n  3. RFC 2965 cookies with an explicit port attribute \u2014 crashes via request_port on `request.host` (rarer).\n\nThe un-ignored tests don't cover any of these: test_basic / test_complex_cookies / test_cookiejar_key / test_local_domain all use plain non-secure, non-unverifiable cookies, so they pass on Py3 and hide the bug.\n\nThe fix is symmetric with the new `unverifiable` property: add three more properties that delegate to the existing get_* methods.",
+    "line_end": 143,
+    "suggested_fix": "@@\n     # python3 uses request.unverifiable\n     @property\n     def unverifiable(self):\n         return self.is_unverifiable()\n \n+    # python3 cookiejar uses request.host / origin_req_host / type as attributes\n+    @property\n+    def host(self):\n+        return self.get_host()\n+\n+    @property\n+    def origin_req_host(self):\n+        return self.get_origin_req_host()\n+\n+    @property\n+    def type(self):\n+        return self.get_type()\n+\n     def get_origin_req_host(self):\n         return urlparse_cached(self.request).hostname"
+  }
+]

@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: pandas#106
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 045880c29e4d40dc0458d2a3272d145174b5122d
+# fixed_commit: e46026ff4669a30192b91e362ce8cdcbc9693870
+# base_ref: 045880c29e4d40dc0458d2a3272d145174b5122d^
+# head_ref: 045880c29e4d40dc0458d2a3272d145174b5122d
+# started: 2026-05-04T08:36:19+00:00
+# finished: 2026-05-04T08:44:04+00:00
+# duration_s: 465.1
+# cost_usd: 2.3457
+# num_turns: 42
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 341
+# repo: DaytonaRepo
+# refs: 045880c29e4d40dc0458d2a3272d145174b5122d^..045880c29e4d40dc0458d2a3272d145174b5122d
+# turns: 42
+# cost (USD, harness-reported): 2.345714
+# cost (USD, public Opus 4 rate): 7.037143
+# usage: {'input_tokens': 54, 'cache_creation_input_tokens': 60849, 'cache_read_input_tokens': 2193176, 'output_tokens': 34742, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 60849}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 673, 'cache_read_input_tokens': 98294, 'cache_creation_input_tokens': 4649, 'cache_creation': {'ephemeral_5m_input_tokens': 4649, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/indexes/base.py",
+    "line": 4723,
+    "category": "logic",
+    "severity": "high",
+    "summary": "get_indexer_non_unique silently returns all-missing for DatetimeIndex/TimedeltaIndex when target is a CategoricalIndex of timestamps/timedeltas.",
+    "detail": "The diff replaces the pre-_maybe_promote conversion `target = target.astype(target.dtype.categories.dtype)` with a post-_maybe_promote branch `if is_categorical(target): tgt_values = np.asarray(target)`. For self=DatetimeIndex (or TimedeltaIndex), self._maybe_promote does NOT promote a CategoricalIndex target (DatetimeIndex._maybe_promote only triggers for `other.inferred_type == 'date'`, but CategoricalIndex.inferred_type is `'categorical'`), so target stays a CategoricalIndex. `np.asarray(CategoricalIndex([Timestamp(...)]))` therefore returns a `datetime64[ns]` ndarray. That array is then passed to `self._engine.get_indexer_non_unique` (DatetimeEngine, inherited from IndexEngine), which does `values = self._get_index_values()` (returns an int64 view for DatetimeEngine/TimedeltaEngine), `stargets = set(targets)` (a set of `np.datetime64` scalars), and tests `val in stargets` for each int64 value. `np.int64` and `np.datetime64` hash to different values in CPython (verified: `hash(np.int64(946684800000000000)) != hash(np.datetime64('2000-01-01'))`), so every membership test returns False and the function silently returns `(array([-1, -1, ...]), array([0, 1, ...]))` \u2014 every target reported as missing \u2014 instead of the correct indices. Previously the `astype(categories.dtype)` step yielded a DatetimeIndex and `target.asi8` produced an int64 array that matched the engine's hash space. This is a silent correctness regression for any code path that calls `DatetimeIndex.get_indexer_non_unique` or `TimedeltaIndex.get_indexer_non_unique` with a CategoricalIndex target (e.g. merges/reindexes), and no test in the diff or existing suite covers it. Fix should restrict the new `np.asarray` branch to non-datetimelike self (or convert `tgt_values` via `target.asi8` when `self.is_all_dates`).",
+    "line_end": 4723,
+    "suggested_fix": "         if is_categorical(target):\n-            tgt_values = np.asarray(target)\n-        elif self.is_all_dates:\n+            if self.is_all_dates:\n+                tgt_values = np.asarray(target).view('i8')\n+            else:\n+                tgt_values = np.asarray(target)\n+        elif self.is_all_dates:\n             tgt_values = target.asi8\n         else:\n             tgt_values = target._ndarray_values"
+  }
+]

@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: keras#32
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 4c01c0c4d77348416fff70e00ed6c25955c33ef6
+# fixed_commit: 709f791af201caaab4aa180bda259989087cfe47
+# base_ref: 4c01c0c4d77348416fff70e00ed6c25955c33ef6^
+# head_ref: 4c01c0c4d77348416fff70e00ed6c25955c33ef6
+# started: 2026-05-04T05:56:16+00:00
+# finished: 2026-05-04T06:03:03+00:00
+# duration_s: 407.5
+# cost_usd: 1.4462
+# num_turns: 9
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 307
+# repo: DaytonaRepo
+# refs: 4c01c0c4d77348416fff70e00ed6c25955c33ef6^..4c01c0c4d77348416fff70e00ed6c25955c33ef6
+# turns: 9
+# cost (USD, harness-reported): 1.446246
+# cost (USD, public Opus 4 rate): 4.338737
+# usage: {'input_tokens': 17, 'cache_creation_input_tokens': 50915, 'cache_read_input_tokens': 553684, 'output_tokens': 34044, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 50915}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 512, 'cache_read_input_tokens': 90768, 'cache_creation_input_tokens': 2241, 'cache_creation': {'ephemeral_5m_input_tokens': 2241, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/callbacks.py",
+    "line": 637,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "ReduceLROnPlateau does not reset self.wait after reducing LR, causing repeated reductions every epoch with default cooldown=0",
+    "detail": "After the LR reduction block at lines 628-636, self.cooldown_counter is set to self.cooldown (line 636), but self.wait is never reset. With the documented default cooldown=0, on the next epoch without improvement the `if self.cooldown_counter > 0` branch (line 620) is skipped, so wait keeps its post-reduction value (>= patience). The elif branch is then entered, the inner check `self.wait >= self.patience` succeeds again, and LR is multiplied by `factor` again. This repeats every epoch until LR reaches min_lr \u2014 e.g. with patience=10, factor=0.1 the LR collapses by a factor of 10 every epoch after the patience threshold. The intended semantics, per the docstring (`patience: number of epochs with no improvement after which learning rate will be reduced`) and standard implementations, is to wait another `patience` epochs before another reduction. The two existing tests do not catch this because both use cooldown=5 with only 5 epochs (so only one reduction can occur) or epsilon=0 with monotonically improving loss (so no reduction occurs).",
+    "line_end": 637,
+    "suggested_fix": "@@ -633,6 +633,7 @@\n                         K.set_value(self.model.optimizer.lr, new_lr)\n                         if self.verbose > 0:\n                             print('\\nEpoch %05d: reducing learning rate to %s.' % (epoch, new_lr))\n                         self.cooldown_counter = self.cooldown\n+                        self.wait = 0\n                 self.wait += 1"
+  },
+  {
+    "file": "keras/callbacks.py",
+    "line": 683,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "CSVLogger writes a header row to existing files when append=True, producing malformed CSV",
+    "detail": "In on_train_begin (line 667-670), when append=True the file is opened in 'a' mode, positioning at end of any existing content. Then on_epoch_end always calls self.writer.writeheader() at line 683 because self.writer is None for any new instance. The result is that an existing CSV file (e.g. one written by a previous training run) gets a second header line inserted after its existing rows, followed by epoch 0 of the new run \u2014 exactly the documented use case (`append: True: append if file exists (useful for continuing training)`). Any consumer reading the resulting CSV will misinterpret the duplicated header line as data, breaking pandas.read_csv and similar tools. The header should only be written when the file is being created or is empty.",
+    "line_end": 683,
+    "suggested_fix": "@@ -664,9 +664,15 @@\n     def on_train_begin(self, logs={}):\n         if self.append:\n+            if os.path.exists(self.filename):\n+                with open(self.filename) as f:\n+                    self.append_header = not bool(len(f.readline()))\n+            else:\n+                self.append_header = True\n             self.csv_file = open(self.filename, 'a')\n         else:\n+            self.append_header = True\n             self.csv_file = open(self.filename, 'w')\n@@ -680,7 +686,8 @@\n         if not self.writer:\n             self.keys = sorted(logs.keys())\n             self.writer = csv.DictWriter(self.csv_file, fieldnames=['epoch'] + self.keys)\n-            self.writer.writeheader()\n+            if self.append_header:\n+                self.writer.writeheader()"
+  },
+  {
+    "file": "keras/callbacks.py",
+    "line": 682,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "CSVLogger silently ignores the user-specified separator argument",
+    "detail": "The constructor stores the separator parameter as self.sep at line 659, but on_epoch_end constructs `csv.DictWriter(self.csv_file, fieldnames=['epoch'] + self.keys)` (line 682) without passing a delimiter. csv.DictWriter defaults to dialect='excel', which uses ',' regardless of self.sep. So a user who instantiates `CSVLogger('log.tsv', separator='\\t')` expecting tab-separated output gets a comma-separated file \u2014 the separator argument has no effect. The argument is documented in the docstring (`separator: string used to separate elements in the csv file.`), so this is a real contract mismatch with the public API.",
+    "line_end": 682,
+    "suggested_fix": "@@ -680,7 +680,11 @@\n         if not self.writer:\n             self.keys = sorted(logs.keys())\n-            self.writer = csv.DictWriter(self.csv_file, fieldnames=['epoch'] + self.keys)\n+            class CustomDialect(csv.excel):\n+                delimiter = self.sep\n+            self.writer = csv.DictWriter(self.csv_file,\n+                                         fieldnames=['epoch'] + self.keys,\n+                                         dialect=CustomDialect)\n             self.writer.writeheader()"
+  }
+]

@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: pandas#104
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# fixed_commit: 8e9b3eee812b70197341c26c40200d8a1a77ed9c
+# base_ref: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0^
+# head_ref: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# started: 2026-05-04T08:33:46+00:00
+# finished: 2026-05-04T08:36:19+00:00
+# duration_s: 152.4
+# cost_usd: 0.6095
+# num_turns: 8
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 340
+# repo: DaytonaRepo
+# refs: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0^..8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# turns: 8
+# cost (USD, harness-reported): 0.609511
+# cost (USD, public Opus 4 rate): 1.828533
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 24192, 'cache_read_input_tokens': 389362, 'output_tokens': 10542, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 24192}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 322, 'cache_read_input_tokens': 64650, 'cache_creation_input_tokens': 1636, 'cache_creation': {'ephemeral_5m_input_tokens': 1636, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/groupby/groupby.py",
+    "line": 1950,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Reassigning `arr = arr + i` inside the per-group loop accumulates offsets, producing wrong/out-of-bounds indices for any groupby with 3+ groups.",
+    "detail": "The new list-quantile path computes row offsets with:\n\n    arr = np.arange(0, hi, self.ngroups)\n    for i in range(self.ngroups):\n        arr = arr + i\n        arrays.append(arr)\n\nBecause `arr` is rebound on every iteration, iteration `k` adds `i` to the *previously incremented* `arr`, so `arr` ends up offset by `0+1+2+...+k = k*(k+1)/2` instead of just `k`. The intent (fresh offsets per group) is only correct for the first two iterations.\n\nConcrete trace with ngroups=3, q=[0.25, 0.5] (hi=6, valid positions 0..5):\n\n    i=0: arr = [0, 3]\n    i=1: arr = [1, 4]\n    i=2: arr = [3, 6]   # should be [2, 5]\n    indices = [0, 3, 1, 4, 3, 6]   # 6 is out of bounds, 2 and 5 missing, 3 duplicated\n\nFor ngroups=5 the produced indices include 10, 11, 15 against a length-10 frame. `result.take(indices)` (default mode raises) will therefore raise `IndexError` for any groupby with ngroups >= 3, which is the common case \u2014 `df.groupby(key).quantile([0.25, 0.5])` on a key with 3+ levels is broken. The new tests (`test_quantile_array`, `test_quantile_array_no_sort`, `test_quantile_array_multiple_levels`) all happen to use ngroups=2, so the regression is not exercised. The `assert len(indices) == len(result)` only checks length, not validity, so it does not catch this.",
+    "line_end": 1951,
+    "suggested_fix": "@@\n-            for i in range(self.ngroups):\n-                arr = arr + i\n-                arrays.append(arr)\n+            for i in range(self.ngroups):\n+                arrays.append(arr + i)\n"
+  },
+  {
+    "file": "doc/source/whatsnew/v0.25.1.rst",
+    "line": 88,
+    "category": "other",
+    "severity": "low",
+    "summary": "Typo `pands.core.groupby` in the whatsnew entry breaks the Sphinx `:meth:` cross-reference.",
+    "detail": "The new whatsnew bullet reads `:meth:`pands.core.groupby.DataFrameGroupBy.quantile`` \u2014 `pands` should be `pandas`. As written the Sphinx role cannot resolve the target, so the rendered docs will show a broken/unstyled reference instead of a link to `DataFrameGroupBy.quantile`.",
+    "line_end": null,
+    "suggested_fix": "@@\n-- Fixed regression in :meth:`pands.core.groupby.DataFrameGroupBy.quantile` raising when multiple quantiles are given (:issue:`27526`)\n+- Fixed regression in :meth:`pandas.core.groupby.DataFrameGroupBy.quantile` raising when multiple quantiles are given (:issue:`27526`)\n"
+  }
+]

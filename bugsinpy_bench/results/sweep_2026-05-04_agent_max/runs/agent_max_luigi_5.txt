@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: luigi#5
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: be88a318dce06254a66303a1c398ec28f89c60d7
+# fixed_commit: 1fbec18ceb7c5de352e6d1df12960c61f09e67c2
+# base_ref: be88a318dce06254a66303a1c398ec28f89c60d7^
+# head_ref: be88a318dce06254a66303a1c398ec28f89c60d7
+# started: 2026-05-04T06:11:18+00:00
+# finished: 2026-05-04T06:16:24+00:00
+# duration_s: 306.4
+# cost_usd: 1.4582
+# num_turns: 20
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 313
+# repo: DaytonaRepo
+# refs: be88a318dce06254a66303a1c398ec28f89c60d7^..be88a318dce06254a66303a1c398ec28f89c60d7
+# turns: 20
+# cost (USD, harness-reported): 1.458185
+# cost (USD, public Opus 4 rate): 4.374556
+# usage: {'input_tokens': 34, 'cache_creation_input_tokens': 44699, 'cache_read_input_tokens': 1237043, 'output_tokens': 22405, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 44699}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 473, 'cache_read_input_tokens': 84983, 'cache_creation_input_tokens': 953, 'cache_creation': {'ephemeral_5m_input_tokens': 953, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/util.py",
+    "line": 144,
+    "category": "logic",
+    "severity": "high",
+    "summary": "@delegates decorator unconditionally shadows the user's subtasks() method, so delegated subtasks are never run.",
+    "detail": "In `delegates`, `class Wrapped(task_that_delegates):` defines its own `def subtasks(self): return []` (lines 144-148). Because Wrapped is a subclass of the user's class, Python's MRO resolves `instance.subtasks` to `Wrapped.subtasks` BEFORE the user-defined `subtasks` on `task_that_delegates`. Result: any `subtasks()` the user defines on the decorated class is silently shadowed and always returns [].\n\nConsequence: Wrapped.run() iterates `task.flatten(self.subtasks())` -> [] and never calls `t.run()` for the actual delegate tasks; deps() returns just `task.flatten(self.requires())` with no subtask deps; and the user's own run() (invoked via `task_that_delegates.run(self)`) also sees `self.subtasks() == []`. The whole point of @delegates \u2014 running subtasks before the main task and including their deps \u2014 is non-functional.\n\nReproduction (confirmed locally): \n    @delegates\n    class T(Base):\n        def subtasks(self): return ['user', 'subtasks']\n    T().subtasks()  # => []  (user's [...] is shadowed)\n\nThe new test `SubtaskTest.test_multiple_workers` does not catch this because it has no assertions and the silent-empty-subtasks path raises no error: `Wrapped.run` and the user's `run` both end up iterating an empty list, so `t.f(42)` (which would have failed anyway since F has no `f` method) is never reached.\n\nThe pre-existing `CompositionTask` class avoided this by putting `subtasks` on a *base* class that users subclassed and overrode \u2014 so the user's method shadowed the base default. The decorator inverts that relationship and breaks it.",
+    "line_end": 148,
+    "suggested_fix": "Only inject a default `subtasks` when the user did not provide one, e.g.:\n\n    class Wrapped(task_that_delegates):\n        def deps(self): ...\n        def run(self): ...\n\n    if not hasattr(task_that_delegates, 'subtasks'):\n        Wrapped.subtasks = lambda self: []\n\nor equivalently guard the method definition with `if 'subtasks' not in task_that_delegates.__dict__`."
+  }
+]

@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: pandas#42
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 08c65973643b73e877133d1a7391de7092f4b267
+# fixed_commit: 05780a760400e42ce1b00200dd8204ae4f94044a
+# base_ref: 08c65973643b73e877133d1a7391de7092f4b267^
+# head_ref: 08c65973643b73e877133d1a7391de7092f4b267
+# started: 2026-05-04T06:28:17+00:00
+# finished: 2026-05-04T06:34:32+00:00
+# duration_s: 374.4
+# cost_usd: 6.2046
+# num_turns: 74
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 305
+# repo: DaytonaRepo
+# refs: 08c65973643b73e877133d1a7391de7092f4b267^..08c65973643b73e877133d1a7391de7092f4b267
+# turns: 74
+# cost (USD, API rate): 6.204586
+# usage: {'input_tokens': 78, 'output_tokens': 20639, 'cache_creation_input_tokens': 56449, 'cache_read_input_tokens': 2398048}
+# findings: 1
+# ---
+[
+  {
+    "file": "pandas/_testing.py",
+    "line": 1159,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "check_exact path passes ExtensionArray to assert_numpy_array_equal for nullable numeric dtypes (Int64/UInt*/Float*/boolean), causing a misleading assertion failure",
+    "detail": "The diff replaces `left._internal_get_values()` / `right._internal_get_values()` with `left._values` / `right._values` in the `check_exact` branch and adds a guard `if not is_numeric_dtype(left.dtype): raise AssertionError(...)`.\n\nProblem: `is_numeric_dtype` returns True for pandas nullable extension dtypes (e.g. `Int64Dtype`, `UInt8Dtype`, `Float64Dtype`, `BooleanDtype`) because `pandas_dtype(Int64Dtype()).type` is `np.int64` (a subclass of `np.number`). However, for those dtypes `Series._values` returns the *ExtensionArray* (e.g. `IntegerArray`, `BooleanArray`) \u2014 see the overview table at `pandas/core/series.py:513-521` \u2014 not an `np.ndarray`. The previous code used `_internal_get_values()` (which goes through `Block.get_values` \u2192 `np.asarray(values)` for `ExtensionBlock`, see `pandas/core/internals/blocks.py:1820-1825`) and therefore always returned an ndarray.\n\n`assert_numpy_array_equal` calls `_check_isinstance(left, right, np.ndarray)` (at `pandas/_testing.py:966`), which raises `AssertionError: ndarray Expected type <class 'numpy.ndarray'>, found <class 'pandas.core.arrays.integer.IntegerArray'> instead` whenever an ExtensionArray is passed. So `tm.assert_series_equal(s1, s2, check_exact=True)` for two equal `Int64`/`boolean`/`Float64` Series \u2014 which previously worked \u2014 now fails with a confusing type error rather than performing the comparison. This is a regression in the public testing API (`pandas.testing.assert_series_equal`) and also affects DataFrame columns of those dtypes through `assert_frame_equal`, which forwards `check_exact` per column.",
+    "line_end": 1161,
+    "suggested_fix": "@@\n     if check_exact:\n         if not is_numeric_dtype(left.dtype):\n             raise AssertionError(\"check_exact may only be used with numeric Series\")\n-\n-        assert_numpy_array_equal(\n-            left._values, right._values, check_dtype=check_dtype, obj=str(obj)\n-        )\n+        if is_extension_array_dtype(left.dtype) or is_extension_array_dtype(right.dtype):\n+            assert_extension_array_equal(left._values, right._values)\n+        else:\n+            assert_numpy_array_equal(\n+                left._values, right._values, check_dtype=check_dtype, obj=str(obj)\n+            )"
+  }
+]

@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: pandas#141
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: a173cacbffbd49c0aecafda76ace7aed9b0af60c
+# fixed_commit: 411dd249e755d7e281603fe3e0ab9e0e48383df9
+# base_ref: a173cacbffbd49c0aecafda76ace7aed9b0af60c^
+# head_ref: a173cacbffbd49c0aecafda76ace7aed9b0af60c
+# started: 2026-05-04T07:32:13+00:00
+# finished: 2026-05-04T07:36:11+00:00
+# duration_s: 237.5
+# cost_usd: 2.7394
+# num_turns: 28
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 316
+# repo: DaytonaRepo
+# refs: a173cacbffbd49c0aecafda76ace7aed9b0af60c^..a173cacbffbd49c0aecafda76ace7aed9b0af60c
+# turns: 28
+# cost (USD, API rate): 2.739397
+# usage: {'input_tokens': 32, 'output_tokens': 14986, 'cache_creation_input_tokens': 35490, 'cache_read_input_tokens': 633020}
+# findings: 2
+# ---
+[
+  {
+    "file": "pandas/core/indexes/range.py",
+    "line": 361,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Reversed-range start formula is wrong for negative-step RangeIndex whose stop does not align with step, producing all-misses (-1) for valid targets",
+    "detail": "When `self.step < 0`, the new fast path treats the index as a reversed forward range using `start = self.stop - self.step`, `stop = self.start + 1`, `step = -self.step`. This formula is only correct when `(self.start - self.stop) % abs(self.step) == 0` (i.e. when `stop` exactly overshoots the last element by one step). For Python ranges this is generally NOT the case: e.g. `RangeIndex(10, 2, -3)` has values `[10, 7, 4]`, but `self.stop - self.step = 2 - (-3) = 5`, so the 'reversed' range becomes `range(5, 11, 3) = [5, 8]`, which doesn't even contain any of the actual values. As a result, for `target=[4, 7, 10]` we compute `locs = [-1, 2, 5]`, all of which fail `(locs % 3 == 0)`, so every element is marked invalid and the function returns `[-1, -1, -1]` instead of `[2, 1, 0]`. Equivalently, `RangeIndex(18, -1, -2)` (values `[18, 16, ..., 0]`) is mapped to a reversed range of all odd numbers, so EVERY get_indexer lookup of the actual values returns -1. This is a silent correctness regression vs. the previous engine-based implementation and it propagates through every call site that uses `get_indexer` on such a RangeIndex (reindex, join, alignment, etc.). The correct smallest element is `self.start + (len(self) - 1) * self.step`, e.g. `self._range[-1]`.",
+    "line_end": 363,
+    "suggested_fix": "@@\n         else:\n             # Work on reversed range for simplicity:\n-            start, stop, step = (self.stop - self.step,\n-                                 self.start + 1,\n-                                 - self.step)\n+            start, stop, step = (self._range[-1],\n+                                 self.start + 1,\n+                                 - self.step)\n"
+  },
+  {
+    "file": "pandas/core/indexes/range.py",
+    "line": 352,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "`limit` parameter is silently dropped on every fallback to super().get_indexer and never validated on the fast path, regressing pad/backfill behavior",
+    "detail": "`RangeIndex.get_indexer` accepts `limit` but never uses it. Both fall-throughs to the parent (`super().get_indexer(target, method=method, tolerance=tolerance)`) drop `limit`. So a caller doing e.g. `idx.get_indexer(target, method='pad', limit=5)` silently gets an unlimited pad instead of one capped at 5 \u2014 the parent implementation honors `limit` for pad/backfill/nearest (see `pandas/core/indexes/base.py:2846-2849, 2870-2882, 2914-2920`). Conversely, on the optimized fast path `limit` is also accepted without check; the parent would raise `ValueError('limit argument only valid if doing pad, backfill or nearest reindexing')` (base.py:2854-2856) when `method is None and limit is not None`, so callers passing an invalid `limit` here get silent acceptance rather than the documented error. Both behaviors are silent regressions visible to any caller that passes `limit`.",
+    "line_end": 369,
+    "suggested_fix": "@@\n     def get_indexer(self, target, method=None, limit=None, tolerance=None):\n-        if not (method is None and tolerance is None and is_list_like(target)):\n-            return super().get_indexer(target, method=method,\n-                                       tolerance=tolerance)\n+        if not (method is None and tolerance is None\n+                and limit is None and is_list_like(target)):\n+            return super().get_indexer(target, method=method, limit=limit,\n+                                       tolerance=tolerance)\n@@\n         if not (is_integer_dtype(target_array) and target_array.ndim == 1):\n             # checks/conversions/roundings are delegated to general method\n-            return super().get_indexer(target, method=method,\n-                                       tolerance=tolerance)\n+            return super().get_indexer(target, method=method, limit=limit,\n+                                       tolerance=tolerance)\n"
+  }
+]

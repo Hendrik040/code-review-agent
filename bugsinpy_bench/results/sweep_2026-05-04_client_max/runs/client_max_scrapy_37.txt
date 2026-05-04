@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: scrapy#37
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: scrapy/scrapy
+# introducing_commit: c4a607fc787b2b1d61bf309c98dc9ced38d9d445
+# fixed_commit: f701f5b0db10faef08e4ed9a21b98fd72f9cfc9a
+# base_ref: c4a607fc787b2b1d61bf309c98dc9ced38d9d445^
+# head_ref: c4a607fc787b2b1d61bf309c98dc9ced38d9d445
+# started: 2026-05-04T08:24:53+00:00
+# finished: 2026-05-04T08:27:01+00:00
+# duration_s: 127.8
+# cost_usd: 1.5110
+# num_turns: 22
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 331
+# repo: DaytonaRepo
+# refs: c4a607fc787b2b1d61bf309c98dc9ced38d9d445^..c4a607fc787b2b1d61bf309c98dc9ced38d9d445
+# turns: 22
+# cost (USD, API rate): 1.511017
+# usage: {'input_tokens': 26, 'output_tokens': 7824, 'cache_creation_input_tokens': 22806, 'cache_read_input_tokens': 330810}
+# findings: 2
+# ---
+[
+  {
+    "file": "scrapy/http/request/__init__.py",
+    "line": 63,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "New URL-scheme validation breaks pre-existing tests/callers that pass schemeless URLs to Request().",
+    "detail": "The added check `if ':' not in self._url: raise ValueError(...)` narrows the accepted-URL contract of `Request.__init__`, but existing call sites have not been updated. Concretely, `scrapy/tests/test_pipeline_media.py` constructs `Request('url')` / `Request('url1')` / `Request('url2')` on roughly a dozen lines (e.g. lines 39, 47, 52, 136, 150, 162, 164, 183, 190, 191, 201, 218, 244, 252), and `scrapy/tests/test_downloadermiddleware_stats.py:17` does `self.req = Request('scrapytest.org')` in `setUp`, which runs for every test method in the class. None of these strings contain `':'`, so they will now raise `ValueError('Missing scheme in request url: ...')` and every one of those tests will error out. This is a concrete regression introduced by the diff in code that the PR did not touch but whose contract it changed. The fix is to either update those call sites to use a real scheme (e.g. `'http://url'`, `'http://scrapytest.org'`) or relax the check.",
+    "line_end": 64,
+    "suggested_fix": "--- a/scrapy/tests/test_downloadermiddleware_stats.py\n+++ b/scrapy/tests/test_downloadermiddleware_stats.py\n@@\n-        self.req = Request('scrapytest.org')\n-        self.res = Response('scrapytest.org', status=400)\n+        self.req = Request('http://scrapytest.org')\n+        self.res = Response('http://scrapytest.org', status=400)\n\n# And similarly replace 'url', 'url1', 'url2' literals in\n# scrapy/tests/test_pipeline_media.py with e.g. 'http://url', 'http://url1', 'http://url2'."
+  },
+  {
+    "file": "scrapy/http/request/__init__.py",
+    "line": 63,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`':' not in self._url` is a weak proxy for \"missing scheme\" and lets clearly schemeless URLs through.",
+    "detail": "The error message says \"Missing scheme in request url\" but the check only verifies that *some* colon appears anywhere in the (already URL-encoded) string. URLs that obviously have no scheme but happen to contain a colon \u2014 e.g. a relative path like `'/foo:bar/baz'`, a fragment-bearing relative URL, or a malformed input like `'foo:'` / `':'` \u2014 pass this validation and are then handed downstream where they fail later with a less informative error. A more accurate check would use `urlparse(self._url).scheme` (which is already the standard way schemes are extracted elsewhere in scrapy, e.g. `core/downloader/handlers/__init__.py:26`).",
+    "line_end": null,
+    "suggested_fix": "-        if ':' not in self._url:\n-            raise ValueError('Missing scheme in request url: %s' % self._url)\n+        from urlparse import urlparse\n+        if not urlparse(self._url).scheme:\n+            raise ValueError('Missing scheme in request url: %s' % self._url)"
+  }
+]

@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: matplotlib#23
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# fixed_commit: 418a1adf597b4d7759dcd64b864bd64cc1b507f4
+# base_ref: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80^
+# head_ref: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# started: 2026-05-04T06:53:47+00:00
+# finished: 2026-05-04T07:03:29+00:00
+# duration_s: 581.7
+# cost_usd: 2.5807
+# num_turns: 26
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 324
+# repo: DaytonaRepo
+# refs: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80^..87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# turns: 26
+# cost (USD, harness-reported): 2.580724
+# cost (USD, public Opus 4 rate): 7.742173
+# usage: {'input_tokens': 45, 'cache_creation_input_tokens': 67586, 'cache_read_input_tokens': 2086924, 'output_tokens': 44585, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 67586}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 781, 'cache_read_input_tokens': 107439, 'cache_creation_input_tokens': 1712, 'cache_creation': {'ephemeral_5m_input_tokens': 1712, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "lib/matplotlib/axes/_base.py",
+    "line": 1502,
+    "category": "logic",
+    "severity": "high",
+    "summary": "apply_aspect applies the inverse axis transform to dataLim (which is in data space), corrupting xr/yr in the 'datalim' branch.",
+    "detail": "At lines 1502-1503, the code computes:\n\n    x0, x1 = map(x_trf.inverted().transform, dL.intervalx)\n    y0, y1 = map(y_trf.inverted().transform, dL.intervaly)\n    xr = 1.05 * (x1 - x0)\n    yr = 1.05 * (y1 - y0)\n\nbut self.dataLim is stored in DATA space (it is updated via update_datalim/update_from_path/update_from_data_xy from the user's raw data; see e.g. _update_line_limits at lines 1859-1898 and update_datalim at lines 1998-2020, plus existing direct uses in lib/matplotlib/axes/_axes.py:2436-2449). xr/yr need to be in TRANSFORM space because they are subtracted from xsize/ysize (which were computed at lines 1487-1490 by calling x_trf.transform(get_xbound()), i.e., the FORWARD transform). The pre-patch log branch agreed: it used `math.log10(dL.x1) - math.log10(dL.x0)`, i.e., the FORWARD transform. The patch silently flipped the direction to inverse.\n\nFor linear scales the inverse and forward transforms are both identity, so this is invisible. For LOG scale with realistic data, the bug is catastrophic: e.g., with dL.intervalx = (1, 100), the original log code computed `xr = 1.05 * (log10(100)-log10(1)) = 2.1`, but the new code computes `xr = 1.05 * (10**100 - 10**1) ~= 1.05e100`. This is verifiable: a small simulation matching the algorithm gives `BUGGY xr = 1.050e+100` vs `CORRECT xr = 2.1` for that input \u2014 a 5e99x magnification.\n\nBecause xr/yr blow up for any log-scale data with values >~1, xmarg = xsize - xr and ymarg = ysize - yr become massively negative, and the `if xmarg > 0 and ymarg > 0:` branch at lines 1528-1530 becomes effectively unreachable for any non-linear axis with `adjustable='datalim'`. The else-branch decision `adjy = y_expander > 0` then determines which axis is adjusted, ignoring the Xmarg/Ymarg heuristic. This is a behavior regression vs. the pre-patch log branch, which evaluated xmarg/ymarg in correct (log) units.\n\nThe newly added test test_aspect_nonlinear_adjustable_datalim at lib/matplotlib/tests/test_axes.py:6513 happens to pass only because the dummy data .plot([.4, .6], [.4, .6]) keeps `10**0.4 ~ 2.5` and `10**0.6 ~ 4` small enough that xmarg merely flips sign rather than overflowing \u2014 and the resulting else-branch decision happens to widen x to the values the test asserts. With the correct forward transform, the same test would route through the first branch, set adjy=True, and adjust y instead, producing a different (and still aspect-1-valid) ylim \u2014 the assertion on get_xlim would fail. So the test was effectively written against the buggy code path.\n\nThe sibling calls `set_xbound(*map(x_trf.inverted().transform, ...))` at lines 1539 and 1544 are correct: there, x0/x1/y0/y1 are in transform space (computed as xc \u00b1 Xsize/2 from xmin/xmax/ymin/ymax) and the inverse transform is used to convert them BACK to data space for set_xbound/set_ybound. Only lines 1502-1503 are wrong.",
+    "line_end": 1505,
+    "suggested_fix": "@@ lib/matplotlib/axes/_base.py\n         dL = self.dataLim\n-        x0, x1 = map(x_trf.inverted().transform, dL.intervalx)\n-        y0, y1 = map(y_trf.inverted().transform, dL.intervaly)\n+        x0, x1 = map(x_trf.transform, dL.intervalx)\n+        y0, y1 = map(y_trf.transform, dL.intervaly)\n         xr = 1.05 * (x1 - x0)\n         yr = 1.05 * (y1 - y0)\n\n(The new test at test_axes.py:6513 will need its expected xlim updated, since with the corrected math the algorithm chooses to adjust y rather than x for that scenario.)"
+  }
+]

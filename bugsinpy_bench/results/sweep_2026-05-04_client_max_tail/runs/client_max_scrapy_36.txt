@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: scrapy#36
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: scrapy/scrapy
+# introducing_commit: 815d6160cfac5c0b764d01fc9d4ebc4ab7793aac
+# fixed_commit: cf9be5344a89dd8e14f8241ec69de9c984ec1e05
+# base_ref: 815d6160cfac5c0b764d01fc9d4ebc4ab7793aac^
+# head_ref: 815d6160cfac5c0b764d01fc9d4ebc4ab7793aac
+# started: 2026-05-04T08:21:58+00:00
+# finished: 2026-05-04T08:24:53+00:00
+# duration_s: 175.0
+# cost_usd: 2.3353
+# num_turns: 22
+# num_findings: 1
+# file_hit_strict: N
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 330
+# repo: DaytonaRepo
+# refs: 815d6160cfac5c0b764d01fc9d4ebc4ab7793aac^..815d6160cfac5c0b764d01fc9d4ebc4ab7793aac
+# turns: 22
+# cost (USD, API rate): 2.335264
+# usage: {'input_tokens': 26, 'output_tokens': 12022, 'cache_creation_input_tokens': 33653, 'cache_read_input_tokens': 534820}
+# findings: 1
+# ---
+[
+  {
+    "file": "scrapy/extensions/feedexport.py",
+    "line": 184,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "FeedExporter validates feed storages in __init__ before self.crawler is set, so storage from_crawler() is never invoked during validation",
+    "detail": "FeedExporter.__init__ calls self._storage_supported(self.urifmt) at line 168, which calls _get_storage(uri) -> _get_instance(...) -> create_instance(objcls, self.settings, getattr(self, 'crawler', None), uri). However, self.crawler is only assigned at line 184 in from_crawler(), AFTER cls(crawler.settings) (and therefore __init__) has finished. As a result, during validation, crawler is always None, so create_instance never takes the from_crawler branch. Two consequences: (1) A custom feed storage that only implements from_crawler (e.g. its __init__ requires the crawler) will raise a TypeError during validation in __init__ even though the new feature is supposed to enable exactly this use case. (2) Even for storages that implement both __init__(uri) and from_crawler (like the new FromCrawlerFileFeedStorage test fixture, which inherits FileFeedStorage.__init__), the storage is silently constructed twice with different code paths: once via plain __init__(uri) at validation time, then again via from_crawler(crawler, uri) in open_spider. Any side-effects in from_crawler (signal connections, registrations, expensive setup) are skipped during validation, so config errors that would surface in from_crawler are not caught. The added test does not cover case (1) because FromCrawlerFileFeedStorage still inherits a usable FileFeedStorage.__init__.",
+    "line_end": 184,
+    "suggested_fix": "Either pass `crawler` into __init__ (e.g. accept settings and crawler in FeedExporter.__init__ and set self.crawler before _storage_supported), or move the storage construction validation out of __init__ and into from_crawler (after `o.crawler = crawler`). For example:\n\n     @classmethod\n     def from_crawler(cls, crawler):\n-        o = cls(crawler.settings)\n-        o.crawler = crawler\n+        o = cls.__new__(cls)\n+        o.crawler = crawler\n+        o.__init__(crawler.settings)\n         crawler.signals.connect(o.open_spider, signals.spider_opened)\n\nor simply do not construct the storage during validation (only check that the scheme is registered)."
+  }
+]

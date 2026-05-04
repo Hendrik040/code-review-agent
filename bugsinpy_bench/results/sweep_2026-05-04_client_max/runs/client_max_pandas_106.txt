@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: pandas#106
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 045880c29e4d40dc0458d2a3272d145174b5122d
+# fixed_commit: e46026ff4669a30192b91e362ce8cdcbc9693870
+# base_ref: 045880c29e4d40dc0458d2a3272d145174b5122d^
+# head_ref: 045880c29e4d40dc0458d2a3272d145174b5122d
+# started: 2026-05-04T07:02:01+00:00
+# finished: 2026-05-04T07:13:20+00:00
+# duration_s: 679.2
+# cost_usd: 10.9173
+# num_turns: 100
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: max_turns
+# === END BENCH ===
+
+# Client SDK reviewer run 312
+# repo: DaytonaRepo
+# refs: 045880c29e4d40dc0458d2a3272d145174b5122d^..045880c29e4d40dc0458d2a3272d145174b5122d
+# turns: 100
+# cost (USD, API rate): 10.917343
+# usage: {'input_tokens': 104, 'output_tokens': 38043, 'cache_creation_input_tokens': 79909, 'cache_read_input_tokens': 4376176}
+# findings: 1
+# ---
+[
+  {
+    "file": "pandas/core/indexes/base.py",
+    "line": 4722,
+    "category": "logic",
+    "severity": "high",
+    "summary": "get_indexer_non_unique returns all-missing indexer for non-unique DatetimeIndex/TimedeltaIndex when target is a Categorical of timestamps/timedeltas",
+    "detail": "The diff removes `target = target.astype(target.dtype.categories.dtype)` and replaces it with `tgt_values = np.asarray(target)` for categorical targets. For a datetime-/timedelta-like categorical target, `np.asarray(target)` produces an `datetime64[ns]`/`timedelta64[ns]` ndarray (via `Categorical.__array__` -> `take_1d` over `categories.values`). This array is then passed to `self._engine.get_indexer_non_unique(tgt_values)`. DatetimeEngine/TimedeltaEngine inherit IndexEngine.get_indexer_non_unique (pandas/_libs/index.pyx:275), which builds `stargets = set(targets)` (a set of `np.datetime64`/`np.timedelta64` objects) and compares it against `values = np.array(self._get_index_values(), copy=False)` \u2014 and `_get_index_values` for DatetimeEngine is `self.vgetter().view('i8')` (int64). Because `np.int64` and `np.datetime64` do not hash equal (verified: an int64 with the same underlying nanosecond value is *not* `in` a set of datetime64 objects), every iteration `val in stargets` returns False. The function therefore returns -1 (missing) for every target entry, even ones that exist in the index. Previously the (now-removed) `target.astype(target.dtype.categories.dtype)` line converted the CategoricalIndex of timestamps into a DatetimeIndex, after which the `is_all_dates` branch produced int64 nanoseconds via `target.asi8`, which matched the engine's int64 view and worked correctly. `_maybe_promote` does NOT save us here: `DatetimeIndex._maybe_promote` only converts when `other.inferred_type == 'date'`, but `CategoricalIndex.inferred_type == 'categorical'`, so the categorical target stays untouched and falls into the new `is_categorical(target)` branch. The unique fast path in `get_indexer` (line 2900-2905) handles dtype mismatch by upcasting both sides to object, but `get_indexer_non_unique` has no such safeguard. Trigger: e.g. `df.reindex(CategoricalIndex([Timestamp('2020-01-01'), ...]))` where df has a non-unique DatetimeIndex (or any internal call via `Index.get_indexer_for` / `_reindex_non_unique` against a duplicated datetime index). Result is silent data loss \u2014 all rows replaced with NaN even when matching keys exist.",
+    "line_end": 4723,
+    "suggested_fix": "@@\n         if is_categorical(target):\n-            tgt_values = np.asarray(target)\n+            tgt_values = np.asarray(target)\n+            if self.is_all_dates and tgt_values.dtype.kind in (\"M\", \"m\"):\n+                tgt_values = tgt_values.view(\"i8\")\n         elif self.is_all_dates:\n             tgt_values = target.asi8\n         else:\n             tgt_values = target._ndarray_values"
+  }
+]

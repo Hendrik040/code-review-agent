@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: luigi#19
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: 6cffbf438d023441f7f42c2019a51c62eecd9018
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-05-04T06:31:00+00:00
+# finished: 2026-05-04T06:38:58+00:00
+# duration_s: 478.1
+# cost_usd: 1.6168
+# num_turns: 14
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 317
+# repo: DaytonaRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 14
+# cost (USD, harness-reported): 1.616839
+# cost (USD, public Opus 4 rate): 4.850517
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 60726, 'cache_read_input_tokens': 491643, 'output_tokens': 39656, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 60726}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 424, 'cache_read_input_tokens': 100422, 'cache_creation_input_tokens': 2398, 'cache_creation': {'ephemeral_5m_input_tokens': 2398, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "re_enable() routes through set_status(FAILED) which adds a failure, causing immediate re-disable and a spurious 'DISABLED due to excessive failures' email when disable_failures==1.",
+    "detail": "The previous Task.re_enable() directly assigned self.status = FAILED and cleared failures \u2014 no side effects. The new SimpleTaskState.re_enable() (line 250) instead calls self.set_status(task, FAILED, config), which unconditionally enters the add_failure / has_excessive_failures branch in set_status (lines 276-289) whenever task.can_disable() is True. The trailing task.failures.clear() at line 255 zeroes the failure counter again, but it cannot undo two side effects that fired inside set_status: (1) task.scheduler_disable_time = time.time() (line 279) and (2) notifications.send_error_email(...) (line 281). With disable_failures == 1, after failures.clear() (line 252) and the implicit add_failure() inside set_status, num_failures()==1 >= disable_failures==1, so the threshold is met. Concrete impact: (a) The re_enable_task API endpoint (line 791) reports success but the task is silently re-disabled and an email is sent. (b) Worse, prune (line 319) auto-invokes re_enable every cycle once disable_time elapses; each cycle sends a 'DISABLED due to excessive failures' email and resets scheduler_disable_time, so the task is permanently stuck DISABLED and admins receive a duplicate email every disable_time interval. The pre-refactor Task.re_enable() exhibited none of these behaviors. There are no tests that exercise disable_failures=1, so this regression is uncaught.",
+    "line_end": 255,
+    "suggested_fix": "Skip the failure-counter side effects in this re_enable path, e.g. update _status_tasks and task.status directly without going through set_status's add_failure branch:\n\n     def re_enable(self, task, config=None):\n         task.scheduler_disable_time = None\n         task.failures.clear()\n-        if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+        # Move the task to FAILED without re-running the can_disable / email path.\n+        self._status_tasks[task.status].pop(task.id, None)\n+        self._status_tasks[FAILED][task.id] = task\n+        task.status = FAILED"
+  }
+]

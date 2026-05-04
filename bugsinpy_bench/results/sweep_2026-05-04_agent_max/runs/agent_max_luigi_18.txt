@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: luigi#18
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: c521d59c5eacf6c19ce3c17a62f73e042fa0556e
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-05-04T06:23:21+00:00
+# finished: 2026-05-04T06:31:00+00:00
+# duration_s: 459.7
+# cost_usd: 1.5869
+# num_turns: 13
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 316
+# repo: DaytonaRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 13
+# cost (USD, harness-reported): 1.586935
+# cost (USD, public Opus 4 rate): 4.760805
+# usage: {'input_tokens': 17, 'cache_creation_input_tokens': 58980, 'cache_read_input_tokens': 554500, 'output_tokens': 37639, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 58980}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 530, 'cache_read_input_tokens': 98928, 'cache_creation_input_tokens': 2146, 'cache_creation': {'ephemeral_5m_input_tokens': 2146, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "re_enable() regresses for disable_failures == 1: re-disables the task and sends a spurious notification email instead of re-enabling it.",
+    "detail": "The new SimpleTaskState.re_enable(task, config) clears task.failures and then calls self.set_status(task, FAILED, config). Inside set_status (lines 276-289), the FAILED+can_disable() branch calls task.add_failure() (failures now == 1) and then checks has_excessive_failures() (i.e. num_failures() >= disable_failures). When disable_failures == 1, this is True, so the code re-sets task.scheduler_disable_time = time.time(), flips new_status back to DISABLED, sends notifications.send_error_email('Luigi Scheduler: DISABLED ...'), and re-inserts the task into _status_tasks[DISABLED]. The trailing task.failures.clear() in re_enable only resets the counter -- it does not undo the email, the new scheduler_disable_time, or the DISABLED status. The original Task.re_enable simply did self.status = FAILED; self.failures.clear(); self.scheduler_disable_time = None, so it always succeeded regardless of disable_failures. As a result, both prune (line 319) and the re_enable_task API (line 795) silently fail to re-enable tasks when disable_failures == 1: prune will re-disable the task on every disable_time tick and emit a misleading email each cycle, and the public re_enable_task RPC returns a 'serialized' but DISABLED task to the caller.",
+    "line_end": 255,
+    "suggested_fix": "Skip add_failure side effects when re-enabling, e.g. set the new status directly:\n\n     def re_enable(self, task, config=None):\n         task.scheduler_disable_time = None\n         task.failures.clear()\n-        if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+        # Move the task into FAILED without going through the failure-accounting path\n+        self._status_tasks[task.status].pop(task.id, None)\n+        self._status_tasks[FAILED][task.id] = task\n+        task.status = FAILED\n"
+  }
+]

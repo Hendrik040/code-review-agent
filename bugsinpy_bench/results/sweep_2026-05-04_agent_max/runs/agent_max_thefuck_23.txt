@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: thefuck#23
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# fixed_commit: 9a02e821cdc58a4aba2c0acc521fb25cacab87a5
+# base_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^
+# head_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# started: 2026-05-04T10:38:25+00:00
+# finished: 2026-05-04T10:42:47+00:00
+# duration_s: 261.6
+# cost_usd: 1.0250
+# num_turns: 10
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 371
+# repo: DaytonaRepo
+# refs: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^..4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# turns: 10
+# cost (USD, harness-reported): 1.025011
+# cost (USD, public Opus 4 rate): 3.075032
+# usage: {'input_tokens': 19, 'cache_creation_input_tokens': 36761, 'cache_read_input_tokens': 623219, 'output_tokens': 19342, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 36761}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 464, 'cache_read_input_tokens': 75212, 'cache_creation_input_tokens': 3643, 'cache_creation': {'ephemeral_5m_input_tokens': 3643, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/utils.py",
+    "line": 183,
+    "category": "error",
+    "severity": "high",
+    "summary": "`with shelve.open(...)` crashes on Python 2.7 and 3.3 \u2014 both officially supported",
+    "detail": "`shelve.Shelf` only got `__enter__`/`__exit__` in Python 3.4 (issue #13896). setup.py allows Python >= 2.7 and >= 3.3, .travis.yml runs CI on 2.7/3.3/3.4, and tox.ini lists `py27,py33,py34`, so the project is committed to those versions. On Python 2.7 and 3.3 the line `with shelve.open(cache_path) as db:` raises `AttributeError: __exit__` the first time the cache path is taken \u2014 and that path is hit by the Bash/Zsh `get_aliases` methods, which are invoked from `thefuck.utils.get_all_executables` via `thefuck.shells.get_aliases()` on every correction lookup. The test suite hides this because `tests/test_utils.py::TestCache.shelve` monkey-patches `thefuck.utils.shelve.open` to a `@contextmanager`, so the production failure mode is never exercised.",
+    "line_end": 189,
+    "suggested_fix": "-        with shelve.open(cache_path) as db:\n-            if db.get(key, {}).get('etag') == etag:\n-                return db[key]['value']\n-            else:\n-                value = fn(*args, **kwargs)\n-                db[key] = {'etag': etag, 'value': value}\n-                return value\n+        from contextlib import closing\n+        with closing(shelve.open(cache_path)) as db:\n+            if db.get(key, {}).get('etag') == etag:\n+                return db[key]['value']\n+            else:\n+                value = fn(*args, **kwargs)\n+                db[key] = {'etag': etag, 'value': value}\n+                return value"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Cache key collides between `Bash.get_aliases` and `Zsh.get_aliases` on Python 2.7",
+    "detail": "`key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])` relies on `repr()` containing the qualified class name, which is only true since Python 3.3 (PEP 3155). On Python 2.7 \u2014 a supported version per setup.py / tox.ini / .travis.yml \u2014 `repr(Bash.get_aliases)` and `repr(Zsh.get_aliases)` are both `<function get_aliases at 0x...>`, so `split('at')[0]` yields the identical prefix `<function get_aliases ` for both, and they share `__module__ == 'thefuck.shells'`. The two methods therefore share one shelve entry. The etag check (`'.bashrc.bash_profile'` mtimes vs `'.zshrc'` mtime) prevents returning incorrect aliases, but each shell that runs after the other observes a stale etag, recomputes, and overwrites the entry \u2014 so on Py2.7 the cache is effectively never reused whenever a user (or two users sharing `/tmp/.thefuck-cache`) alternates between bash and zsh, defeating the purpose of this PR. The test suite doesn't catch this because `repr(fn)` on Py3 includes the qualname (the assertion even hard-codes the Py3 form `<function TestCache.fn.<locals>.fn `).",
+    "line_end": 179,
+    "suggested_fix": "-        key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])\n+        key = '{}.{}'.format(fn.__module__,\n+                             getattr(fn, '__qualname__', fn.__name__))"
+  }
+]

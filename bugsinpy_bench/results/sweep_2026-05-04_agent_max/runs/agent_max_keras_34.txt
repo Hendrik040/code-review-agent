@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: keras#34
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# fixed_commit: 4b74fc5418944c9f449eb88ed4b40ada280fa5ca
+# base_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^
+# head_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# started: 2026-05-04T06:03:03+00:00
+# finished: 2026-05-04T06:05:08+00:00
+# duration_s: 124.1
+# cost_usd: 0.6861
+# num_turns: 13
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 309
+# repo: DaytonaRepo
+# refs: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^..ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# turns: 13
+# cost (USD, harness-reported): 0.686065
+# cost (USD, public Opus 4 rate): 2.058197
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 31392, 'cache_read_input_tokens': 540051, 'output_tokens': 8790, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 31392}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 290, 'cache_read_input_tokens': 71285, 'cache_creation_input_tokens': 2201, 'cache_creation': {'ephemeral_5m_input_tokens': 2201, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/engine/training.py",
+    "line": 2107,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "fit_generator: workers=0 + Sequence input crashes with TypeError because next() is called on a non-iterator",
+    "detail": "When workers=0 and the input `generator` is a `keras.utils.Sequence` instance (a documented and explicitly supported input type for this API), the new `else` branch sets `output_generator = generator`, i.e. the raw Sequence object. The downstream loop then calls `next(output_generator)` at line 2115. `Sequence` only implements `__getitem__` and `__len__` (see keras/utils/data_utils.py:300-361); it has no `__next__`/`__iter__`. Python raises `TypeError: '<UserSequence>' object is not an iterator` immediately on the first batch. This is not covered by the new tests because they all pass plain generator functions (which return iterators), not Sequences. The is_sequence==True/workers==0 combination is silently broken for any real Sequence subclass.",
+    "line_end": 2115,
+    "suggested_fix": "@@\n-            if workers > 0:\n-                if is_sequence:\n-                    enqueuer = OrderedEnqueuer(generator,\n-                                               use_multiprocessing=use_multiprocessing,\n-                                               shuffle=shuffle)\n-                else:\n-                    enqueuer = GeneratorEnqueuer(generator,\n-                                                 use_multiprocessing=use_multiprocessing,\n-                                                 wait_time=wait_time)\n-                enqueuer.start(workers=workers, max_queue_size=max_queue_size)\n-                output_generator = enqueuer.get()\n-            else:\n-                output_generator = generator\n+            if workers > 0:\n+                if is_sequence:\n+                    enqueuer = OrderedEnqueuer(generator,\n+                                               use_multiprocessing=use_multiprocessing,\n+                                               shuffle=shuffle)\n+                else:\n+                    enqueuer = GeneratorEnqueuer(generator,\n+                                                 use_multiprocessing=use_multiprocessing,\n+                                                 wait_time=wait_time)\n+                enqueuer.start(workers=workers, max_queue_size=max_queue_size)\n+                output_generator = enqueuer.get()\n+            elif is_sequence:\n+                output_generator = iter_sequence_infinite(generator)\n+            else:\n+                output_generator = generator\n"
+  },
+  {
+    "file": "keras/engine/training.py",
+    "line": 2277,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "evaluate_generator: workers=0 + Sequence input crashes with TypeError because next() is called on a non-iterator",
+    "detail": "Same defect as in fit_generator. With workers=0 and `generator` being a `Sequence` instance, the new `else` branch assigns `output_generator = generator`. At line 2280, `generator_output = next(output_generator)` is invoked; `Sequence` is not an iterator (only defines `__getitem__`/`__len__`), so Python raises `TypeError: ... object is not an iterator` on the first iteration. The new test for workers=0 in tests/test_multiprocessing.py uses a plain generator function, so this combination escapes test coverage even though the docstring documents both Sequence and generator as accepted inputs.",
+    "line_end": 2280,
+    "suggested_fix": ""
+  },
+  {
+    "file": "keras/engine/training.py",
+    "line": 2401,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "predict_generator: workers=0 + Sequence input crashes with TypeError because next() is called on a non-iterator",
+    "detail": "Same defect as in fit_generator/evaluate_generator. With workers=0 and a `Sequence` instance passed for `generator`, the new `else: output_generator = generator` branch hands a Sequence object to the loop, which then invokes `next(output_generator)` at line 2407. Because `keras.utils.Sequence` does not implement `__next__`/`__iter__`, this raises `TypeError: ... object is not an iterator`. The new test added for predict_generator uses a generator function and therefore does not exercise this case. Either reject Sequence input when workers=0 explicitly, or wrap the Sequence in an infinite iterator (e.g. `iter(seq[i] for i in cycle(range(len(seq))))`).",
+    "line_end": 2407,
+    "suggested_fix": ""
+  }
+]

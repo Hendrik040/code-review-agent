@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: luigi#26
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: 9038874aa8538540f83ddddf79f6cb3d52464cbf
+# fixed_commit: 13673fd488c25325db633b1d49e664fb937fabc2
+# base_ref: 9038874aa8538540f83ddddf79f6cb3d52464cbf^
+# head_ref: 9038874aa8538540f83ddddf79f6cb3d52464cbf
+# started: 2026-05-04T06:38:58+00:00
+# finished: 2026-05-04T06:41:45+00:00
+# duration_s: 166.4
+# cost_usd: 0.6165
+# num_turns: 10
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 318
+# repo: DaytonaRepo
+# refs: 9038874aa8538540f83ddddf79f6cb3d52464cbf^..9038874aa8538540f83ddddf79f6cb3d52464cbf
+# turns: 10
+# cost (USD, harness-reported): 0.616508
+# cost (USD, public Opus 4 rate): 1.849524
+# usage: {'input_tokens': 15, 'cache_creation_input_tokens': 25094, 'cache_read_input_tokens': 318941, 'output_tokens': 12005, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 25094}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 351, 'cache_read_input_tokens': 65838, 'cache_creation_input_tokens': 1350, 'cache_creation': {'ephemeral_5m_input_tokens': 1350, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/contrib/hadoop_jar.py",
+    "line": 100,
+    "category": "security",
+    "severity": "high",
+    "summary": "SSH path forwards hadoop args to the remote shell without escaping, breaking jobconfs with spaces and enabling command injection",
+    "detail": "When ssh_config is set, arglist becomes ['ssh', '-i', key, '-o', 'BatchMode=yes', 'user@host', 'hadoop', 'jar', job.jar(), main, '-D...', ...job_args]. subprocess.Popen passes this list directly to local ssh (no local shell), but OpenSSH joins every argument after '[user@]host' with single spaces into one command string and hands it to the remote login shell, which re-parses tokens by its own rules. Two concrete consequences:\n\n1) Correctness: any single arg containing whitespace is silently split. For example a perfectly legitimate jobconf such as 'mapreduce.job.name=My Big Job' (returned from job.jobconfs()) becomes the three tokens '-Dmapreduce.job.name=My', 'Big', 'Job' on the remote side, so the property is truncated and the leftover words are passed as positional args to hadoop. The same applies to any HDFS path or job.args() value that contains spaces, tabs, or globs.\n\n2) Security: any shell metacharacter in jobconfs(), args(), main(), or jar() \u2014 e.g. ';', '&&', '|', '$(...)', backticks, '>' \u2014 is interpreted by the remote shell. A task that returns args() = ['/data; rm -rf $HOME'] (or anything reaching this list from less-trusted config/env) executes arbitrary commands on the remote host as the SSH user, despite the local Popen-with-list call appearing safe. There is no shlex.quote / pipes.quote applied anywhere on the path before joining.\n\nThe pre-existing local-only path was safe because Popen with a list bypasses the shell entirely; introducing SSH re-introduces a shell layer on the far side that the code does not account for.",
+    "line_end": 102,
+    "suggested_fix": "import shlex\n# ...\nif ssh_config:\n    # quote every remote-side token before handing it to ssh\n    remote_cmd = ' '.join(shlex.quote(a) for a in hadoop_arglist)\n    arglist.append(remote_cmd)\nelse:\n    arglist.extend(hadoop_arglist)\n# (i.e. when SSH is in use, collapse hadoop_arglist into one shell-quoted string\n#  appended after 'user@host' instead of arglist.extend(hadoop_arglist))"
+  }
+]

@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: scrapy#31
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: scrapy/scrapy
+# introducing_commit: 5f02ef82e8560242eb34b336f385addfdef3211d
+# fixed_commit: dba7e39f61cbe2c22d3c9064f32f6e36d74f14b2
+# base_ref: 5f02ef82e8560242eb34b336f385addfdef3211d^
+# head_ref: 5f02ef82e8560242eb34b336f385addfdef3211d
+# started: 2026-05-04T08:14:56+00:00
+# finished: 2026-05-04T08:21:58+00:00
+# duration_s: 422.3
+# cost_usd: 6.4756
+# num_turns: 63
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 329
+# repo: DaytonaRepo
+# refs: 5f02ef82e8560242eb34b336f385addfdef3211d^..5f02ef82e8560242eb34b336f385addfdef3211d
+# turns: 63
+# cost (USD, API rate): 6.475556
+# usage: {'input_tokens': 67, 'output_tokens': 24517, 'cache_creation_input_tokens': 59621, 'cache_read_input_tokens': 2345255}
+# findings: 2
+# ---
+[
+  {
+    "file": "scrapy/http/cookies.py",
+    "line": 142,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "WrappedRequest exposes only `unverifiable` for Python 3 cookiejar, but is still missing the `host`, `type`, and `origin_req_host` attributes that http.cookiejar accesses",
+    "detail": "Python 3's `http.cookiejar` consumes the request via attribute access for several names that this PR did not port: `request.host` (used in `request_port()`), `request.type` (used in `return_ok_secure()` for every Secure cookie return check), and `request.origin_req_host` (used in `is_third_party()` whenever `request.unverifiable` is True). `WrappedRequest` only defines the urllib2-style methods `get_host()`, `get_type()`, `get_origin_req_host()`, plus the new `unverifiable` property. As soon as a server sets a `Set-Cookie: ...; Secure` header (very common for HTTPS session cookies), the next request through `CookiesMiddleware` will go `add_cookie_header` -> `_cookies_for_domain` -> `_policy.return_ok` -> `return_ok_secure(cookie, request)` and crash with `AttributeError: 'WrappedRequest' object has no attribute 'type'`. Equivalent crashes happen on `host` (cookies with a Port attribute) and `origin_req_host` (any request with `meta['is_unverifiable']=True`, e.g. embedded sub-resources). I reproduced all three AttributeErrors against the actual `WrappedRequest` from this file using stdlib `http.cookiejar`. Re-enabling `tests/test_downloadermiddleware_cookies.py` on Py3 (also part of this PR) does not catch the bug because none of the test cookies are Secure/port-pinned and no test uses `is_unverifiable=True`.",
+    "line_end": 143,
+    "suggested_fix": "@@\n     # python3 uses request.unverifiable\n     @property\n     def unverifiable(self):\n         return self.is_unverifiable()\n \n+    # python3 cookiejar uses these as attributes\n+    @property\n+    def full_url(self):\n+        return self.get_full_url()\n+\n+    @property\n+    def host(self):\n+        return self.get_host()\n+\n+    @property\n+    def type(self):\n+        return self.get_type()\n+\n+    @property\n+    def origin_req_host(self):\n+        return self.get_origin_req_host()\n+\n     def get_origin_req_host(self):"
+  },
+  {
+    "file": "scrapy/http/cookies.py",
+    "line": 152,
+    "category": "error",
+    "severity": "medium",
+    "summary": "WrappedRequest.get_header raises TypeError when the header is missing and the default is None",
+    "detail": "The new implementation is `return to_native_str(self.request.headers.get(name, default))`. When the requested header does not exist and `default` is left at its declared default value `None`, `Headers.get` returns `None`, and `to_native_str(None)` raises `TypeError: to_unicode must receive a bytes, str or unicode object, got NoneType` (verified against `scrapy.utils.python.to_native_str`). The function signature still advertises `default=None`, so any caller relying on that contract gets an exception instead of `None`. Stdlib `http.cookiejar` happens to call `request.get_header(\"Host\", \"\")` with an empty-string default, so the in-tree cookie path doesn't hit this today, but the documented contract is broken (and a custom CookiePolicy or test that uses `wrapped.get_header(name)` with a missing header will crash).",
+    "line_end": null,
+    "suggested_fix": "@@\n     def get_header(self, name, default=None):\n-        return to_native_str(self.request.headers.get(name, default))\n+        value = self.request.headers.get(name, default)\n+        return to_native_str(value) if value is not None else None"
+  }
+]

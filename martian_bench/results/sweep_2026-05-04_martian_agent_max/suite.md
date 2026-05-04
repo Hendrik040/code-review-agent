@@ -12,3 +12,7 @@ Model: `claude-opus-4-7`.  N: 10 PRs.
 | getsentry_sentry#93824 | 12 | $1.2620 | 3 | submit_findings | 331.5 | run_295 |
 | getsentry_sentry#77754 | 14 | $0.6989 | 1 | submit_findings | 160.6 | run_298 |
 | getsentry_sentry#80528 | 11 | $0.4560 | 0 | submit_findings | 96.9 | run_301 |
+| getsentry_sentry#95633 | 34 | $3.6068 | 3 | submit_findings | 671.9 | run_303 |
+| getsentry_sentry#80168 | 34 | $2.0941 | 1 | submit_findings | 290.9 | run_308 |
+
+**Summary:** 10 PRs, total cost $23.3254.

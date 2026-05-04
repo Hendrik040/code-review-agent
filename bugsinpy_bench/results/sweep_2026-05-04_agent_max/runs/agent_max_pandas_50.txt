@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: pandas#50
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 9ebbe1bc8f054fcb128181b95a7d22d33da78f36
+# fixed_commit: 821aa25c9039e72da9a7b236cf2f9e7d549cbb7b
+# base_ref: 9ebbe1bc8f054fcb128181b95a7d22d33da78f36^
+# head_ref: 9ebbe1bc8f054fcb128181b95a7d22d33da78f36
+# started: 2026-05-04T08:10:29+00:00
+# finished: 2026-05-04T08:13:44+00:00
+# duration_s: 195.4
+# cost_usd: 0.7678
+# num_turns: 10
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 336
+# repo: DaytonaRepo
+# refs: 9ebbe1bc8f054fcb128181b95a7d22d33da78f36^..9ebbe1bc8f054fcb128181b95a7d22d33da78f36
+# turns: 10
+# cost (USD, harness-reported): 0.767779
+# cost (USD, public Opus 4 rate): 2.303339
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 28616, 'cache_read_input_tokens': 397499, 'output_tokens': 15604, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 28616}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 443, 'cache_read_input_tokens': 69562, 'cache_creation_input_tokens': 1148, 'cache_creation': {'ephemeral_5m_input_tokens': 1148, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/arrays/categorical.py",
+    "line": 107,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "New scalar-NaN mask wrongly forces __ne__ results to False at NaN positions, regressing cat != scalar",
+    "detail": "The new scalar branch unconditionally does `ret[mask] = False` for every comparison operator, including `__ne__` (which goes through this same `_cat_compare_op` factory at line 1228). Before this PR, `Categorical([1, 2, 3, None]).__ne__(2)` returned `[True, False, True, True]` because `self._codes.__ne__(i)` already gives True at the -1 (NaN) position, matching numpy/Series semantics where `nan != 2` is True. After this PR, the same call returns `[True, False, True, False]` \u2014 silently claiming the NaN position equals 2. This is a real behavior regression for `cat != scalar` whenever the scalar is in categories and `cat` contains NaN, and it can corrupt masking/filtering downstream (e.g. `cat[cat != 2]` will now incorrectly drop NaN rows). The new test `test_comparison_of_ordered_categorical_with_nan_to_scalar` does not exercise this case because it uses the `compare_operators_no_eq_ne` fixture, which is exactly `['__le__', '__lt__', '__ge__', '__gt__']` (see pandas/conftest.py:224) \u2014 `__eq__`/`__ne__` are excluded, so the regression slips past the tests. Note: `__eq__` happens to remain correct because `-1 == i` is already False; only `__ne__` is broken among the eq/ne ops. (The pre-existing listlike branch has the same flaw for `__ne__`, but that was not introduced by this PR.)",
+    "line_end": 107,
+    "suggested_fix": "@@\n         if is_scalar(other):\n             if other in self.categories:\n                 i = self.categories.get_loc(other)\n                 ret = getattr(self._codes, op)(i)\n \n-                # check for NaN in self\n-                mask = (self._codes == -1)\n-                ret[mask] = False\n-                return ret\n+                # check for NaN in self; for __ne__ NaN comparisons should\n+                # remain True (matching numpy/Series), for the other ops\n+                # they should be False.\n+                mask = (self._codes == -1)\n+                if mask.any():\n+                    ret[mask] = (op == '__ne__')\n+                return ret\n"
+  }
+]

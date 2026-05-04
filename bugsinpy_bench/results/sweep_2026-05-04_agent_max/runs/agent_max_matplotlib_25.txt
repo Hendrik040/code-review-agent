@@ -1,0 +1,80 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: matplotlib#25
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# fixed_commit: 184225bc5639fbd2f29c1253602806a8b6462d9f
+# base_ref: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf^
+# head_ref: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# started: 2026-05-04T07:03:29+00:00
+# finished: 2026-05-04T07:06:39+00:00
+# duration_s: 190.4
+# cost_usd: 0.7297
+# num_turns: 6
+# num_findings: 4
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 325
+# repo: DaytonaRepo
+# refs: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf^..9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# turns: 6
+# cost (USD, harness-reported): 0.729680
+# cost (USD, public Opus 4 rate): 2.189039
+# usage: {'input_tokens': 9, 'cache_creation_input_tokens': 32729, 'cache_read_input_tokens': 287907, 'output_tokens': 15245, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 32729}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 494, 'cache_read_input_tokens': 72020, 'cache_creation_input_tokens': 2803, 'cache_creation': {'ephemeral_5m_input_tokens': 2803, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1144,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "EventCollection.__init__ leaves _is_horizontal unassigned when positions is empty, breaking nearly every public method afterwards.",
+    "detail": "When `len(positions) == 0` the constructor only sets `segments = []` (line 1144) and never assigns `self._is_horizontal`. None of the orientation branches run, and the attribute is never initialized. Subsequent calls to `is_horizontal()`, `get_orientation()`, `get_positions()`, `set_positions()`, `add_positions()`, `set_orientation()`, `set_linelength()`, or `set_lineoffset()` all read `self._is_horizontal` and raise `AttributeError: 'EventCollection' object has no attribute '_is_horizontal'`. Constructing an empty EventCollection and then adding events later (a natural and documented usage \u2014 `add_positions` exists for this) is therefore broken. Reproduced with a minimal mirror of the control flow.",
+    "line_end": 1144,
+    "suggested_fix": "@@\n-        if len(positions) == 0:\n-            segments = []\n-        elif hasattr(positions, 'ndim') and positions.ndim > 1:\n+        if len(positions) == 0:\n+            segments = []\n+            self._is_horizontal = (orientation is None\n+                                   or orientation.lower() in ('none', 'horizontal'))\n+        elif hasattr(positions, 'ndim') and positions.ndim > 1:"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1143,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "Constructor crashes on positions=None even though the docstring documents None as a valid value.",
+    "detail": "The parameter comment on line 1081 (`# Can be None.`) and the docstring on line 1093 (`a sequence of numerical values or a 1D numpy array.  Can be None`) both promise that `positions` may be `None`. But the very first thing the constructor does is `len(positions)` (line 1143), which raises `TypeError: object of type 'NoneType' has no len()`. Either the documented contract is wrong, or the constructor must guard against None like `set_positions` does (line 1188). Users following the documentation will hit a hard failure.",
+    "line_end": 1143,
+    "suggested_fix": "@@\n-        if len(positions) == 0:\n+        if positions is None or len(positions) == 0:"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1314,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "get_linestyle returns the full list of linestyles instead of a single style, inconsistent with sister methods and the docstring.",
+    "detail": "The docstring on lines 1311-1312 advertises a single style return value: `[ 'solid' | 'dashed' | 'dashdot' | 'dotted' ]`. The two sister methods on the same class \u2014 `get_linewidth` (line 1307) and `get_color` (line 1320) \u2014 return `self.get_linewidths()[0]` and `self.get_colors()[0]` respectively, i.e. a single scalar. `get_linestyle` instead returns the whole list `self.get_linestyles()`. Callers expecting parallel semantics (single value) will get a list and either iterate accidentally or fail on equality/string operations. Either the docstring is wrong or the body is missing the `[0]`. Given the parallel pattern with the other two getters, the body is the bug.",
+    "line_end": 1314,
+    "suggested_fix": "@@\n-        return self.get_linestyles()\n+        return self.get_linestyles()[0]"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1188,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Empty-input guard `hasattr(positions, 'len')` is always False (should be `'__len__'`), so the early-return branch is dead code in set_positions and add_positions.",
+    "detail": "Python objects expose `__len__`, not `len` \u2014 `hasattr([], 'len')`, `hasattr(np.array([]), 'len')`, and `hasattr((), 'len')` all return False (verified). Therefore the second clause of the guard on lines 1188-1189 (and the equivalent on lines 1211-1212 in `add_positions`) can never fire. For `set_positions([])` the method now skips the early return, runs `np.asanyarray([])`, calls `.sort()`, and produces empty list comprehensions; the eventual `set_segments([])` is functionally equivalent, so user-visible output is unchanged \u2014 hence severity low. But the intent (a fast path that avoids touching state when an empty container is passed) is silently defeated, and any future maintainer relying on that branch is misled. The fix is a one-character correction to `'__len__'` (or simply dropping the redundant hasattr clause).",
+    "line_end": 1189,
+    "suggested_fix": "@@\n-        if positions is None or (hasattr(positions, 'len') and\n-                                 len(positions) == 0):\n+        if positions is None or (hasattr(positions, '__len__') and\n+                                 len(positions) == 0):\n             self.set_segments([])\n             return"
+  }
+]

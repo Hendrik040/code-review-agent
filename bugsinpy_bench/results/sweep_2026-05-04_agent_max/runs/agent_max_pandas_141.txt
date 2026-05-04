@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: pandas#141
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: a173cacbffbd49c0aecafda76ace7aed9b0af60c
+# fixed_commit: 411dd249e755d7e281603fe3e0ab9e0e48383df9
+# base_ref: a173cacbffbd49c0aecafda76ace7aed9b0af60c^
+# head_ref: a173cacbffbd49c0aecafda76ace7aed9b0af60c
+# started: 2026-05-04T09:03:59+00:00
+# finished: 2026-05-04T09:10:01+00:00
+# duration_s: 362.8
+# cost_usd: 1.7999
+# num_turns: 24
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 345
+# repo: DaytonaRepo
+# refs: a173cacbffbd49c0aecafda76ace7aed9b0af60c^..a173cacbffbd49c0aecafda76ace7aed9b0af60c
+# turns: 24
+# cost (USD, harness-reported): 1.799920
+# cost (USD, public Opus 4 rate): 5.399762
+# usage: {'input_tokens': 43, 'cache_creation_input_tokens': 49504, 'cache_read_input_tokens': 1656061, 'output_tokens': 26491, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 49504}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 495, 'cache_read_input_tokens': 88842, 'cache_creation_input_tokens': 1971, 'cache_creation': {'ephemeral_5m_input_tokens': 1971, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/indexes/range.py",
+    "line": 361,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Reversed-range formula is incorrect when self.stop is not the canonical 'last_element + step', causing all in-range lookups to silently return -1 for many negative-step RangeIndexes.",
+    "detail": "For step<0, the new code computes the equivalent forward range as `start = self.stop - self.step`, `stop = self.start + 1`, `step = -self.step`. This is only valid when `self.stop == last_element + self.step` (the canonical normalized stop). Python's range \u2014 and hence RangeIndex \u2014 preserves whatever stop the caller provides, so e.g. `RangeIndex(10, 1, -2)` and `RangeIndex(10, 0, -2)` both represent [10, 8, 6, 4, 2] but have different `self.stop`. With stop=1, the formula yields start=3, stop=11, step=2 (i.e. forward range [3,5,7,9])\u2014which has no overlap with the actual values. `locs = target - 3` becomes odd for every real element, the `(locs % step == 0)` mask is all False, and `get_indexer([10,8,6,4,2])` returns `[-1,-1,-1,-1,-1]` instead of `[0,1,2,3,4]`. Verified by tracing the algorithm: `RangeIndex(10, 1, -2).get_indexer([10,8,6,4,2])` -> all -1; `RangeIndex(0, -1, -2).get_indexer([0])` -> [-1]. This is a silent correctness regression for any user-constructed RangeIndex with negative step whose stop isn't canonically minimized, and the new test only exercises positive steps so CI does not catch it.",
+    "line_end": 363,
+    "suggested_fix": "-        else:\n-            # Work on reversed range for simplicity:\n-            start, stop, step = (self.stop - self.step,\n-                                 self.start + 1,\n-                                 - self.step)\n+        else:\n+            # Work on reversed range for simplicity:\n+            reverse = self._range[::-1]\n+            start, stop, step = reverse.start, reverse.stop, reverse.step"
+  },
+  {
+    "file": "pandas/core/indexes/range.py",
+    "line": 354,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "The `limit` argument is silently dropped in both fall-through `super().get_indexer(...)` calls, so pad/backfill/nearest fills no longer honor the caller's limit and the parent's validation error is swallowed.",
+    "detail": "The override accepts `limit=None` in its signature but never forwards it. Both fall-through paths (lines 354\u2013355 when method/tolerance/list-like-ness disqualify the fast path, and lines 368\u2013369 when the target isn't an integer 1-D array) call `super().get_indexer(target, method=method, tolerance=tolerance)` without `limit=limit`. `Index.get_indexer` (pandas/core/indexes/base.py:2819) actually uses `limit` in `_get_fill_indexer` for `method='pad'/'backfill'/'nearest'`, and validates `if limit is not None: raise ValueError(...)` when method is None (line 2854). Consequence: (a) `RangeIndex.get_indexer(target, method='pad', limit=2)` silently behaves as if limit were unbounded \u2014 a behavior regression vs. Int64Index; (b) `RangeIndex.get_indexer(target, limit=5)` (no method, but a target that fails the fast path) used to raise a ValueError and now silently succeeds.",
+    "line_end": 355,
+    "suggested_fix": "-        if not (method is None and tolerance is None and is_list_like(target)):\n-            return super().get_indexer(target, method=method,\n-                                       tolerance=tolerance)\n+        if not (method is None and tolerance is None and is_list_like(target)):\n+            return super().get_indexer(target, method=method, limit=limit,\n+                                       tolerance=tolerance)\n@@\n-        if not (is_integer_dtype(target_array) and target_array.ndim == 1):\n-            # checks/conversions/roundings are delegated to general method\n-            return super().get_indexer(target, method=method,\n-                                       tolerance=tolerance)\n+        if not (is_integer_dtype(target_array) and target_array.ndim == 1):\n+            # checks/conversions/roundings are delegated to general method\n+            return super().get_indexer(target, method=method, limit=limit,\n+                                       tolerance=tolerance)"
+  }
+]

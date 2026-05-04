@@ -1,0 +1,68 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max_tail
+# bug: sanic#1
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: b424aaa1c1d79242d60c913359fcba141a29e818
+# prepared_path: bugsinpy_bench/dataset/prepared_100_clientmax_tail.json
+# prepared_sha256_16: 4c64a75e20234506
+# upstream_repo: huge-success/sanic
+# introducing_commit: a6077a179067812766293f9ab4391b5e1499a9c6
+# fixed_commit: 44973125c15304b4262c51c78b5a86bd1daafa86
+# base_ref: a6077a179067812766293f9ab4391b5e1499a9c6^
+# head_ref: a6077a179067812766293f9ab4391b5e1499a9c6
+# started: 2026-05-04T07:44:34+00:00
+# finished: 2026-05-04T07:51:38+00:00
+# duration_s: 423.9
+# cost_usd: 6.0036
+# num_turns: 51
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 319
+# repo: DaytonaRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 51
+# cost (USD, API rate): 6.003557
+# usage: {'input_tokens': 55, 'output_tokens': 24037, 'cache_creation_input_tokens': 63184, 'cache_read_input_tokens': 2010171}
+# findings: 3
+# ---
+[
+  {
+    "file": "sanic/app.py",
+    "line": 566,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "add_websocket_route now silently returns a (routes, handler) tuple instead of the handler",
+    "detail": "`Sanic.add_websocket_route` does `return self.websocket(...)(handler)`. After the diff, `self.websocket(...)(handler)` returns the new tuple `(routes, handler)` (see the changed `response` decorator at sanic/app.py:519-527). So `add_websocket_route` now returns a 2-tuple instead of the handler. The docstring still claims it returns an \"Objected decorated by :func:`websocket`\". This is a public API used in the docs (docs/sanic/routing.rst, docs/sanic/websocket.rst) and tests (tests/test_routes.py:525). Any caller that uses the return value (e.g. wraps it in another decorator, calls it, or checks identity against the original handler) will break silently with TypeError or wrong behavior. Note that the sibling `Sanic.add_route` (line 441-450) avoids this by separating the decorator call from the explicit `return handler`; `add_websocket_route` should do the same.",
+    "line_end": null,
+    "suggested_fix": "@@ sanic/app.py\n-        return self.websocket(\n+        self.websocket(\n             uri,\n             host=host,\n             strict_slashes=strict_slashes,\n             subprotocols=subprotocols,\n             name=name,\n         )(handler)\n+        return handler"
+  },
+  {
+    "file": "sanic/blueprints.py",
+    "line": 146,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Registering a Blueprint with host=list crashes because routes contains None entries",
+    "detail": "When a Blueprint route uses `host=[...]` (a list of hosts \u2014 supported by Router for app-level routes), the call chain is `app.route(...)(handler)` \u2192 `self.router.add(...)` \u2192 `self.router._add(...)`. In `Router._add` (sanic/router.py:198-212) the list-host branch iterates and recursively calls `self.add(...)` for each individual host and then `return`s None. Back in `Router.add` the result is `routes.append(self._add(...))` (sanic/router.py:148, 180, 183), so `routes` ends up containing `None`. `app.route` returns `(routes, handler)` = `([None, ...], handler)`, and in `Blueprint.register` line 128-129 those None values get appended to the local `routes` list. Then line 146 `route_names = [route.name for route in routes]` raises AttributeError: 'NoneType' object has no attribute 'name', regardless of whether the blueprint has any middlewares. This is a regression: pre-diff the same configuration worked fine because the router's return value was discarded.",
+    "line_end": null,
+    "suggested_fix": "Either make Router._add return the list of routes produced by its recursive calls in the list-host branch, or filter Nones at the blueprint level:\n\n@@ sanic/blueprints.py\n-        route_names = [route.name for route in routes]\n+        route_names = [route.name for route in routes if route is not None]"
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 664,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Blueprint-registered response middleware now runs in registration order instead of reverse order",
+    "detail": "`Sanic.register_middleware` (line 645-647) uses `self.response_middleware.appendleft(middleware)` for response middleware so that response middlewares execute in reverse registration order \u2014 this is the documented behavior validated by tests/test_middleware.py:test_middleware_order (the last-registered response middleware runs first). The new `register_named_middleware` (line 659-664) uses `append` for response middleware, so blueprint response middlewares now execute in registration order \u2014 the opposite of app-level response middlewares and the prior blueprint behavior (where bp middlewares went through `register_middleware`). For a blueprint that registers response middlewares A then B, before the diff iteration order was B,A; after the diff it's A,B. Users relying on the reverse-LIFO contract for things like setting then overriding response headers will get different output.",
+    "line_end": null,
+    "suggested_fix": "@@ sanic/app.py\n         if attach_to == \"response\":\n             for _rn in route_names:\n                 if _rn not in self.named_response_middleware:\n                     self.named_response_middleware[_rn] = deque()\n                 if middleware not in self.named_response_middleware[_rn]:\n-                    self.named_response_middleware[_rn].append(middleware)\n+                    self.named_response_middleware[_rn].appendleft(middleware)"
+  }
+]

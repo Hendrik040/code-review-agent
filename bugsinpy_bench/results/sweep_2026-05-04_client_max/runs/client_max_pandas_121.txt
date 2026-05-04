@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: pandas#121
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# fixed_commit: 958756af5cb40658e975a70d29089b68aea93040
+# base_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda^
+# head_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# started: 2026-05-04T07:17:33+00:00
+# finished: 2026-05-04T07:26:07+00:00
+# duration_s: 513.6
+# cost_usd: 18.9499
+# num_turns: 67
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 314
+# repo: DaytonaRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 67
+# cost (USD, API rate): 18.949888
+# usage: {'input_tokens': 71, 'output_tokens': 27723, 'cache_creation_input_tokens': 174109, 'cache_read_input_tokens': 9070036}
+# findings: 2
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Regex masking uses `re.match` while the replacement uses `rx.search` \u2014 patterns matching in the middle of strings are no longer replaced via `replace_list`.",
+    "detail": "The new `_compare_or_regex_match` precomputes the boolean mask with `re.match(b, x)`, which only matches at the *start* of the string. However, `ObjectBlock._replace_single` (the function that ultimately performs the substitution) uses `rx.search(s)` / `rx.sub(value, s)` which match anywhere in the string. Because `replace_list` (used by `Series.replace` / `DataFrame.replace` whenever `to_replace` and `value` are list-like, including dicts) now gates the substitution by this precomputed mask (`new_values[filt][mask] = f(new_values[filt][mask])` in `_replace_single`, and the early-return `if mask.any():` in `_replace_coerce`), strings where the regex only matches in the middle are no longer touched.\n\nReproducer:\n```python\n>>> import pandas as pd\n>>> s = pd.Series(['foo', 'oo', 'bar'])\n>>> s.replace(['oo'], ['X'], regex=True)\n```\nPrior to this commit the result was `['fX', 'X', 'bar']` (the `'oo'` substring inside `'foo'` was substituted via `rx.sub`). After the commit the precomputed mask is `[False, True, False]` (since `re.match('oo', 'foo')` returns `None`), so `'foo'` is skipped and the result becomes `['foo', 'X', 'bar']`. The same regression hits `DataFrame.replace([...patterns...], [...values...], regex=True)` and any dict-form replacement that funnels into `replace_list`. Existing regex tests in `pandas/tests/frame/test_replace.py::test_regex_replace_list_*` happen to use patterns that always match at index 0 (`r'\\s*\\.\\s*'`, `r'e|f|g'`, `r'a'`, etc.), so they do not exercise this path.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n-                          else False)\n+        op = np.vectorize(lambda x: bool(re.search(b, x)) if isinstance(x, str)\n+                          else False)\n"
+  },
+  {
+    "file": "pandas/core/internals/blocks.py",
+    "line": 2605,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Chained-indexing assignment `new_values[filt][mask] = ...` only mutates `new_values` because `filt` happens to be `slice(None)` on the new code path; any future caller that passes a `filter=` together with a mask will silently drop the writes.",
+    "detail": "In `ObjectBlock._replace_single`, when a `mask` is supplied the code does `new_values[filt][mask] = f(new_values[filt][mask])`. If `filter` is `None` (the only case actually triggered by the new `_replace_coerce` callers) `filt` is `slice(None)` and the inner indexing returns a view, so the assignment propagates back into `new_values`. But if a caller ever passes a non-None `filter`, the code takes the `filt = self.mgr_locs.isin(filter).nonzero()[0]` branch \u2014 fancy indexing \u2014 which returns a *copy*, and the masked write is silently lost (NumPy chained-assignment trap). This is fragile latent behavior introduced by the diff (the previous code only had `new_values[filt] = f(new_values[filt])`, a single non-chained assignment). At minimum the mask path should compose a single index expression, e.g. `new_values[np.ix_(filt_idx, mask)]` or by intersecting `filt` with `mask` and assigning once.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]
