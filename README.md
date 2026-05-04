@@ -1,71 +1,156 @@
 # code-review-agent
 
-A code-review agent harness, built **twice** — once on the bare Anthropic
-Client SDK, once on the Claude Agent SDK — so the head-to-head numbers
-make a clean pitch about agentic harness design.
+An agentic code-review harness built **twice** — once on the Anthropic
+Client SDK, once on the Claude Agent SDK — for head-to-head comparisons
+of agentic patterns. Includes a CodeRabbit-style **Learnings** vector
+store: tag the bot on a PR with a correction and it remembers the
+lesson for future reviews of the same codebase.
 
-The product of the project is the comparison, not the reviewer. See
-[`docs/PLAN.md`](docs/PLAN.md) for the multi-phase plan and
-[`docs/architecture.md`](docs/architecture.md) for the operational
-reference.
+## Quick start
 
-## What's in here today
-
-- `agent_sdk/offload_runner.py`, `client_sdk/offload_runner.py` —
-  Phase-0 experiment: same `fetch_url` tool on both SDKs, measures how
-  much of the tool output each path lets into the model's context. Run
-  via `compare.py`.
-- `shared/findings.py` — the `Finding` dataclass + JSON serializer that
-  both reviewers will eventually fill (Phase 1.1).
-- `code-review-baseline/ai-code-reviewer/` — the OpenAI-based baseline
-  this project is porting and benchmarking against (pinned submodule).
-- The reviewer modules (`*/reviewer.py`) and the rest of the `shared/`
-  utilities land in Phase 1.
-
-## Setup
-
-Uses [**uv**](https://docs.astral.sh/uv/) for dependency and venv
-management. Install uv if you don't have it:
+Review a real GitHub PR end-to-end with the Agent SDK at maximum effort:
 
 ```bash
-brew install uv         # macOS
-# or: curl -LsSf https://astral.sh/uv/install.sh | sh
+# 1. Install
+brew install uv ast-grep gh                  # macOS (or use upstream installers)
+uv sync                                       # creates .venv, installs deps
+git submodule update --init                   # baseline (pinned commit)
+
+# 2. Authenticate
+gh auth login                                 # for cloning + reading PRs
+cp .env.example .env                          # then fill in the 5 keys (see below)
+
+# 3. Run the reviewer on any PR URL
+uv run python scripts/github/review_pr.py \
+  https://github.com/<owner>/<repo>/pull/<n>
 ```
 
-Then from this directory:
+The agent clones the PR, investigates the diff with `read_file_section`,
+`bash`, `ast_search`, and `grep` tools, files structured findings, and
+posts them as a single GitHub Pull Request Review with inline
+line-anchored comments + a summary body. Default model:
+`claude-opus-4-7` at `effort="max"` (the most capable mode).
+
+> **Important — collaborator requirement.** The bot account
+> (`Working-Ant` by default) must be a **collaborator on the target
+> repository with at least Write access**. The script's pre-flight
+> checks fail fast if not, so you don't waste a 2-minute clone before
+> finding out. To rebrand the handle, change `LEARNINGS_HANDLE` in
+> `.env` and use a different bot user's PAT.
+
+### Required `.env` keys
+
+| Key | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | Claude API for the reviewer model |
+| `GITHUB_REVIEW_BOT_TOKEN` | Bot user's personal-access token (used to POST the review) |
+| `VOYAGE_API_KEY` | Voyage `voyage-code-3` embeddings (Learnings layer) |
+| `QDRANT_URL` | Qdrant Cloud cluster URL |
+| `QDRANT_API_KEY` | Qdrant Cloud API key |
+
+The Learnings layer (Voyage + Qdrant) is **strictly additive** — the
+reviewer keeps running and posts findings even if those services are
+unreachable, just without the past-learnings prompt block.
+
+---
+
+## Beyond the quick start
+
+### Tuning effort + reviewer choice
+
+The Agent SDK reviewer's effort level is set by the `EFFORT` constant
+in `agent_sdk/reviewer.py`. Defaults to `"max"`. Other options, in
+order of capability and cost: `"low" | "medium" | "high" | "xhigh" |
+"max"`. Lower effort is faster and cheaper but finds fewer bugs. See
+`docs/PLAN.md` for the effort-frontier data we collected during
+Phase 2.3.
+
+The **Client SDK** reviewer (`client_sdk/reviewer.py`) uses the
+Anthropic SDK directly with a hand-rolled tool loop, 3-breakpoint
+prompt caching, and the same `Finding` schema as the Agent SDK. Useful
+for comparing harness vs. bare-loop economics — see
+[`docs/headtohead.md`](docs/headtohead.md) for the full per-fixture
+numbers.
+
+### Evaluation harness — sweep the fixture suite
+
+`scripts/run_suite.py` runs either reviewer across the 7 planted-bug
+Sentry fixtures and writes a `suite_NNN.md` table with cost / turns /
+findings / line-hit per fixture:
 
 ```bash
-uv sync                       # creates .venv and installs locked deps
-cp .env.example .env          # then fill in ANTHROPIC_API_KEY
-git submodule update --init   # pull in the baseline (pinned commit)
+uv run python scripts/run_suite.py --sdk agent              # Agent SDK
+uv run python scripts/run_suite.py --sdk client             # Client SDK
 ```
 
-Phase 1.6+ (the agentic reviewer) also needs [`ast-grep`](https://ast-grep.github.io)
-on PATH for structural code search:
+`scripts/headtohead.py` consolidates the latest run of each SDK into
+[`docs/headtohead.md`](docs/headtohead.md) for the comparison story.
+
+### The Learnings layer (Phase 6)
+
+Tag the bot on a PR review comment with
+`@Working-Ant {learn|remember|note|teach} <text>` and the capture
+daemon will:
+
+1. Extract the @mention as a learning anchored to the AST unit
+   (function / method / module-scope) containing the comment line.
+2. Embed the code chunk via `voyage-code-3` and store it in Qdrant
+   Cloud (one collection per repo, named
+   `learnings__<owner>_<repo>`).
+3. On every subsequent review, retrieve high-similarity past learnings
+   for the new diff and inject them into the reviewer's prompt as a
+   `<past_learnings>` block.
+
+Run the capture daemon (one-shot or watching):
 
 ```bash
-brew install ast-grep         # macOS arm64: `arch -arm64 brew install ast-grep`
-# or: cargo install ast-grep
+uv run python -m learnings.capture --repo owner/repo --once   # process once + exit
+uv run python -m learnings.capture --repo owner/repo --watch  # poll forever
 ```
 
-The Agent SDK path requires the `claude` CLI on `PATH` (Claude Code must
-be installed locally — the SDK shells out to it). For OAuth/Max-billed
-runs, log in with `claude /login` once.
+Natural-language replies (e.g.
+`@Working-Ant in this codebase that pattern is intentional`) also work
+via a Haiku-classifier fallback. If the comment is a reply to one of
+the bot's own review comments, the parent's text is captured as
+`bug_context` for richer retrieval signal.
 
-## Run (Phase-0 offload comparison)
+The `scripts/demo.py` launcher spawns the capture daemon and the
+reviewer together for a single-command end-to-end demo:
 
 ```bash
-uv run python compare.py                              # default: Wikipedia article
-uv run python compare.py https://example.com         # small-page sanity
-uv run python compare.py --use-oauth                 # bill Agent SDK via Max
+uv run python scripts/demo.py --repo owner/repo --pr <n>
 ```
 
-Each run writes a per-run trace and result file under
-`agent_sdk/{traces,results}/run_NNN.txt` and the same under
-`client_sdk/`. The headline numbers print to stdout in a side-by-side
-table (cost, turns, tokens, tool-result chars).
+### Inspecting state
 
-## Layout
+- **Stored learnings:** visible in your Qdrant Cloud console under the
+  collection `learnings__<owner>_<repo>`.
+- **Capture daemon's per-repo cursor:**
+  `shared/memory/learnings_state.json` (gitignored — runtime state).
+- **Reviewer traces (full tool-by-tool log):**
+  `agent_sdk/traces/run_NNN.txt` (Agent SDK) and
+  `client_sdk/traces/run_NNN.txt` (Client SDK).
+- **Reviewer findings (header + JSON):**
+  `agent_sdk/results/run_NNN.txt` and `client_sdk/results/run_NNN.txt`.
 
-See [`docs/architecture.md`](docs/architecture.md) for the full repo
-layout and the design-pattern map.
+### Architecture + design
+
+- [`docs/architecture.md`](docs/architecture.md) — operational
+  reference: where each pattern lives, what each module exposes.
+- [`docs/PLAN.md`](docs/PLAN.md) — multi-phase plan, empirical-evidence
+  tables, lessons learned per phase.
+- [`docs/headtohead.md`](docs/headtohead.md) — Client SDK vs Agent SDK
+  comparison numbers across the fixture suite.
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) — design specs
+  for individual phases (Phase 5 GitHub integration, Phase 6 Learnings
+  vector DB).
+
+## Project conventions
+
+- Each new file ≤ 200 LOC (load-bearing for pitch-explainability).
+- Comments explain *why*, not *what*.
+- Plain Python — no LangChain, no agent frameworks. The whole point is
+  comparing the two SDKs directly.
+- Stacked PRs with one merge per phase. CR triage SOP at
+  `.claude/agents/coderabbit-triage.md`: Critical/Major fix in-PR,
+  Minor/Nit reply-only.

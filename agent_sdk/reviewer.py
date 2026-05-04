@@ -92,10 +92,13 @@ MAX_TURNS = 100  # parity with client_sdk/reviewer.py
 # (the harness sizes it internally), but we pin the same number the
 # Client SDK uses so any drift between SDKs is documented.
 MAX_TOKENS = 16000
-# Pin the reasoning effort so the comparison is at the same level as
-# the Client SDK reviewer (Phase 2.2). "xhigh" is the Opus-4.7
-# recommendation for coding/agentic work per the API docs.
-EFFORT = "xhigh"
+# Default to "max" — the most capable mode, matching the README's
+# quick-start framing ("review a real PR with maximum effort"). For
+# benchmarking + Client-vs-Agent comparisons (Phase 2.2 / 2.3 sweeps)
+# pin this to "high" or "xhigh" so the two SDKs stay at the same
+# reasoning depth. Other valid values: "low" | "medium" | "high" |
+# "xhigh" | "max".
+EFFORT = "max"
 
 RESULTS_DIR = Path(__file__).parent / "results"
 TRACES_DIR = Path(__file__).parent / "traces"
