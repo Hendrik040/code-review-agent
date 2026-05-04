@@ -2099,19 +2099,31 @@ And add (before the helper):
 
 ```python
 def _infer_repo_slug(repo: Repo) -> str | None:
-    """Best-effort owner/name from `git remote get-url origin`."""
+    """Best-effort owner/name from `git remote get-url origin`. Returns
+    None for non-GitHub remotes or any failure.
+
+    Boundary-aware match on `github.com` so hosts like `notgithub.com`
+    don't accidentally route into a GitHub-canonical collection
+    (cross-tenant risk in the shared Qdrant cluster — spec §6).
+    """
     try:
         url = repo.exec("git remote get-url origin", timeout=5).stdout.strip()
-        # Accept https://github.com/x/y(.git) or git@github.com:x/y(.git)
-        url = url.removesuffix(".git")
-        if "github.com" not in url:
-            return None
-        path = url.split("github.com")[-1].lstrip("/:")
-        parts = path.split("/")
-        if len(parts) >= 2:
-            return f"{parts[0]}/{parts[1]}"
     except Exception:
         return None
+    url = url.removesuffix(".git")
+    # Two recognized forms:
+    #   https://github.com/owner/repo  -> "://github.com/" boundary
+    #   git@github.com:owner/repo      -> "@github.com:" boundary
+    # GitHub Enterprise (github.foo.com) is intentionally rejected for v1.
+    if "://github.com/" in url:
+        path = url.split("://github.com/", 1)[1]
+    elif "@github.com:" in url:
+        path = url.split("@github.com:", 1)[1]
+    else:
+        return None
+    parts = path.split("/")
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return f"{parts[0]}/{parts[1]}"
     return None
 ```
 
@@ -2139,7 +2151,12 @@ In `_dispatch_tool` (around line 164), add a branch:
                 k=int(args.get("k", 5)),
             )
         except Exception as e:
-            return f"<results error={str(e)!r}/>"
+            # Sanitize: only leak the exception class name to the model
+            # and to trace files. Full repr (which may embed Voyage /
+            # Qdrant URL fragments containing API keys) goes to debug log
+            # only. Spec §8.2 — fail-open with logging.
+            logging.warning("search_learnings tool failed: %r", e)
+            return f"<results error={type(e).__name__!r}/>"
 ```
 
 Place this branch BEFORE the `return f"Error: unknown tool {name!r}"` line.
