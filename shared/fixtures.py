@@ -20,10 +20,11 @@ tempdir or a Daytona sandbox.
 
 from __future__ import annotations
 
+import shlex
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 from sandbox.local import LocalRepo
 from sandbox.repo import Repo, get_backend
@@ -167,6 +168,144 @@ def materialize(fixture: Fixture) -> Iterator[MaterializedFixture]:
             head_ref=fixture.head_ref,
             expected=fixture.expected,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Upstream-commit materialization (BugsInPy bench)
+# --------------------------------------------------------------------------- #
+#
+# The bench reuses the Repo abstraction but populates from a real upstream
+# project's git history rather than tests/fixtures/<name>/v1+v2/. Two
+# entry shapes:
+#
+#   blame mode      — populate the sandbox at <introducing_commit>; the
+#                     reviewer diffs <introducing_commit>^..<introducing_commit>
+#                     i.e., the actual historical PR-shaped change that
+#                     introduced the bug.
+#
+#   synthetic_revert — populate at <fixed_commit>; apply the maintainer's
+#                      fix patch in REVERSE on top, commit, and use that
+#                      synthetic commit as head. base = <fixed_commit>.
+#                      Used when blame doesn't converge cleanly.
+#
+# Both yield (repo, base_ref, head_ref) — the same shape every reviewer
+# already consumes.
+
+
+def _populate_from_upstream(
+    repo: Repo,
+    github_url: str,
+    head_commit: str,
+) -> None:
+    """Fetch ONLY the head_commit and its parent into the sandbox.
+
+    A full clone of pandas/scrapy/etc. would dominate the sweep wall
+    time. We use the init+remote+fetch--depth-2 pattern to grab just
+    the two commits the reviewer actually needs to diff.
+    """
+    cmd = (
+        "git init -q && "
+        "git config user.email bench@local && "
+        "git config user.name bench && "
+        f"git remote add origin {shlex.quote(github_url)} && "
+        f"git -c protocol.version=2 fetch --depth 2 --no-tags "
+        f"origin {shlex.quote(head_commit)} && "
+        f"git checkout -q {shlex.quote(head_commit)}"
+    )
+    res = repo.exec(cmd, timeout=600)
+    if not res.ok:
+        raise RuntimeError(
+            f"upstream fetch failed for {github_url}@{head_commit[:8]}: "
+            f"exit={res.exit_code} stderr={res.stderr[:300]!r}"
+        )
+
+
+def _apply_reverse_patch(repo: Repo, patch_text: str) -> str:
+    """Apply patch_text in REVERSE on top of HEAD, commit, return new SHA."""
+    repo.upload_bytes(patch_text.encode(), ".bench_patch.txt")
+    res = repo.exec(
+        "git apply -R --whitespace=nowarn .bench_patch.txt && "
+        "rm .bench_patch.txt && "
+        "git add -A && "
+        "git commit -q -m head && "
+        "git rev-parse HEAD",
+        timeout=60,
+    )
+    if not res.ok:
+        raise RuntimeError(
+            f"reverse-patch apply failed: exit={res.exit_code} "
+            f"stderr={res.stderr[:300]!r}"
+        )
+    return res.stdout.strip().splitlines()[-1]
+
+
+@contextmanager
+def materialize_pr(
+    github_url: str,
+    base_sha: str,
+    head_sha: str,
+    *,
+    name: str = "martian-pr",
+) -> Iterator[tuple[Repo, str, str]]:
+    """Yield (repo, base_sha, head_sha) for a real GitHub PR.
+
+    Differs from materialize_upstream: base != head^. Both commits are
+    fetched explicitly (depth-1 each). Used by the Martian bench where
+    the base ref is whatever the PR was branched from on the fork org.
+    """
+    repo = _make_repo(name)
+    with repo:
+        cmd = (
+            "git init -q && "
+            "git config user.email bench@local && "
+            "git config user.name bench && "
+            f"git remote add origin {shlex.quote(github_url)} && "
+            f"git -c protocol.version=2 fetch --depth 1 --no-tags "
+            f"origin {shlex.quote(base_sha)} && "
+            f"git -c protocol.version=2 fetch --depth 1 --no-tags "
+            f"origin {shlex.quote(head_sha)} && "
+            f"git checkout -q {shlex.quote(head_sha)}"
+        )
+        res = repo.exec(cmd, timeout=600)
+        if not res.ok:
+            raise RuntimeError(
+                f"materialize_pr failed for {github_url} "
+                f"({base_sha[:8]}..{head_sha[:8]}): "
+                f"exit={res.exit_code} stderr={res.stderr[:300]!r}"
+            )
+        yield repo, base_sha, head_sha
+
+
+@contextmanager
+def materialize_upstream(
+    github_url: str,
+    head_commit: str,
+    *,
+    reverse_patch: Optional[str] = None,
+    name: str = "bench",
+) -> Iterator[tuple[Repo, str, str]]:
+    """Yield (repo, base_ref, head_ref) for an upstream-derived bench entry.
+
+    blame mode (`reverse_patch=None`):
+        Sandbox is at `head_commit`; base = `head_commit^`, head = `head_commit`.
+
+    synthetic_revert mode (`reverse_patch=<patch text>`):
+        Sandbox is at `head_commit` (= the maintainer's fix commit); the
+        reverse-patch is applied + committed; base = `head_commit`,
+        head = the synthetic SHA returned by `_apply_reverse_patch`.
+
+    The repo lifecycle is bracketed by this context manager.
+    """
+    repo = _make_repo(name)
+    with repo:
+        _populate_from_upstream(repo, github_url, head_commit)
+        if reverse_patch is None:
+            base_ref = f"{head_commit}^"
+            head_ref = head_commit
+        else:
+            head_ref = _apply_reverse_patch(repo, reverse_patch)
+            base_ref = head_commit
+        yield repo, base_ref, head_ref
 
 
 # --------------------------------------------------------------------------- #

@@ -315,6 +315,7 @@ async def _run_async(
     *,
     run_id: int | None,
     use_oauth: bool,
+    effort: str = EFFORT,
 ) -> dict[str, Any]:
     if run_id is None:
         run_id = _next_run_id()
@@ -480,7 +481,7 @@ async def _run_async(
         disallowed_tools=["ToolSearch"],
         permission_mode="bypassPermissions",
         max_turns=MAX_TURNS,
-        effort=EFFORT,
+        effort=effort,
         # `cwd` is intentionally left unset. With harness Read/Bash/
         # Grep disallowed, there's nothing on the harness side that
         # would honor it — every IO lives behind our MCP proxies and
@@ -597,12 +598,18 @@ def run(
     *,
     run_id: int | None = None,
     use_oauth: bool = False,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Synchronous wrapper matching `client_sdk.reviewer.run` signature.
 
     Phase 4: `repo` is a `sandbox.repo.Repo`. The suite runner and
     `compare.py` (Phase 3.1) both expect this sync entry point;
     internally we drive the async query() generator via asyncio.run().
+
+    `effort` (BugsInPy bench, Phase 6) overrides the module-level
+    `EFFORT` default for this run only. Valid values: "low", "medium",
+    "high", "xhigh", "max". When None, the existing `EFFORT` constant
+    is used (preserves prior fixture-suite behavior unchanged).
     """
     load_dotenv(override=True)
     return asyncio.run(
@@ -612,5 +619,6 @@ def run(
             head_ref=head_ref,
             run_id=run_id,
             use_oauth=use_oauth,
+            effort=effort or EFFORT,
         )
     )

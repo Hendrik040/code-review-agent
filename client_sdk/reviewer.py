@@ -243,6 +243,7 @@ def run(
     *,
     run_id: int | None = None,
     use_oauth: bool = False,  # ignored on Client SDK; kept for I/O symmetry
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Drive one code review against `repo`.
 
@@ -251,7 +252,13 @@ def run(
     touches the filesystem directly — every tool call goes through
     `_dispatch_tool(repo, ...)` which routes to `shared/agent_tools.py`
     wrappers, which in turn call `repo.exec` / `repo.upload_bytes`.
+
+    `effort` (BugsInPy bench, Phase 6) overrides the module-level
+    `EFFORT` default for this run only. Valid values: "low", "medium",
+    "high", "xhigh", "max". When None, the existing constant is used
+    so prior fixture-suite behavior is unchanged.
     """
+    effort = effort or EFFORT
     load_dotenv(override=True)
     if run_id is None:
         run_id = _next_run_id()
@@ -310,7 +317,7 @@ def run(
             system=SYSTEM_BLOCKS,
             tools=ALL_TOOLS,
             messages=cached_messages,
-            output_config={"effort": EFFORT},
+            output_config={"effort": effort},
         )
         num_turns += 1
         for k in total_usage:
