@@ -82,3 +82,25 @@ def test_list_pr_review_comments_filters_since_id():
     with patch("github.pr_fetch._gh_json_paginated", return_value=fake):
         cs = list_pr_review_comments(pr, since_id=100)
     assert [c.comment_id for c in cs] == [200]
+
+
+def test_list_pr_review_comments_skips_null_line_outdated_threads():
+    """GitHub returns line=null for outdated review threads (anchored
+    line was rewritten) and file-level comments. The downstream chunker
+    needs a real line number; coercing to 0 would silently produce
+    garbage AST chunks. Drop these at the source."""
+    fake = [
+        {"id": 1, "path": "a.py", "line": None, "start_line": None,
+         "body": "@Working-Ant learn outdated", "user": {"login": "alice"},
+         "created_at": "2026-05-03T10:00:00Z"},
+        {"id": 2, "path": "b.py", "line": 42, "start_line": None,
+         "body": "@Working-Ant learn current", "user": {"login": "alice"},
+         "created_at": "2026-05-03T11:00:00Z"},
+    ]
+    pr = PullRequest(owner="o", repo="r", number=1, base_sha="b", head_sha="h",
+                     title="t", html_url="https://github.com/o/r/pull/1")
+    with patch("github.pr_fetch._gh_json_paginated", return_value=fake):
+        cs = list_pr_review_comments(pr)
+    # Outdated comment (id=1, line=null) is dropped; current one kept.
+    assert [c.comment_id for c in cs] == [2]
+    assert cs[0].line_start == 42 and cs[0].line_end == 42

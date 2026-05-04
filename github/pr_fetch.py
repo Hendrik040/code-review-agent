@@ -171,7 +171,14 @@ def list_open_prs(owner_repo: str, *, since: str | None = None) -> list[PullRequ
 
 def list_pr_review_comments(pr: PullRequest, *, since_id: int | None = None) -> list[Comment]:
     """List review comments on a PR. Optional `since_id` filters out
-    comment ids ≤ since_id (matches our cursor semantics)."""
+    comment ids ≤ since_id (matches our cursor semantics).
+
+    Skips comments where GitHub's `line` is null — those are outdated
+    review threads (the anchored line was rewritten away) or file-level
+    comments. Phase 6's downstream chunker needs a real line number;
+    a `Comment(line_start=0, line_end=0)` would silently return garbage
+    AST chunks. Drop here at the source.
+    """
     raw = _gh_json_paginated(
         f"repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/comments?per_page=100"
     )
@@ -180,7 +187,9 @@ def list_pr_review_comments(pr: PullRequest, *, since_id: int | None = None) -> 
         cid = int(item["id"])
         if since_id is not None and cid <= since_id:
             continue
-        line = int(item.get("line") or 0)
+        if item.get("line") is None:
+            continue  # outdated thread or file-level comment — skip
+        line = int(item["line"])
         start = int(item.get("start_line") or line)
         out.append(Comment(
             comment_id=cid,
