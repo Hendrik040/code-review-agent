@@ -189,6 +189,9 @@ def list_pr_review_comments(pr: PullRequest, *, since_id: int | None = None) -> 
             continue
         if item.get("line") is None:
             continue  # outdated thread or file-level comment — skip
+        if item.get("side") == "LEFT":
+            continue  # comment anchored on a deleted/base-side line — line
+                      # numbers refer to BASE side, but the chunker reads HEAD
         line = int(item["line"])
         start = int(item.get("start_line") or line)
         out.append(Comment(

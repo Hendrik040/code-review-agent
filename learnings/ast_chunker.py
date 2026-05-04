@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +27,8 @@ _PY_CLASS_PATTERN = "class $NAME"
 
 _AST_TIMEOUT_S = 15.0
 _FALLBACK_WINDOW = 50  # lines on each side when no AST unit fits
+
+log = logging.getLogger("learnings.ast_chunker")
 
 
 @dataclass(frozen=True)
@@ -48,12 +49,12 @@ class _AstNode:
 
 
 def _run_ast_grep(file: Path, pattern: str) -> list[dict]:
-    cmd = (
-        f"ast-grep run -p {shlex.quote(pattern)} "
-        f"--lang python --json=stream {shlex.quote(str(file))}"
-    )
+    cmd = [
+        "ast-grep", "run", "-p", pattern,
+        "--lang", "python", "--json=stream", str(file),
+    ]
     proc = subprocess.run(
-        cmd, shell=True, capture_output=True, text=True, timeout=_AST_TIMEOUT_S
+        cmd, capture_output=True, text=True, timeout=_AST_TIMEOUT_S
     )
     if proc.returncode not in (0, 1):
         raise RuntimeError(f"ast-grep failed: {proc.stderr}")
@@ -130,7 +131,7 @@ def chunk_for_anchor(file: Path, *, line_start: int, line_end: int) -> Chunk:
         nodes = _collect_nodes(file)
     except Exception as exc:
         # Spec §8.1 — log + fall back, never block the pipeline.
-        logging.warning("ast chunker fell back: file=%s err=%s", file, exc)
+        log.warning("ast chunker fell back: file=%s err=%s", file, exc)
         return _fallback_window(file, line_start, line_end, kind="fallback_window")
 
     enclosing = [
@@ -175,7 +176,8 @@ def chunks_for_diff(repo_path: Path, changed: dict[str, list[int]]) -> list[Chun
             continue
         try:
             nodes = _collect_nodes(full_path)
-        except Exception:
+        except Exception as exc:
+            log.warning("ast chunker skipped file=%s err=%s", full_path, exc)
             continue
         funcs = [n for n in nodes if n.kind == "function"]
         for line in lines:

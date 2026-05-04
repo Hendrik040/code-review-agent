@@ -69,11 +69,11 @@ def retrieve_for_diff(
             existing = by_id.get(h.point_id)
             if existing is None or h.score > existing.score:
                 by_id[h.point_id] = h
-    raw_hits = list(by_id.values())
+    raw_hits = sorted(by_id.values(), key=lambda h: h.score, reverse=True)
     log.info(
         "learnings retrieve: repo=%s chunks=%d raw_hits=%d threshold=%.3f scores=%s",
         repo, len(chunks), len(raw_hits), threshold,
-        [f"{h.score:.3f}" for h in sorted(raw_hits, key=lambda x: -x.score)[:10]],
+        [f"{h.score:.3f}" for h in raw_hits[:10]],
     )
     return apply_threshold(raw_hits, threshold)
 
