@@ -138,3 +138,57 @@ def fetch_diff_hunks(
         if hunks:
             out[entry["filename"]] = hunks
     return out
+
+
+@dataclass(frozen=True)
+class Comment:
+    """A PR review comment anchored to a file + line range."""
+    comment_id: int
+    file_path: str
+    line_start: int       # 1-indexed; equals line_end for single-line
+    line_end: int
+    body: str
+    author: str
+    created_at: str       # ISO-8601
+
+
+def list_open_prs(owner_repo: str, *, since: str | None = None) -> list[PullRequest]:
+    """List open PRs in `owner/repo`. Optional `since` is ISO-8601;
+    PRs with `updated_at < since` are filtered out client-side."""
+    raw = _gh_json_paginated(f"repos/{owner_repo}/pulls?state=open&per_page=100")
+    owner, repo = owner_repo.split("/", 1)
+    out: list[PullRequest] = []
+    for item in raw:
+        if since and item.get("updated_at", "") < since:
+            continue
+        out.append(PullRequest(
+            owner=owner, repo=repo, number=int(item["number"]),
+            base_sha=item["base"]["sha"], head_sha=item["head"]["sha"],
+            title=item["title"], html_url=item["html_url"],
+        ))
+    return out
+
+
+def list_pr_review_comments(pr: PullRequest, *, since_id: int | None = None) -> list[Comment]:
+    """List review comments on a PR. Optional `since_id` filters out
+    comment ids ≤ since_id (matches our cursor semantics)."""
+    raw = _gh_json_paginated(
+        f"repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/comments?per_page=100"
+    )
+    out: list[Comment] = []
+    for item in raw:
+        cid = int(item["id"])
+        if since_id is not None and cid <= since_id:
+            continue
+        line = int(item.get("line") or 0)
+        start = int(item.get("start_line") or line)
+        out.append(Comment(
+            comment_id=cid,
+            file_path=item.get("path", ""),
+            line_start=start,
+            line_end=line,
+            body=item.get("body", ""),
+            author=(item.get("user") or {}).get("login", ""),
+            created_at=item.get("created_at", ""),
+        ))
+    return out
