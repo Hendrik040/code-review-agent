@@ -20,16 +20,30 @@ git submodule update --init                   # baseline (pinned commit)
 gh auth login                                 # for cloning + reading PRs
 cp .env.example .env                          # then fill in the 5 keys (see below)
 
-# 3. Run the reviewer on any PR URL
-uv run python scripts/github/review_pr.py \
+# 3. One command, full demo loop
+uv run python scripts/full_agent_loop.py \
   https://github.com/<owner>/<repo>/pull/<n>
 ```
 
-The agent clones the PR, investigates the diff with `read_file_section`,
-`bash`, `ast_search`, and `grep` tools, files structured findings, and
-posts them as a single GitHub Pull Request Review with inline
-line-anchored comments + a summary body. Default model:
-`claude-opus-4-7` at `effort="max"` (the most capable mode).
+That single command:
+
+1. Spawns the **Learnings capture daemon** in the background (polls
+   GitHub every 30s for new `@Working-Ant <call-word> <text>`
+   mentions on the watched repo).
+2. Runs the **Agent SDK reviewer** at `effort="max"` on the PR you
+   passed — clones the PR, investigates the diff with
+   `read_file_section`, `bash`, `ast_search`, and `grep` tools, files
+   structured findings, and posts them as a single GitHub Pull Request
+   Review with inline line-anchored comments + a summary body.
+3. Then **auto-re-runs the reviewer** every time the daemon captures a
+   new learning — no terminal interaction required after the first
+   command. Tag a finding on the PR with `@Working-Ant remember …`,
+   wait ~30s, watch the next review post with the new learning
+   surfaced in its prompt context. Ctrl-C ends the session.
+
+Use `--no-rerun` for the one-shot variant (initial review only, no
+auto-rerun loop). Use `scripts/github/review_pr.py <url>` directly if
+you want the reviewer alone with no daemon at all.
 
 > **Important — collaborator requirement.** The bot account
 > (`Working-Ant` by default) must be a **collaborator on the target
@@ -114,12 +128,9 @@ via a Haiku-classifier fallback. If the comment is a reply to one of
 the bot's own review comments, the parent's text is captured as
 `bug_context` for richer retrieval signal.
 
-The `scripts/demo.py` launcher spawns the capture daemon and the
-reviewer together for a single-command end-to-end demo:
-
-```bash
-uv run python scripts/demo.py --repo owner/repo --pr <n>
-```
+For the one-command end-to-end demo (capture daemon + reviewer +
+auto-rerun on new captures), use `scripts/full_agent_loop.py` — see
+the Quick Start above.
 
 ### Inspecting state
 
