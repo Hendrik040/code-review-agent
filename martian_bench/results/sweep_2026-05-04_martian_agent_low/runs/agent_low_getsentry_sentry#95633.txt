@@ -1,0 +1,49 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_low
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-05-04T05:10:24+00:00
+# finished: 2026-05-04T05:13:18+00:00
+# duration_s: 174.0
+# cost_usd: 0.5955
+# num_turns: 8
+# num_findings: 1
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 276
+# repo: DaytonaRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 8
+# cost (USD, harness-reported): 0.595460
+# cost (USD, public Opus 4 rate): 1.786379
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 23321, 'cache_read_input_tokens': 413737, 'output_tokens': 9711, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 23321}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 102, 'cache_read_input_tokens': 64379, 'cache_creation_input_tokens': 1036, 'cache_creation': {'ephemeral_5m_input_tokens': 1036, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 333,
+    "category": "resource",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close() shuts down the shared FixedQueuePool, breaking the consumer after the first rebalance",
+    "detail": "The FixedQueuePool is constructed once in ResultsStrategyFactory.__init__ (result_consumer.py:133) and the same instance is passed to every SimpleQueueProcessingStrategy created from create_with_partitions/create_thread_queue_parallel_worker (result_consumer.py:255). However, SimpleQueueProcessingStrategy.close() (and terminate()) call self.queue_pool.shutdown(), which sets every worker's shutdown flag, calls queue.shutdown(immediate=False) on every queue, and joins all worker threads. Arroyo invokes close() on the existing strategy whenever partitions are revoked/rebalanced before calling create_with_partitions again. After the first such close(), all worker threads are dead and all queues are in shutdown state. The next strategy that the factory builds will reuse this dead pool: messages submitted via queue_pool.submit() will land in queues whose shutdown was already called and whose workers exited, so offsets get tracked but never completed, commits stall, the in-memory buffers grow without bound, and consumer effectively hangs. Only the factory.shutdown() should be tearing the pool down (as it already does, result_consumer.py:184).",
+    "line_end": 336,
+    "suggested_fix": "    def close(self) -> None:\n        self.shutdown_event.set()\n        self.commit_thread.join(timeout=5.0)\n\n    def terminate(self) -> None:\n        self.shutdown_event.set()\n"
+  }
+]

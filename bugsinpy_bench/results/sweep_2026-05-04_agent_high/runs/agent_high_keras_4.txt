@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: keras#4
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# fixed_commit: 4185cbb50bfcae9cc30b0fc7b67e81d67a50a8ac
+# base_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^
+# head_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# started: 2026-05-04T02:28:42+00:00
+# finished: 2026-05-04T02:31:13+00:00
+# duration_s: 151.6
+# cost_usd: 0.7689
+# num_turns: 13
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 169
+# repo: DaytonaRepo
+# refs: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^..650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# turns: 13
+# cost (USD, harness-reported): 0.768908
+# cost (USD, public Opus 4 rate): 2.306723
+# usage: {'input_tokens': 22, 'cache_creation_input_tokens': 26371, 'cache_read_input_tokens': 721958, 'output_tokens': 9720, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 26371}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 282, 'cache_read_input_tokens': 63960, 'cache_creation_input_tokens': 2197, 'cache_creation': {'ephemeral_5m_input_tokens': 2197, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/optimizers.py",
+    "line": 580,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "TFOptimizer.iterations is incremented twice per training step",
+    "detail": "In TFOptimizer.get_updates, the code first appends `K.update_add(self.iterations, 1)` (which lowers to `tf.assign_add(self.iterations, 1)`) to self.updates, and then calls `self.optimizer.apply_gradients(grads, global_step=self.iterations)`. Per the tf.train.Optimizer contract, when `global_step` is not None, `apply_gradients` itself emits an op that increments `global_step` by 1. Both ops execute on every train step, so `self.iterations` advances by 2 each step instead of 1. This corrupts any state that relies on the iteration count (learning-rate schedules driven by global_step in the wrapped TF optimizer, user code reading `optimizer.iterations`, etc.) and will roughly halve the apparent training horizon for any schedule keyed off it.",
+    "line_end": 582,
+    "suggested_fix": "Either drop the manual increment (rely on apply_gradients to bump global_step) or stop passing `global_step=self.iterations` to apply_gradients:\n\n-        self.updates.append(K.update_add(self.iterations, 1))\n         opt_update = self.optimizer.apply_gradients(\n             grads, global_step=self.iterations)\n         self.updates.append(opt_update)"
+  },
+  {
+    "file": "keras/optimizers.py",
+    "line": 593,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "TFOptimizer.from_config overrides the base classmethod as an instance method",
+    "detail": "`Optimizer.from_config` (lines 108-110) is decorated with @classmethod and `optimizer_from_config` invokes it as `cls.from_config(config['config'])` (line 31). TFOptimizer overrides it with `def from_config(self, config): raise NotImplementedError` \u2014 without @classmethod. Because TFOptimizer is now registered in `all_classes['tfoptimizer']` (line 22), a deserialization attempt would call `TFOptimizer.from_config(config_dict)`, which Python treats as a plain function call, binding `config_dict` to `self` and leaving `config` unfilled. The user gets a confusing `TypeError: from_config() missing 1 required positional argument: 'config'` rather than the intended `NotImplementedError`. The override also breaks the base contract (instance method shadowing a classmethod).",
+    "line_end": 594,
+    "suggested_fix": "@classmethod\n    def from_config(cls, config):\n        raise NotImplementedError"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 62,
+    "category": "error",
+    "severity": "medium",
+    "summary": "save_model crashes for any model compiled with a TF optimizer wrapped via TFOptimizer",
+    "detail": "TFOptimizer's `get_config` raises NotImplementedError (line 590-591) and `weights` is a @property that raises NotImplementedError (line 587-588). save_model in keras/models.py unconditionally calls `model.optimizer.get_config()` (line 62) and `getattr(model.optimizer, 'weights')` (line 71) whenever the model has an optimizer. As a result, after this PR a user who does `model.compile(tf.train.AdamOptimizer()); model.save('foo.h5')` will get an opaque NotImplementedError and lose the ability to save the model at all \u2014 including the model architecture and weights, which are written before the optimizer block but never flushed because the exception aborts save_model. Either TFOptimizer should return an empty/sentinel config and an empty weights list, or save_model should detect TFOptimizer and skip the optimizer-config/optimizer-weights sections (with a warning).",
+    "line_end": 71,
+    "suggested_fix": "In keras/optimizers.py make TFOptimizer.weights and get_config degrade gracefully, e.g.:\n\n    @property\n    def weights(self):\n        return []\n\n    def get_config(self):\n        return {}\n\nor in save_model, wrap the optimizer-config/weights blocks in a try/except (or an isinstance(model.optimizer, TFOptimizer) guard) and warn instead of crashing."
+  }
+]

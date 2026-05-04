@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: luigi#26
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: 9038874aa8538540f83ddddf79f6cb3d52464cbf
+# fixed_commit: 13673fd488c25325db633b1d49e664fb937fabc2
+# base_ref: 9038874aa8538540f83ddddf79f6cb3d52464cbf^
+# head_ref: 9038874aa8538540f83ddddf79f6cb3d52464cbf
+# started: 2026-05-04T05:23:22+00:00
+# finished: 2026-05-04T05:26:47+00:00
+# duration_s: 205.5
+# cost_usd: 2.1027
+# num_turns: 25
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 288
+# repo: DaytonaRepo
+# refs: 9038874aa8538540f83ddddf79f6cb3d52464cbf^..9038874aa8538540f83ddddf79f6cb3d52464cbf
+# turns: 25
+# cost (USD, API rate): 2.102707
+# usage: {'input_tokens': 29, 'output_tokens': 12182, 'cache_creation_input_tokens': 30963, 'cache_read_input_tokens': 405377}
+# findings: 2
+# ---
+[
+  {
+    "file": "luigi/contrib/hadoop_jar.py",
+    "line": 100,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "SSH branch passes hadoop arguments unescaped; the remote shell will mangle args containing spaces or shell metacharacters",
+    "detail": "When ssh_config is set, run_job builds arglist = ['ssh', '-i', key_file, '-o', 'BatchMode=yes', 'user@host', 'hadoop', 'jar', JAR, MAIN, '-Dconf=val', arg1, ...] and hands it to subprocess.Popen via run_and_track_hadoop_job. ssh joins the trailing argv with single spaces (without re-quoting) and sends them to the remote login shell, which re-parses them using shell rules. This breaks several realistic inputs that work fine in the local path:\n\n1) BaseHadoopJobTask.jobconfs() (luigi/contrib/hadoop.py:621-634) emits entries such as 'mapred.job.name=\"<task_id>\"'. task_id can contain '()', '=', whitespace, etc. After ssh joining and remote-shell re-parsing, characters like '(' or ')' (when they appear unquoted, e.g. via fair-scheduler 'pool=foo(bar)' values) become syntax errors on the remote side, or unintended subshell invocations.\n2) job.main() values containing '$' (common for Java inner classes like 'org.example.Main$Mapper') are interpreted as shell variable references on the remote side and replaced with empty strings, so the wrong main class is launched.\n3) job_args from fix_paths(job) that are str(...)-coerced from arbitrary args() returns may also contain spaces/metacharacters, e.g. multi-word arguments are silently split into multiple tokens.\n\nThe local path (subprocess.Popen with shell=False) is immune because each element is a separate execve argv. The fix is to shell-quote each remote argument before extending arglist (e.g. via shlex.quote / pipes.quote), so the remote shell reconstructs the same argv that the local Popen would have. Without this, the SSH variant works only for the simplest inputs and silently corrupts realistic ones.",
+    "line_end": 102,
+    "suggested_fix": "@@\n-        hadoop_arglist += job_args\n-        arglist.extend(hadoop_arglist)\n+        hadoop_arglist += job_args\n+        if ssh_config:\n+            # ssh joins remaining argv with spaces and sends them to the\n+            # remote login shell, so each token must be shell-quoted.\n+            try:\n+                from shlex import quote as _sh_quote\n+            except ImportError:\n+                from pipes import quote as _sh_quote\n+            arglist.append(' '.join(_sh_quote(a) for a in hadoop_arglist))\n+        else:\n+            arglist.extend(hadoop_arglist)"
+  },
+  {
+    "file": "luigi/contrib/hadoop_jar.py",
+    "line": 138,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "ssh() docstring template uses None for key_file/username but run_job rejects those values",
+    "detail": "The HadoopJarJobTask.ssh() docstring documents the expected dict as `{\"host\": \"myhost\", \"key_file\": None, \"username\": None, [\"no_host_key_check\": False]}`, suggesting that key_file and username may legitimately be None. However, HadoopJarJobRunner.run_job (line 72) does `if not host or not key_file or not username or not job.jar(): raise Exception(...)`, which rejects None for both fields. A user who copies the documented template literally and only fills in `host` will hit the exception. Either the docstring should use placeholder strings (e.g. \"/path/to/key\", \"myuser\") and mark both as required, or run_job should accept None for key_file (let ssh use the default identity / agent) and username (fall back to local user). As written the documented contract and the runtime contract disagree.",
+    "line_end": 139,
+    "suggested_fix": "@@\n     def ssh(self):\n         \"\"\"\n         Set this to run hadoop command remotely via ssh. It needs to be a dict that looks like\n-        {\"host\": \"myhost\", \"key_file\": None, \"username\": None, [\"no_host_key_check\": False]}\n+        {\"host\": \"myhost\", \"key_file\": \"/path/to/id_rsa\", \"username\": \"myuser\",\n+         [\"no_host_key_check\": False]}\n+        host, key_file and username are all required.\n         \"\"\""
+  }
+]

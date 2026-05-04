@@ -1,0 +1,67 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_low
+# pr: ai-code-review-evaluation_sentry-greptile#3
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/3
+# original_upstream_url: https://github.com/getsentry/sentry/pull/94376
+# pr_title: feat(upsampling) - Support upsampled error count with performance optimizations
+# sdk: client_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 6ad6fe3899f630ccf922ce7ac681147dc7987435
+# n_goldens: 3
+# started: 2026-05-04T05:00:55+00:00
+# finished: 2026-05-04T05:03:47+00:00
+# duration_s: 172.1
+# cost_usd: 0.9061
+# num_turns: 13
+# num_findings: 3
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 277
+# repo: DaytonaRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 13
+# cost (USD, API rate): 0.906058
+# usage: {'input_tokens': 17, 'output_tokens': 5583, 'cache_creation_input_tokens': 15792, 'cache_read_input_tokens': 127319}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 27,
+    "category": "logic",
+    "severity": "high",
+    "summary": "60s eligibility cache produces wrong counts for up to 60s after allowlist changes; invalidate_upsampling_cache cannot fix it",
+    "detail": "is_errors_query_for_error_upsampled_projects caches the result of _are_all_projects_error_upsampled for 60 seconds keyed by (org_id, hash(project_ids)). The eligibility actually depends on the global option `issues.client_error_sampling.project_allowlist`. When that option changes (project added or removed), every cached (org, project_ids) entry across the whole system becomes stale, and queries will silently apply the wrong aggregation: either using sum(sample_weight) for projects that have been removed from the allowlist (over-counting / inflating error counts) or using count() for newly-allowlisted projects (under-counting). The `invalidate_upsampling_cache` helper takes a single (org_id, project_ids) tuple and so cannot invalidate the unbounded set of subset-tuples that are actually cached \u2014 it gives a false sense of correctness. For a metrics/aggregation pathway this is a correctness bug, not just a performance trade-off, and the docstring's 'eventual consistency is acceptable' is misleading because the wrong numeric results are user-visible. Either drop the cache or key it on a value that includes the allowlist version (e.g. a hash of the option value, with TTL still bounded), and provide a real bump-key invalidation.",
+    "line_end": 41,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 27,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Cache key uses hash(tuple(project_ids)) which can collide across distinct project sets in the same org",
+    "detail": "cache_key = f\"error_upsampling_eligible:{organization.id}:{hash(tuple(sorted(snuba_params.project_ids)))}\". Python's built-in hash on a tuple of ints is a 64-bit value, so within a single organization two genuinely different project-id sets can collide and share an eligibility verdict. If org A has project set {1,2,3} (all allowlisted -> True cached) and a colliding set {7,8} (only partially allowlisted), a query over {7,8} would read True from the cache and incorrectly apply upsampled_count() to projects that are not allowlisted, inflating reported error counts. Use a stable, collision-free key such as the sorted tuple stringified (e.g. ','.join of sorted ids).",
+    "line_end": null,
+    "suggested_fix": "-    cache_key = f\"error_upsampling_eligible:{organization.id}:{hash(tuple(sorted(snuba_params.project_ids)))}\"\n+    cache_key = f\"error_upsampling_eligible:{organization.id}:{','.join(str(p) for p in sorted(snuba_params.project_ids))}\""
+  },
+  {
+    "file": "src/sentry/search/events/datasets/discover.py",
+    "line": 1051,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "upsampled_count declares default_result_type=\"number\" but is aliased as `count` which is documented as integer",
+    "detail": "transform_query_columns_for_error_upsampling rewrites `count()` to `upsampled_count() as count`. The regular count() SnQLFunction has default_result_type=\"integer\" (discover.py:258), but upsampled_count is registered with default_result_type=\"number\" (discover.py:1051). Result-meta type for the field literally named `count` will therefore differ depending on whether upsampling kicked in, which can confuse downstream consumers (frontends/serializers) that branch on the meta type for an `integer` field. Use \"integer\" to match the contract of the alias.",
+    "line_end": null,
+    "suggested_fix": "-                    default_result_type=\"number\",\n+                    default_result_type=\"integer\","
+  }
+]

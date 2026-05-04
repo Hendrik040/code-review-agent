@@ -1,0 +1,57 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_high
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-05-04T05:18:53+00:00
+# finished: 2026-05-04T05:23:37+00:00
+# duration_s: 284.2
+# cost_usd: 3.9021
+# num_turns: 17
+# num_findings: 2
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 288
+# repo: DaytonaRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 17
+# cost (USD, API rate): 3.902128
+# usage: {'input_tokens': 21, 'output_tokens': 17260, 'cache_creation_input_tokens': 66825, 'cache_read_input_tokens': 902896}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 322,
+    "category": "logic",
+    "severity": "high",
+    "summary": "After strategy close()/terminate(), the FixedQueuePool is shut down but the factory still hands the dead pool to the next strategy created on rebalance, silently dropping every subsequent message.",
+    "detail": "ResultsStrategyFactory creates self.queue_pool once in __init__, and the same pool is reused for every call to create_with_partitions. On a Kafka rebalance, arroyo closes the current strategy: SimpleQueueProcessingStrategy.close() (and terminate()) call self.queue_pool.shutdown(), which calls q.shutdown(immediate=False) on every internal queue and joins the workers. When arroyo subsequently re-invokes factory.create_with_partitions for the new partition assignment, ResultsStrategyFactory.create_thread_queue_parallel_worker only checks 'assert self.queue_pool is not None' (factory.queue_pool is only set to None inside factory.shutdown(), not by the strategy). The new SimpleQueueProcessingStrategy is therefore wired to a dead pool: its commit thread is a fresh thread, but every queue is shut down and every worker thread has exited. SimpleQueueProcessingStrategy.submit will eventually call FixedQueuePool.submit -> work_queue.put(work_item), which raises queue.ShutDown. That exception is swallowed by the broad 'except Exception' in submit() and the offset is immediately added+completed in the offset tracker, so the new commit thread will happily commit those offsets to Kafka. Net effect: every message received after the first rebalance is silently dropped while the consumer reports progress (data loss). The pool needs to be (re-)created per strategy, or shutdown of the strategy must not tear down the shared pool.",
+    "line_end": 345,
+    "suggested_fix": "Either build the FixedQueuePool inside create_thread_queue_parallel_worker (and have the strategy own/shutdown it), or remove queue_pool.shutdown() from SimpleQueueProcessingStrategy.close()/terminate() and let only ResultsStrategyFactory.shutdown() tear it down."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 86,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "OffsetTracker.get_committable_offsets jumps over offset gaps after the first commit, violating the documented 'only commit when all prior offsets are processed' invariant.",
+    "detail": "mark_committed() removes every offset <= the committed offset from all_offsets. On the next call to get_committable_offsets, min_offset = min(all_offsets) is the lowest still-tracked offset, which can be strictly greater than last_committed + 1 if there was a gap (e.g. an offset whose worker is still running but whose containing range has already been partly committed, or - per the diff's own test test_thread_queue_parallel_offset_gaps - genuinely non-contiguous offsets at submit time). Because start = max(last_committed + 1, min_offset) collapses to min_offset, the for-loop starts at min_offset (which by definition is in all_offsets), so the gap between last_committed and min_offset is never detected and the tracker happily advances past it. test_thread_queue_parallel_offset_gaps in tests/sentry/uptime/consumers/test_results_consumer.py asserts the opposite ('Should not commit past the gap, but got ...'); that test will fail, and any real-world workload that relies on the contiguous-offset invariant (e.g. an in-flight offset whose add_offset has not yet executed because submit is on another thread) loses the at-least-once guarantee.",
+    "line_end": 96,
+    "suggested_fix": "Track the original min_offset (or the last fully-contiguous high-water mark) separately from all_offsets so that mark_committed does not erase the information needed to detect later gaps - e.g. iterate range(last_committed + 1, max_offset + 1) and break when an offset is missing from all_offsets, instead of starting at min_offset."
+  }
+]

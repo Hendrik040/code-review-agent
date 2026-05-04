@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_low
+# bug: luigi#18
+# bug_source: blame
+# sdk: agent_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: c521d59c5eacf6c19ce3c17a62f73e042fa0556e
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-05-04T01:12:26+00:00
+# finished: 2026-05-04T01:14:38+00:00
+# duration_s: 131.9
+# cost_usd: 0.6177
+# num_turns: 8
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 085
+# repo: DaytonaRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 8
+# cost (USD, harness-reported): 0.617682
+# cost (USD, public Opus 4 rate): 1.853045
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 27441, 'cache_read_input_tokens': 471981, 'output_tokens': 8405, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 27441}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 128, 'cache_read_input_tokens': 67051, 'cache_creation_input_tokens': 2484, 'cache_creation': {'ephemeral_5m_input_tokens': 2484, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "low",
+    "summary": "re_enable now routes through set_status(FAILED), which re-runs the disable-on-excessive-failures path and can immediately re-disable the task (and re-send the disable email) when disable_failures is small (e.g. 1).",
+    "detail": "The new SimpleTaskState.re_enable(task, config) clears task.failures, then calls self.set_status(task, FAILED, config). set_status's FAILED branch unconditionally calls task.add_failure() and then checks has_excessive_failures() (num_failures >= disable_failures). With disable_failures == 1 (or any setting where a single failure crosses the threshold), the freshly-cleared failure counter immediately re-trips the disable logic: scheduler_disable_time is set, new_status is forced back to DISABLED, and notifications.send_error_email is fired again. The task is then put into _status_tasks[DISABLED] and only its failure counter is cleared by the trailing task.failures.clear(); the scheduler_disable_time is left set, so the task ends up DISABLED again with a notification email on every prune cycle that re-enables it. The previous Task.re_enable() simply set status = FAILED without going through set_status, so this regression is new. Triggering scenario: any deployment with disable_failures configured to 1 (or, more generally, any reentry via re_enable where the post-clear single add_failure crosses the threshold).",
+    "line_end": 295,
+    "suggested_fix": "@@\n     def re_enable(self, task, config=None):\n         task.scheduler_disable_time = None\n         task.failures.clear()\n         if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+            # Move directly to FAILED without re-running the disable-on-failure path,\n+            # which would otherwise immediately re-disable when disable_failures is small.\n+            self._status_tasks[task.status].pop(task.id, None)\n+            self._status_tasks[FAILED][task.id] = task\n+            task.status = FAILED\n"
+  }
+]

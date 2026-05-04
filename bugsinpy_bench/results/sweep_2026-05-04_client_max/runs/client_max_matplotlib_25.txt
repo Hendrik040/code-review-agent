@@ -1,0 +1,88 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: matplotlib#25
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# fixed_commit: 184225bc5639fbd2f29c1253602806a8b6462d9f
+# base_ref: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf^
+# head_ref: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# started: 2026-05-04T05:43:09+00:00
+# finished: 2026-05-04T05:46:27+00:00
+# duration_s: 198.8
+# cost_usd: 2.3579
+# num_turns: 24
+# num_findings: 5
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 296
+# repo: DaytonaRepo
+# refs: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf^..9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# turns: 24
+# cost (USD, API rate): 2.357883
+# usage: {'input_tokens': 28, 'output_tokens': 13589, 'cache_creation_input_tokens': 29970, 'cache_read_input_tokens': 517567}
+# findings: 5
+# ---
+[
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1143,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Empty positions skip _is_horizontal initialization, breaking nearly every other method on the instance",
+    "detail": "In EventCollection.__init__, the branch `if len(positions) == 0: segments = []` returns without ever assigning `self._is_horizontal`. The attribute is set only inside the horizontal/vertical branches further down. Constructing `EventCollection([])` (or any empty sequence) and then calling any of `is_horizontal()`, `get_orientation()`, `get_positions()`, `set_positions()`, `set_orientation()`, `switch_orientation()`, `set_linelength()`, or `set_lineoffset()` will raise `AttributeError: 'EventCollection' object has no attribute '_is_horizontal'`. Empty input is an entirely reasonable construction (e.g., for events that will be appended via `add_positions` later), so this is a routine crash path.",
+    "line_end": 1144,
+    "suggested_fix": "@@\n         if len(positions) == 0:\n             segments = []\n+            if (orientation is None or orientation.lower() == 'none' or\n+                    orientation.lower() == 'horizontal'):\n+                self._is_horizontal = True\n+            elif orientation.lower() == 'vertical':\n+                self._is_horizontal = False\n+            else:\n+                raise ValueError(\"orientation must be 'horizontal' or 'vertical'\")\n         elif hasattr(positions, 'ndim') and positions.ndim > 1:"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1143,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "__init__ crashes on positions=None despite docstring stating positions \"Can be None\"",
+    "detail": "Both the source comment on line 1081 (`# Can be None.`) and the docstring on line 1093 (`a sequence of numerical values or a 1D numpy array.  Can be None`) advertise that `positions` may be None. However, line 1143 unconditionally calls `len(positions)`, which raises `TypeError: object of type 'NoneType' has no len()` when None is passed. `set_positions(None)` does handle None correctly via an explicit `positions is None` check, so the constructor should do the same to honor its own contract.",
+    "line_end": 1143,
+    "suggested_fix": "@@\n-        if len(positions) == 0:\n+        if positions is None or len(positions) == 0:\n             segments = []"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1314,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "get_linestyle returns the full list of linestyles instead of a single style as documented",
+    "detail": "EventCollection.get_linestyle is documented to return a single style (\"[ 'solid' | 'dashed' | 'dashdot' | 'dotted' ]\") and is the singular sibling of `get_linewidth` (line 1307) and `get_color` (line 1320), both of which correctly index `[0]` on the underlying list. As written, `return self.get_linestyles()` returns the entire list of dashes, contradicting the docstring and breaking the singular/plural pairing the rest of the class establishes. It is also a no-op override because the base Collection class already aliases `get_linestyle = get_linestyles` (collections.py:606).",
+    "line_end": 1314,
+    "suggested_fix": "@@\n     def get_linestyle(self):\n         '''\n         get the style of the lines used to mark each event\n         [ 'solid' | 'dashed' | 'dashdot' | 'dotted' ]\n         '''\n-        return self.get_linestyles()\n+        return self.get_linestyles()[0]"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1188,
+    "category": "logic",
+    "severity": "low",
+    "summary": "hasattr(positions, 'len') checks the wrong attribute name; the empty-input fast path is dead",
+    "detail": "Both `set_positions` (line 1188) and `add_positions` (line 1211) guard their early return with `hasattr(positions, 'len')`. Python sequences expose `__len__`, not `len`, so this attribute check is False for lists, tuples, numpy arrays, and every other sized container. The intended fast-return for empty input never fires. set_positions still happens to behave correctly for `[]` because the downstream code handles empty arrays, but the same code path will now call `np.asanyarray(positions).sort()` on a non-None scalar (e.g., 0) instead of bailing out, producing a confusing TypeError from `.sort()` on a 0-d array rather than the intended no-op. This is also clearly dead code as written.",
+    "line_end": 1188,
+    "suggested_fix": "@@\n     def set_positions(self, positions):\n         '''\n         set the positions of the events to the specified value\n         '''\n-        if positions is None or (hasattr(positions, 'len') and\n-                                 len(positions) == 0):\n+        if positions is None or (hasattr(positions, '__len__') and\n+                                 len(positions) == 0):\n             self.set_segments([])\n             return\n@@\n     def add_positions(self, position):\n         '''\n         add one or more events at the specified positions\n         '''\n-        if position is None or (hasattr(position, 'len') and\n-                                len(position) == 0):\n+        if position is None or (hasattr(position, '__len__') and\n+                                len(position) == 0):\n             return"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1150,
+    "category": "logic",
+    "severity": "low",
+    "summary": "__init__ mutates the caller's positions list/array via in-place sort, and breaks for tuples",
+    "detail": "Lines 1150 and 1155 call `positions.sort()` on the caller-supplied object without copying or coercing first. For lists and numpy arrays this silently reorders the caller's data (a surprising side effect of constructing the collection). For tuples \u2014 which the docstring's \"sequence of numerical values\" admits \u2014 this raises `AttributeError: 'tuple' object has no attribute 'sort'` instead of the intended ValueError or successful construction. The fix used in `set_positions` (line 1197) \u2014 `positions = np.asanyarray(positions); positions.sort()` \u2014 should be applied here as well, so the sort happens on a fresh array.",
+    "line_end": 1155,
+    "suggested_fix": "@@\n         elif (orientation is None or orientation.lower() == 'none' or\n               orientation.lower() == 'horizontal'):\n-            positions.sort()\n+            positions = np.asanyarray(positions)\n+            positions.sort()\n             segments = [[(coord1, coord2) for coord2 in segment] for\n                         coord1 in positions]\n             self._is_horizontal = True\n         elif orientation.lower() == 'vertical':\n-            positions.sort()\n+            positions = np.asanyarray(positions)\n+            positions.sort()\n             segments = [[(coord2, coord1) for coord2 in segment] for\n                         coord1 in positions]"
+  }
+]

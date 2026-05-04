@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: matplotlib#23
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# fixed_commit: 418a1adf597b4d7759dcd64b864bd64cc1b507f4
+# base_ref: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80^
+# head_ref: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# started: 2026-05-04T05:38:35+00:00
+# finished: 2026-05-04T05:43:09+00:00
+# duration_s: 273.7
+# cost_usd: 3.7566
+# num_turns: 34
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 295
+# repo: DaytonaRepo
+# refs: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80^..87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# turns: 34
+# cost (USD, API rate): 3.756613
+# usage: {'input_tokens': 38, 'output_tokens': 19129, 'cache_creation_input_tokens': 44113, 'cache_read_input_tokens': 996166}
+# findings: 1
+# ---
+[
+  {
+    "file": "lib/matplotlib/axes/_base.py",
+    "line": 1502,
+    "category": "logic",
+    "severity": "high",
+    "summary": "`apply_aspect` uses inverse transform on dataLim (wrong direction), making `xr`/`yr` units-inconsistent with `xsize`/`ysize` for non-linear scales.",
+    "detail": "In the rewritten `apply_aspect` (datalim branch), `xsize`/`ysize` (lines 1487-1490) are computed in *transformed* space via `x_trf.transform(self.get_xbound())` (for a log axis this is log10 of the bound). To keep the subsequent `xmarg = xsize - xr` and `ymarg = ysize - yr` arithmetic meaningful, `xr`/`yr` must also be in transformed space \u2014 exactly what the old code did with `math.log10(dL.x1) - math.log10(dL.x0)`.\n\nHowever lines 1502-1503 use the *inverse* transform on the dataLim:\n\n    x0, x1 = map(x_trf.inverted().transform, dL.intervalx)\n    y0, y1 = map(y_trf.inverted().transform, dL.intervaly)\n    xr = 1.05 * (x1 - x0)\n    yr = 1.05 * (y1 - y0)\n\nThe dataLim already lives in data coordinates, so `x_trf.inverted().transform` runs the data through the *wrong* direction (e.g. `10**dL.x1` for a log axis instead of `log10(dL.x1)`). Result: `xr`/`yr` are in (a function of) data space while `xsize`/`ysize` are in transformed space, so `xmarg`/`ymarg` and `Xmarg`/`Ymarg` are meaningless, which feeds the `adjy = ((Ymarg > 0 and y_expander < 0) or (Xmarg < 0 and y_expander > 0))` decision at lines 1528-1533 and can flip the adjust-x vs. adjust-y choice.\n\nFor purely linear axes the transform is the identity so the bug is invisible; for log / logit / mixed scales (the very case this PR was supposed to fix) the values can differ by exponential factors. The new test `test_aspect_nonlinear_adjustable_datalim` happens to pass only because the buggy `xmarg < 0` pushes the decision to the `else` (adjust x) branch and the final `xlim` computation (which uses `xmin/xmax/Xsize` correctly) still yields the expected answer; it does not exercise the cases where the wrong adjust_y choice changes the visible result.\n\nThe fix is to drop `.inverted()` on these two lines (i.e. use the forward transform, matching the old log-case `math.log10(...)` and matching `get_data_ratio` above).",
+    "line_end": 1505,
+    "suggested_fix": "@@\n-        dL = self.dataLim\n-        x0, x1 = map(x_trf.inverted().transform, dL.intervalx)\n-        y0, y1 = map(y_trf.inverted().transform, dL.intervaly)\n-        xr = 1.05 * (x1 - x0)\n-        yr = 1.05 * (y1 - y0)\n+        dL = self.dataLim\n+        x0, x1 = map(x_trf.transform, dL.intervalx)\n+        y0, y1 = map(y_trf.transform, dL.intervaly)\n+        xr = 1.05 * (x1 - x0)\n+        yr = 1.05 * (y1 - y0)\n"
+  }
+]

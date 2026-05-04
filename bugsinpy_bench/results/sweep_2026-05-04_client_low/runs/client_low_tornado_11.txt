@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_low
+# bug: tornado#11
+# bug_source: blame
+# sdk: client_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-05-04T01:44:03+00:00
+# finished: 2026-05-04T01:44:57+00:00
+# duration_s: 54.3
+# cost_usd: 0.8774
+# num_turns: 5
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 146
+# repo: DaytonaRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 5
+# cost (USD, API rate): 0.877383
+# usage: {'input_tokens': 9, 'output_tokens': 2870, 'cache_creation_input_tokens': 27706, 'cache_read_input_tokens': 95007}
+# findings: 1
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 95,
+    "category": "logic",
+    "severity": "high",
+    "summary": "After handling a 1xx informational response, _process_message falls through and processes the 1xx headers a second time, causing a hang and double finish().",
+    "detail": "In _process_message (tornado/http1connection.py:75-110), when the client receives a 1xx status code, the code recursively yields self._process_message(...) to read the next (real) response. That recursive invocation reads the next response's headers, calls delegate.headers_received/finish, and overwrites self._finish_future. After it returns, the outer call does NOT return \u2014 it falls through to `if not skip_body: body_future = self._read_body(is_client, headers, delegate)` using the *1xx* headers (no Content-Length / Transfer-Encoding). For the client (is_client=True) this hits the `_read_body_until_close` branch, so the outer coroutine blocks reading from the stream until it closes, even though the real response was already fully consumed. It then calls delegate.finish() a second time and yields on a _finish_future that was overwritten by the inner call. Any HTTP response preceded by a 1xx (e.g. `100 Continue` when the request used `Expect: 100-continue`, or `102 Processing`) will hang or yield wrong results. The previous code handled 1xx by re-reading just headers and returning. Fix: after the recursive _process_message for a 1xx, return immediately (or use a loop that only re-reads headers).",
+    "line_end": 104,
+    "suggested_fix": "@@\n             if is_client:\n                 if method == 'HEAD':\n                     skip_body = True\n                 code = httputil.parse_response_start_line(start_line).code\n                 if code == 304:\n                     skip_body = True\n                 if code >= 100 and code < 200:\n-                    yield self._process_message(delegate, is_client, method=method)\n+                    # 1xx responses have no body; recurse to read the\n+                    # real response and stop processing this one.\n+                    yield self._process_message(delegate, is_client, method=method)\n+                    raise gen.Return(True)\n"
+  }
+]

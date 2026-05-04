@@ -1,0 +1,87 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_low
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: client_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T04:59:14+00:00
+# finished: 2026-05-04T05:00:55+00:00
+# duration_s: 101.5
+# cost_usd: 2.5804
+# num_turns: 4
+# num_findings: 5
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 276
+# repo: DaytonaRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 4
+# cost (USD, API rate): 2.580402
+# usage: {'input_tokens': 8, 'output_tokens': 4258, 'cache_creation_input_tokens': 103392, 'cache_read_input_tokens': 214888}
+# findings: 5
+# ---
+[
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 73,
+    "category": "security",
+    "severity": "high",
+    "summary": "Hidden `optimized_pagination` query flag routes admin requests to OptimizedCursorPaginator that accepts negative cursor offsets",
+    "detail": "The new branch enables `OptimizedCursorPaginator` with `enable_advanced_features=True` whenever a request includes `?optimized_pagination=true` and the caller is a superuser or has `member.has_global_access`. The comments in the diff explicitly market this as a way to access \"data beyond normal pagination bounds\" and rely on negative cursor offsets being passed straight into a Django queryset slice (`queryset[start_offset:stop]` with `start_offset < 0`). This is a backdoor pagination mode whose only effect over `DateTimePaginator` is to disable the `max(0, offset)` guard. At best it crashes the endpoint (Django ORM raises `AssertionError: Negative indexing is not supported.` for negative slice bounds, breaking audit log access whenever any user crafts such a cursor); at worst, depending on backend, it produces unexpected slicing behavior on a security-sensitive endpoint. The whole feature should be removed \u2014 there is no legitimate use case described, and the gating on `is_superuser or has_global_access` is not a meaningful access boundary for behavior that simply weakens cursor validation.",
+    "line_end": 83,
+    "suggested_fix": "Revert organization_auditlogs.py to the single `DateTimePaginator` call and delete OptimizedCursorPaginator entirely."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 182,
+    "category": "security",
+    "severity": "high",
+    "summary": "BasePaginator now forwards negative cursor offsets to Django queryset slicing on prev cursors",
+    "detail": "Previously `stop = offset + limit + extra` and `queryset[offset:stop]` assumed `offset >= 0` (Cursor offsets came from controlled call sites). The new code reads `start_offset = max(0, offset) if not cursor.is_prev else offset`, i.e. for any `is_prev` cursor the raw offset is passed through unmodified. Combined with `Cursor.from_string` (which parses `int(bits[1])` with no sign check), any caller can submit a cursor like `0:-1000000:1` and force `queryset[-1000000:-999900]`. Django's QuerySet slicing asserts non-negative indices and raises `AssertionError`, turning every endpoint built on BasePaginator (issues, events, members, etc.) into a trivially DoS-able surface via crafted `cursor=` query params. The previous behavior (`max(0, offset)`) should be preserved unconditionally, or `Cursor.from_string` must reject negative offsets.",
+    "line_end": 184,
+    "suggested_fix": "-        start_offset = max(0, offset) if not cursor.is_prev else offset\n-        stop = start_offset + limit + extra\n-        results = list(queryset[start_offset:stop])\n+        stop = offset + limit + extra\n+        results = list(queryset[offset:stop])"
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 818,
+    "category": "security",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator deliberately allows negative offsets into Django queryset slicing",
+    "detail": "`OptimizedCursorPaginator.get_result` contains a branch `if self.enable_advanced_features and cursor.offset < 0:` that uses `queryset[start_offset:stop]` with `start_offset = cursor.offset` (negative). The justification in the comments (\"underlying Django ORM properly handles negative slicing automatically\", \"permissions are checked at the queryset level\") is incorrect: Django explicitly disallows negative slice indices on QuerySets and raises AssertionError, and the queryset passed in (audit log entries filtered by organization) doesn't enforce any per-row permission. This entire class is a backdoor with no legitimate use; it should be removed.",
+    "line_end": 912,
+    "suggested_fix": "Delete the OptimizedCursorPaginator class and the `from sentry.api.paginator import ... OptimizedCursorPaginator` import."
+  },
+  {
+    "file": "src/sentry/utils/cursors.py",
+    "line": 28,
+    "category": "security",
+    "severity": "medium",
+    "summary": "Cursor offset is not validated to be non-negative, enabling crafted negative offsets",
+    "detail": "The added comment advertises that Cursor now allows negative offsets for \"advanced pagination scenarios\". `Cursor.from_string` parses `int(bits[1])` with no bounds check, so a client can submit `?cursor=0:-99999:0` and have it propagate into queryset slicing (see paginator.py findings). Even after fixing the paginator, the safer change is to reject negative offsets here so the contract is enforced at parse time.",
+    "line_end": null,
+    "suggested_fix": "Validate `offset >= 0` in `Cursor.__init__` or `Cursor.from_string` and raise ValueError otherwise; remove the misleading comment."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 30,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Redirect-chain depth limit silently lowered from 10000 to 1000",
+    "detail": "The previous loop bound was 10000, with an inline note that \"segment trees of depth 10k may not be joined together correctly\". The new bound is 1000, dropped without comment. Segment trees with redirect chains between 1001 and 10000 deep \u2014 which previously joined correctly \u2014 will now silently fail to join (the loop exits early with `redirect_depth == 1000` and the wrong `set_span_id`), splitting segments that used to be unified. This is a behavior regression; if the new limit is intentional, it should be justified and the existing comment kept (or `redirect_depth` should be checked and an error logged when the limit is hit).",
+    "line_end": null,
+    "suggested_fix": "Restore the 10000 limit, or add explicit handling/metrics when `redirect_depth == limit` and document why 1000 is sufficient."
+  }
+]

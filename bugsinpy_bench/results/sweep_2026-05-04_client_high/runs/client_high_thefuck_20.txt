@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: thefuck#20
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# fixed_commit: 280751b36e715b006c631ba6c08de99ccc74f6d2
+# base_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^
+# head_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# started: 2026-05-04T03:33:37+00:00
+# finished: 2026-05-04T03:35:09+00:00
+# duration_s: 91.5
+# cost_usd: 2.8639
+# num_turns: 12
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 237
+# repo: DaytonaRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 12
+# cost (USD, API rate): 2.863933
+# usage: {'input_tokens': 16, 'output_tokens': 5483, 'cache_creation_input_tokens': 72599, 'cache_read_input_tokens': 727491}
+# findings: 2
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 8,
+    "category": "logic",
+    "severity": "high",
+    "summary": "_is_bad_zip flags well-formed archives as 'dirty' because it counts every entry instead of distinct top-level entries",
+    "detail": "_is_bad_zip returns True whenever the zip has more than one entry in namelist(). But namelist() includes every nested file and directory entry, not just top-level items. A normal, well-behaved archive that contains a single top-level directory (e.g. namelist == ['src/', 'src/a.txt', 'src/sub/b.txt']) has length 3 and will be reported as 'bad'. As a result, the rule will (a) match for archives that are not actually polluting the cwd, suggesting an unnecessary 'unzip foo.zip -d foo' rewrite, and (b) trigger side_effect, which then deletes the user's freshly-extracted directory tree (including subdirectories \u2014 see related finding). The check should look at the set of unique top-level path components (e.g. {n.split('/', 1)[0] for n in archive.namelist()}) and return True only when there is more than one root entry.",
+    "line_end": null,
+    "suggested_fix": "-def _is_bad_zip(file):\n-    with zipfile.ZipFile(file, 'r') as archive:\n-        return len(archive.namelist()) > 1\n+def _is_bad_zip(file):\n+    with zipfile.ZipFile(file, 'r') as archive:\n+        roots = {name.split('/', 1)[0] for name in archive.namelist()}\n+        return len(roots) > 1"
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "error",
+    "severity": "high",
+    "summary": "side_effect calls os.remove on directory entries from the zip, raising IsADirectoryError and aborting cleanup mid-way",
+    "detail": "archive.namelist() returns all entries, including directory entries whose names end with '/' (e.g. 'src/sub/'). os.remove cannot delete directories \u2014 it raises IsADirectoryError on a real directory and a similar OSError on the literal trailing-slash path. As soon as the loop hits such an entry, side_effect raises and the rest of the would-be cleanup is skipped, leaving the working directory in an inconsistent partially-cleaned state. The loop also leaves behind any directories created by the original unzip even when no explicit directory entry exists, because os.remove never removes the parent dir. Use shutil.rmtree for directory entries (or skip names ending in '/') and remove parent directories afterwards.",
+    "line_end": null,
+    "suggested_fix": "-def side_effect(command, settings):\n-    with zipfile.ZipFile(_zip_file(command), 'r') as archive:\n-        for file in archive.namelist():\n-            os.remove(file)\n+def side_effect(command, settings):\n+    with zipfile.ZipFile(_zip_file(command), 'r') as archive:\n+        for file in archive.namelist():\n+            if file.endswith('/'):\n+                continue\n+            try:\n+                os.remove(file)\n+            except OSError:\n+                pass"
+  }
+]

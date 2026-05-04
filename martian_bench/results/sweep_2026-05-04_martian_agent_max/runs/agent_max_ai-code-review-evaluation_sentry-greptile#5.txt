@@ -1,0 +1,49 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_max
+# pr: ai-code-review-evaluation_sentry-greptile#5
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/5
+# original_upstream_url: 
+# pr_title: Replays Self-Serve Bulk Delete System
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 49a275847631e231672d01b5dcd66558c069d25b
+# head_sha: ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# n_goldens: 3
+# started: 2026-05-04T05:30:22+00:00
+# finished: 2026-05-04T05:38:50+00:00
+# duration_s: 507.5
+# cost_usd: 4.3237
+# num_turns: 60
+# num_findings: 1
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 293
+# repo: DaytonaRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 60
+# cost (USD, harness-reported): 4.323716
+# cost (USD, public Opus 4 rate): 12.971148
+# usage: {'input_tokens': 99, 'cache_creation_input_tokens': 111944, 'cache_read_input_tokens': 5777092, 'output_tokens': 29401, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 111944}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 479, 'cache_read_input_tokens': 149858, 'cache_creation_input_tokens': 2425, 'cache_creation': {'ephemeral_5m_input_tokens': 2425, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 121,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "fetch_error_details mismatches error_id with event data because nodestore.get_multi does not return values in input order",
+    "detail": "fetch_error_details builds node_ids in the same order as error_ids, calls nodestore.backend.get_multi(node_ids), and then iterates with `zip(error_ids, events.values())` to produce ErrorEvent objects whose `id` is taken from error_ids[i] and whose `title`/`message`/`timestamp` are taken from the i-th value returned by get_multi. However, NodeStorage.get_multi (src/sentry/nodestore/base.py:174-210) is documented to return a dict and does not guarantee that dict iteration order matches the input id_list. Concretely, get_multi splits ids into cached (`cache_items`) and uncached (`uncached_ids`), builds the result dict from the backend first and then runs `items.update(cache_items)`, which places cache hits AFTER backend hits in iteration order. So whenever ids are partially cached (the common case), `events.values()` is reordered relative to error_ids and the zip pairs each error_id with the wrong event payload \u2014 producing ErrorEvent records whose displayed title/message belong to a different error id, and dropping any error_id that happens to align with a None entry. The downstream Seer prompt and timeline-merge logic in gen_request_data then attribute the wrong error text and timestamps. Fix by indexing into the dict via the matching node_id, e.g. `for error_id in error_ids: data = events.get(Event.generate_node_id(project_id, error_id))`.",
+    "line_end": 130,
+    "suggested_fix": "@@\n-        node_ids = [Event.generate_node_id(project_id, event_id=id) for id in error_ids]\n-        events = nodestore.backend.get_multi(node_ids)\n-\n-        return [\n-            ErrorEvent(\n-                category=\"error\",\n-                id=event_id,\n-                title=data.get(\"title\", \"\"),\n-                timestamp=data.get(\"timestamp\", 0.0),\n-                message=data.get(\"message\", \"\"),\n-            )\n-            for event_id, data in zip(error_ids, events.values())\n-            if data is not None\n-        ]\n+        node_id_to_event_id = {\n+            Event.generate_node_id(project_id, event_id=event_id): event_id\n+            for event_id in error_ids\n+        }\n+        events = nodestore.backend.get_multi(list(node_id_to_event_id.keys()))\n+\n+        return [\n+            ErrorEvent(\n+                category=\"error\",\n+                id=node_id_to_event_id[node_id],\n+                title=data.get(\"title\", \"\"),\n+                timestamp=data.get(\"timestamp\", 0.0),\n+                message=data.get(\"message\", \"\"),\n+            )\n+            for node_id, data in events.items()\n+            if data is not None\n+        ]\n"
+  }
+]

@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high_tail
+# bug: tornado#11
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100_tail14.json
+# prepared_sha256_16: b97fa8916250ed78
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-05-04T04:40:14+00:00
+# finished: 2026-05-04T04:41:54+00:00
+# duration_s: 100.4
+# cost_usd: 1.5265
+# num_turns: 11
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 263
+# repo: DaytonaRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 11
+# cost (USD, API rate): 1.526456
+# usage: {'input_tokens': 15, 'output_tokens': 5980, 'cache_creation_input_tokens': 33969, 'cache_read_input_tokens': 293875}
+# findings: 1
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 95,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Missing return after recursive _process_message call for 1xx responses causes double processing of the real response",
+    "detail": "In `_process_message`, when a client receives a 1xx interim response (e.g. \"100 Continue\"), the code recursively calls `yield self._process_message(delegate, is_client, method=method)` to read the next response. The recursive call fully processes the real response: it overwrites `self._finish_future`, calls `delegate.headers_received` again, reads the body via `_read_body`, calls `delegate.finish()`, and waits on `_finish_future`. After that recursion returns, control falls through in the outer call: `skip_body` is still False (it was determined from the 1xx code, which is neither HEAD nor 304), so the outer call invokes `_read_body(is_client=True, headers=<1xx headers>, delegate)` again. Because a 1xx response has no Content-Length and no Transfer-Encoding, `_read_body` returns `_read_body_until_close(delegate)`, which then attempts to read on a stream that the inner finish() already closed (via `_on_end_request`). The outer call also calls `delegate.finish()` a second time and yields again on the (now stale/already-resolved) `_finish_future`. In simple_httpclient this typically manifests as a `StreamClosedError` raised from the second `read_until_close`, which is silently swallowed by the new `isinstance(value, StreamClosedError)` branch in `_handle_exception`, but the duplicate `delegate.finish()` may run if the stream isn't yet closed, and either way the protocol logic is incorrect. The recursive branch must `return` (or the rest of the body-handling logic must be skipped) after the recursion. This breaks the existing `test_100_continue` interaction.",
+    "line_end": 95,
+    "suggested_fix": "@@\n             if is_client:\n                 if method == 'HEAD':\n                     skip_body = True\n                 code = httputil.parse_response_start_line(start_line).code\n                 if code == 304:\n                     skip_body = True\n                 if code >= 100 and code < 200:\n-                    yield self._process_message(delegate, is_client, method=method)\n+                    yield self._process_message(delegate, is_client, method=method)\n+                    return\n"
+  }
+]

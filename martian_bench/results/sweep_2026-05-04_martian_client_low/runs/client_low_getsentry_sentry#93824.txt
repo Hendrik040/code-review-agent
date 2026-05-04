@@ -1,0 +1,57 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_low
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: client_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-05-04T05:06:23+00:00
+# finished: 2026-05-04T05:07:38+00:00
+# duration_s: 75.4
+# cost_usd: 0.7611
+# num_turns: 6
+# num_findings: 2
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 280
+# repo: DaytonaRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 6
+# cost (USD, API rate): 0.761057
+# usage: {'input_tokens': 10, 'output_tokens': 3132, 'cache_creation_input_tokens': 20456, 'cache_read_input_tokens': 94971}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 259,
+    "category": "logic",
+    "severity": "high",
+    "summary": "isinstance(process, multiprocessing.Process) is always False for spawn-context processes, so unhealthy flusher processes are never killed before being replaced",
+    "detail": "self.mp_context = multiprocessing.get_context('spawn') and self.mp_context.Process produces a multiprocessing.context.SpawnProcess. SpawnProcess is NOT a subclass of multiprocessing.Process (which resolves to multiprocessing.context.Process). Therefore the new guard `if isinstance(process, multiprocessing.Process): process.kill()` is always false in production, and a hung/crashed flusher process is never killed before _create_process_for_shards spawns a replacement. This leaks the old process (which may keep polling Redis and producing to Kafka concurrently with its replacement), and changes behavior vs. the previous code that called self.process.kill() unconditionally. Confirmed empirically: `isinstance(ctx.Process(...), multiprocessing.Process)` returns False.",
+    "line_end": 262,
+    "suggested_fix": "-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            try:\n+                if not isinstance(process, threading.Thread):\n+                    process.kill()\n+            except (ValueError, AttributeError):\n+                pass  # Process already closed, ignore"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 346,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "join() never terminates spawn-context flusher processes on timeout because isinstance check is always False",
+    "detail": "Same root cause as above: self.mp_context.Process produces SpawnProcess, which is not an instance of multiprocessing.Process. The terminate() call in join() is therefore dead code in production. If a flusher process fails to honor the stopped flag within the timeout, it is never sent SIGTERM. Daemons will eventually die with the parent, but during a clean shutdown with timeout this defeats the intent. Additionally, when the deadline elapses mid-loop, `break` skips terminate() for all subsequent processes, compounding the problem.",
+    "line_end": 347,
+    "suggested_fix": "-            if isinstance(process, multiprocessing.Process):\n-                process.terminate()\n+            if not isinstance(process, threading.Thread):\n+                process.terminate()"
+  }
+]

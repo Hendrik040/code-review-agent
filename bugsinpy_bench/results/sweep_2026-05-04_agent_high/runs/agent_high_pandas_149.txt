@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: pandas#149
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# fixed_commit: fa1364d1299a53093bc704f9c34c595b602a568b
+# base_ref: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4^
+# head_ref: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# started: 2026-05-04T04:05:01+00:00
+# finished: 2026-05-04T04:08:05+00:00
+# duration_s: 184.1
+# cost_usd: 0.8083
+# num_turns: 9
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 216
+# repo: DaytonaRepo
+# refs: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4^..6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# turns: 9
+# cost (USD, harness-reported): 0.808337
+# cost (USD, public Opus 4 rate): 2.425009
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 36624, 'cache_read_input_tokens': 587693, 'output_tokens': 11420, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 36624}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 101, 'cache_read_input_tokens': 76667, 'cache_creation_input_tokens': 2051, 'cache_creation': {'ephemeral_5m_input_tokens': 2051, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/io/parquet.py",
+    "line": 217,
+    "category": "resource",
+    "severity": "low",
+    "summary": "FastParquetImpl.read opens an S3File only to access its parent filesystem and never closes it, leaking the handle on every S3 read.",
+    "detail": "In the new s3 branch of FastParquetImpl.read:\n\n    s3, _, _ = get_filepath_or_buffer(path)\n    parquet_file = self.api.ParquetFile(path, open_with=s3.s3.open)\n\nget_filepath_or_buffer for an S3 URL calls s3fs.S3FileSystem(...).open(...), so `s3` is an open S3File. The code never reads or writes through `s3`; it only uses it to grab the parent S3FileSystem via `s3.s3` so that fastparquet can call `s3.s3.open` later. The S3File itself is never closed (no try/finally, no with-statement, no explicit close), so a buffered remote file handle is leaked on every read_parquet call against S3. Repeated reads in long-running processes will accumulate open S3 connections / buffers. The fix is to obtain the S3FileSystem directly (e.g. `import s3fs; fs = s3fs.S3FileSystem(anon=False)`) and pass `fs.open` as open_with, instead of opening a throwaway S3File just to reach `.s3`.",
+    "line_end": 218,
+    "suggested_fix": "-        if is_s3_url(path):\n-            # When path is s3:// an S3File is returned.\n-            # We need to retain the original path(str) while also\n-            # pass the S3File().open function to fsatparquet impl.\n-            s3, _, _ = get_filepath_or_buffer(path)\n-            parquet_file = self.api.ParquetFile(path, open_with=s3.s3.open)\n+        if is_s3_url(path):\n+            # Pass the S3 filesystem's open to fastparquet without\n+            # leaking an extra S3File handle.\n+            import s3fs\n+            fs = s3fs.S3FileSystem(anon=False)\n+            parquet_file = self.api.ParquetFile(path, open_with=fs.open)\n         else:\n             path, _, _ = get_filepath_or_buffer(path)\n             parquet_file = self.api.ParquetFile(path)\n"
+  }
+]

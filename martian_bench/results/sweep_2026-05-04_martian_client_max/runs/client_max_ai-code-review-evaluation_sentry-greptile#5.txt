@@ -1,0 +1,67 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_max
+# pr: ai-code-review-evaluation_sentry-greptile#5
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/5
+# original_upstream_url: 
+# pr_title: Replays Self-Serve Bulk Delete System
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 49a275847631e231672d01b5dcd66558c069d25b
+# head_sha: ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# n_goldens: 3
+# started: 2026-05-04T05:32:49+00:00
+# finished: 2026-05-04T05:41:13+00:00
+# duration_s: 504.4
+# cost_usd: 43.4549
+# num_turns: 88
+# num_findings: 3
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 291
+# repo: DaytonaRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 88
+# cost (USD, API rate): 43.454944
+# usage: {'input_tokens': 92, 'output_tokens': 25396, 'cache_creation_input_tokens': 305093, 'cache_read_input_tokens': 23885580}
+# findings: 3
+# ---
+[
+  {
+    "file": "static/app/views/dashboards/widgetCard/chart.tsx",
+    "line": 165,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "TableWidgetVisualization rendered with empty data when feature flag is enabled, hiding all dashboard table data",
+    "detail": "When `organization.features.includes('use-table-widget-visualization')` is true, the new `TableWidgetVisualization` is rendered with hard-coded empty `columns={[]}` and empty `tableData={{ data: [], meta: { fields: {}, units: {} } }}`, completely ignoring `result.data`, `result.meta`, `widget.queries[i]`, etc. This means any dashboard widget that goes through `tableResultComponent` will display an empty table whenever this feature flag is on \u2014 a clear regression vs. the `StyledSimpleTableChart` branch, which receives the real data. The flag is not yet registered server-side, so today the path is dead, but the moment the flag is rolled out (even to a single org via internal admin), all table widgets in dashboards/insights will appear empty. The wiring should pass `result.data`/`result.meta` (and column info derived from `fields`) into `TableWidgetVisualization`, similar to how the existing `StyledSimpleTableChart` is configured a few lines below.",
+    "line_end": 174,
+    "suggested_fix": "@@\n-          {organization.features.includes('use-table-widget-visualization') ? (\n-            <TableWidgetVisualization\n-              columns={[]}\n-              tableData={{\n-                data: [],\n-                meta: {\n-                  fields: {},\n-                  units: {},\n-                },\n-              }}\n-            />\n-          ) : (\n+          {organization.features.includes('use-table-widget-visualization') ? (\n+            <TableWidgetVisualization\n+              tableData={{\n+                data: result.data ?? [],\n+                meta: result.meta ?? {fields: {}, units: {}},\n+              }}\n+            />\n+          ) : (\n"
+  },
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 118,
+    "category": "logic",
+    "severity": "low",
+    "summary": "fetch_error_details misaligns event_id with event data via zip(error_ids, events.values()) when nodestore has partial cache hits",
+    "detail": "`nodestore.backend.get_multi(node_ids)` returns a dict whose iteration order is NOT guaranteed to match the input `node_ids` order. Looking at `NodeStorage.get_multi`: when only some ids are cached, it computes `uncached_ids = [id for id in id_list if id not in cache_items]`, then builds `items` from `_get_bytes_multi(uncached_ids).items()` (uncached order) and finally does `items.update(cache_items)`, which appends the cached entries at the end. That means the keys/values of the returned dict are `[uncached_in_order..., cached_in_some_order...]`, not aligned with the original `node_ids` (and therefore not with the parallel `error_ids`). Consequently `zip(error_ids, events.values())` produces ErrorEvent objects whose `id` belongs to one event while `title`/`message`/`timestamp` belong to a different event. Today `ErrorEvent.id` is not consumed downstream (only `title`, `message`, `timestamp` are used by `generate_error_log_message`), so the user-visible damage is small, but the contract is broken and a future consumer of `id` will silently get wrong data. The fix is to look up data by node_id explicitly.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        node_ids = [Event.generate_node_id(project_id, event_id=id) for id in error_ids]\n-        events = nodestore.backend.get_multi(node_ids)\n-\n-        return [\n-            ErrorEvent(\n-                category=\"error\",\n-                id=event_id,\n-                title=data.get(\"title\", \"\"),\n-                timestamp=data.get(\"timestamp\", 0.0),\n-                message=data.get(\"message\", \"\"),\n-            )\n-            for event_id, data in zip(error_ids, events.values())\n-            if data is not None\n-        ]\n+        node_id_to_event_id = {\n+            Event.generate_node_id(project_id, event_id=eid): eid for eid in error_ids\n+        }\n+        events = nodestore.backend.get_multi(list(node_id_to_event_id.keys()))\n+\n+        return [\n+            ErrorEvent(\n+                category=\"error\",\n+                id=node_id_to_event_id[node_id],\n+                title=data.get(\"title\", \"\"),\n+                timestamp=data.get(\"timestamp\", 0.0),\n+                message=data.get(\"message\", \"\"),\n+            )\n+            for node_id, data in events.items()\n+            if data is not None\n+        ]\n"
+  },
+  {
+    "file": "static/app/views/replays/detail/ai/index.tsx",
+    "line": 90,
+    "category": "logic",
+    "severity": "low",
+    "summary": "AiContent shows 'Project not found' error while useProjects is still loading",
+    "detail": "The new check `if (replayRecord?.project_id && !project)` treats a not-yet-loaded project as a permanent error and renders the 'Project not found. Unable to load AI summary.' alert. `useProjectFromId` is backed by `useProjects`, which returns `undefined` until the projects store has loaded the relevant project. The guard does not consult the loading state (e.g. `initiallyLoaded`/`fetching` from `useProjects`), so on the first render after navigation \u2014 when `replayRecord.project_id` is set but the projects store hasn\u2019t resolved that project yet \u2014 users will briefly see a hard error message before the content actually loads. The fix is to gate this branch on a loading/loaded state, or fall back to the existing loading branch (`isPending || isRefetching`) until the project lookup is known to have completed.",
+    "line_end": 96,
+    "suggested_fix": ""
+  }
+]

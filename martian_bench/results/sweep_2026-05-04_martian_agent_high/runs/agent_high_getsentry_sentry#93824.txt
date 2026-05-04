@@ -1,0 +1,49 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_high
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-05-04T05:21:06+00:00
+# finished: 2026-05-04T05:25:04+00:00
+# duration_s: 238.0
+# cost_usd: 1.1000
+# num_turns: 17
+# num_findings: 1
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 284
+# repo: DaytonaRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 17
+# cost (USD, harness-reported): 1.100026
+# cost (USD, public Opus 4 rate): 3.300078
+# usage: {'input_tokens': 23, 'cache_creation_input_tokens': 40662, 'cache_read_input_tokens': 983697, 'output_tokens': 14157, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 40662}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 526, 'cache_read_input_tokens': 81887, 'cache_creation_input_tokens': 869, 'cache_creation': {'ephemeral_5m_input_tokens': 869, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "resource",
+    "severity": "high",
+    "summary": "isinstance gate prevents killing hung SpawnProcess subprocesses, leaking them on every restart",
+    "detail": "In _ensure_processes_alive, the kill is now gated by `isinstance(process, multiprocessing.Process)`. In production, processes are created via `self.mp_context = multiprocessing.get_context('spawn')` and `self.mp_context.Process(...)`, which returns a `multiprocessing.context.SpawnProcess`. SpawnProcess and `multiprocessing.Process` (i.e. `multiprocessing.context.Process`) are siblings under `BaseProcess`, not in a parent/child relationship \u2014 so this isinstance check is always False for real flusher subprocesses (verified by running `isinstance(ctx.Process(), multiprocessing.Process) -> False`). The old code unconditionally called `self.process.kill()` (only catching ValueError for already-closed processes). After this change, when a flusher subprocess hangs (cause='hang') the parent never kills it before spawning a replacement via `_create_process_for_shards`. The hung child keeps running as a daemon, holding its Redis client, file descriptors, and memory. Each subsequent hang adds another zombie until `MAX_PROCESS_RESTARTS` per process_index is reached or the parent dies. The same broken isinstance check exists in join() (terminate path), but that was pre-existing; here it is a freshly-introduced regression because the prior kill was unconditional.",
+    "line_end": null,
+    "suggested_fix": "@@\n-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            try:\n+                # threading.Thread has no kill(); only call it on real subprocesses\n+                if not isinstance(process, threading.Thread):\n+                    process.kill()\n+            except (ValueError, AttributeError):\n+                pass  # Process already closed, ignore\n"
+  }
+]

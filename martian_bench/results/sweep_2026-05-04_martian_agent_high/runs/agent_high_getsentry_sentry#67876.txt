@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_high
+# pr: getsentry_sentry#67876
+# pr_url: https://github.com/getsentry/sentry/pull/67876
+# original_upstream_url: 
+# pr_title: GitHub OAuth Security Enhancement
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: 344aa102e7818606e29426ebe69d5a680d8727c6
+# head_sha: bb75657fc8f13923c1d7983f422290908a1e7310
+# n_goldens: 3
+# started: 2026-05-04T05:12:13+00:00
+# finished: 2026-05-04T05:16:36+00:00
+# duration_s: 262.3
+# cost_usd: 1.3402
+# num_turns: 24
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 277
+# repo: DaytonaRepo
+# refs: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+# turns: 24
+# cost (USD, harness-reported): 1.340245
+# cost (USD, public Opus 4 rate): 4.020736
+# usage: {'input_tokens': 38, 'cache_creation_input_tokens': 41696, 'cache_read_input_tokens': 1476611, 'output_tokens': 13646, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 41696}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 640, 'cache_read_input_tokens': 78504, 'cache_creation_input_tokens': 2817, 'cache_creation': {'ephemeral_5m_input_tokens': 2817, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "medium",
+    "summary": "safe_urlopen not wrapped in try/except \u2014 network/SSL errors raise unhandled exceptions and return HTTP 500 instead of the friendly error template",
+    "detail": "OAuthLoginView.dispatch calls `safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)` without any try/except surrounding it. `safe_urlopen` (src/sentry/http.py) wraps `requests.Session.request`, which can raise `requests.exceptions.ConnectionError`, `SSLError`, `Timeout`, etc. The reference implementation in `OAuth2CallbackView.exchange_token` explicitly catches `ConnectionError`/`SSLError` and returns a friendly error. Here a transient GitHub outage or DNS failure during the OAuth code-for-token exchange will surface to the user as an unhandled 500. The try/except just below only protects `safe_urlread` and `parse_qsl`, but those execute after `safe_urlopen` already returned a response.",
+    "line_end": null,
+    "suggested_fix": "Wrap the safe_urlopen + safe_urlread block in a single try/except (covering ConnectionError, SSLError, Timeout, Exception) and call error(request, self.active_organization) on failure, mirroring OAuth2CallbackView.exchange_token."
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 434,
+    "category": "error",
+    "severity": "medium",
+    "summary": "get_user_info(...) is unguarded \u2014 HTTPError/JSONDecodeError from GitHub's /user endpoint propagate as 500",
+    "detail": "After exchanging the code for a token, OAuthLoginView calls `get_user_info(payload['access_token'])`. That helper (src/sentry/identity/github/provider.py:7) issues `session.get('https://api.github.com/user', ...)`, then calls `resp.raise_for_status()` and returns `resp.json()`. Both can raise (HTTPError on a 401/5xx, JSONDecodeError on a malformed body). The dispatch method does not catch them, so a hiccup from GitHub's user endpoint or a revoked token in a race produces an unhandled exception during the install pipeline. Subsequent code (`if 'login' not in authenticated_user_info`) only matters when the call succeeds and returns an unexpected dict.",
+    "line_end": null,
+    "suggested_fix": "Wrap the get_user_info call in try/except and return error(request, self.active_organization) on failure."
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 416,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "Token-exchange POST body omits redirect_uri (and grant_type), even though redirect_uri was explicitly sent on the authorize step",
+    "detail": "The new OAuthLoginView adds `redirect_uri=...` to the authorize URL but does NOT include it in the POST body sent to `https://github.com/login/oauth/access_token` (the `data` dict only carries `code`, `client_id`, `client_secret`). RFC 6749 \u00a74.1.3 requires that if `redirect_uri` was sent in the authorization request it MUST be sent (and identical) in the token request. GitHub's OAuth endpoint is currently lenient about this, but stricter validation (or a future tightening) would reject the exchange and the install pipeline would silently dead-end at `error()`. The reference `OAuth2CallbackView.get_token_params` includes both `grant_type` and `redirect_uri` in the body for this reason.",
+    "line_end": null,
+    "suggested_fix": "Include the same `redirect_uri` (and ideally `grant_type=\"authorization_code\"`) in the `data` dict that is POSTed to the access_token URL."
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 408,
+    "category": "security",
+    "severity": "low",
+    "summary": "OAuth `state` value is a non-secret, deterministic MD5 of the pipeline view class names \u2014 provides no real CSRF protection",
+    "detail": "OAuthLoginView uses `state = pipeline.signature` and verifies the round-trip with `request.GET.get('state') != pipeline.signature`. `pipeline.signature` is computed in `Pipeline.__init__` (src/sentry/pipeline/base.py:132-133) as `md5_text(*pipe_ids)` over the fully-qualified view class names \u2014 i.e. a global, attacker-predictable constant that is identical for every user and every session. This defeats the purpose of the OAuth `state` CSRF token. The downstream check that compares `pipeline.fetch_state('github_authenticated_user')` to `integration.metadata['sender']['login']` mitigates the most obvious account-binding attack, but the `state` parameter itself is no longer providing CSRF protection on the token exchange. Best practice is to bind a random nonce into pipeline state on first dispatch and compare it on return.",
+    "line_end": null,
+    "suggested_fix": "Generate a per-pipeline random nonce (e.g. `secrets.token_urlsafe()`), bind it via `pipeline.bind_state('oauth_state', nonce)` on first dispatch, send that as `state`, and compare against `pipeline.fetch_state('oauth_state')` on return \u2014 instead of using `pipeline.signature`."
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 408,
+    "category": "logic",
+    "severity": "low",
+    "summary": "redirect_uri value interpolated unencoded into the authorize URL query string",
+    "detail": "The redirect URL is built with an f-string: `f\"{authorize_url}?client_id={...}&state={...}&redirect_uri={redirect_uri}\"`. `redirect_uri` here is the raw output of `absolute_uri(reverse(...))`, e.g. `http://testserver/extensions/github/setup/`, containing reserved characters (`:`, `/`) that ought to be percent-encoded inside a query value. GitHub currently tolerates this, but if `absolute_uri` ever yields a host or path containing `?`, `&`, `#`, or `=` (e.g. customer-domain logic, URL fragments, query strings on the setup endpoint) the authorize URL would be silently malformed. Use `urllib.parse.urlencode` to build the query string.",
+    "line_end": null,
+    "suggested_fix": "Replace the f-string with something like `urlencode({'client_id': github_client_id, 'state': state, 'redirect_uri': redirect_uri})` and concatenate after `?`."
+  }
+]

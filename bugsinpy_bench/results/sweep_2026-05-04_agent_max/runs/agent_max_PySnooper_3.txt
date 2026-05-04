@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: PySnooper#3
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: cool-RR/PySnooper
+# introducing_commit: 621a4865cc05326fb3f892df2e7c455912860481
+# fixed_commit: 15555ed760000b049aff8fecc79d29339c1224c3
+# base_ref: 621a4865cc05326fb3f892df2e7c455912860481^
+# head_ref: 621a4865cc05326fb3f892df2e7c455912860481
+# started: 2026-05-04T04:36:22+00:00
+# finished: 2026-05-04T04:39:48+00:00
+# duration_s: 205.2
+# cost_usd: 1.2236
+# num_turns: 16
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 236
+# repo: DaytonaRepo
+# refs: 621a4865cc05326fb3f892df2e7c455912860481^..621a4865cc05326fb3f892df2e7c455912860481
+# turns: 16
+# cost (USD, harness-reported): 1.223551
+# cost (USD, public Opus 4 rate): 3.670654
+# usage: {'input_tokens': 20, 'cache_creation_input_tokens': 80583, 'cache_read_input_tokens': 704565, 'output_tokens': 14701, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 80583}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 459, 'cache_read_input_tokens': 78172, 'cache_creation_input_tokens': 2411, 'cache_creation': {'ephemeral_5m_input_tokens': 2411, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pysnooper/pysnooper.py",
+    "line": 34,
+    "category": "logic",
+    "severity": "high",
+    "summary": "`output_path` is undefined in get_write_function's file-output branch \u2014 file output raises NameError",
+    "detail": "The diff removed `import pathlib` and the assignment `output_path = pathlib.Path(output)` from `get_write_function`, but the inner `write` closure still references `output_path` on line 34: `with open(output_path, 'a') as output_file:`. There is no enclosing or global `output_path` defined anywhere, so any call like `pysnooper.snoop('/my/log/file.log')` (the documented usage in README.md:71) will raise `NameError: name 'output_path' is not defined` on the very first trace event. I reproduced this in the sandbox: importing the module and invoking the returned `write` raises NameError at line 34. The test suite does not cover the path/string output branch (only StringIO is tested), so this regression is not caught by tests. Fix is to use `output` directly since the branch is already gated by `isinstance(output, (pycompat.PathLike, str))`.",
+    "line_end": 34,
+    "suggested_fix": "@@\n     elif isinstance(output, (pycompat.PathLike, str)):\n         def write(s):\n             s += '\\n'\n             if isinstance(s, bytes): # Python 2 compatibility\n                 s = s.decode('utf-8')\n-            with open(output_path, 'a') as output_file:\n+            with open(output, 'a') as output_file:\n                 output_file.write(s)\n"
+  },
+  {
+    "file": "setup.py",
+    "line": 17,
+    "category": "resource",
+    "severity": "high",
+    "summary": "setup.py reads requirements.txt/test_requirements.txt that are not included in the sdist \u2014 pip install from source fails",
+    "detail": "`install_requires=open('requirements.txt', 'r').read().split('\\n')` and `tests_require=open('test_requirements.txt', 'r').read().split('\\n')` make setup.py depend on these files being on disk at install time. There is no `MANIFEST.in` in the repo, and setuptools' default sdist file selection does NOT include arbitrary top-level files like `requirements.txt`. I verified this in the sandbox: `python setup.py sdist` produces `pysnooper-0.0.1.tar.gz` without those files, and running `setup.py egg_info` inside the extracted sdist fails with `FileNotFoundError: [Errno 2] No such file or directory: 'requirements.txt'`. End users running `pip install pysnooper` (which falls back to sdist when no wheel is available, or `pip install --no-binary`) will hit this error and be unable to install the package. The previous behavior used inline literals so installation was self-contained. Either restore the inline literal lists, or add a `MANIFEST.in` with `include requirements.txt test_requirements.txt`. As a secondary issue, the file handles from `open(...).read()` are also not explicitly closed.",
+    "line_end": 18,
+    "suggested_fix": "Add a MANIFEST.in containing:\n    include requirements.txt\n    include test_requirements.txt\nor (preferred) inline the dependencies again:\n    install_requires=['decorator>=4.3.0', 'future>=0.17.1', 'six>=1.12.0'],\n    tests_require=['pytest>=4.4.1', 'python_toolbox>=0.9.3'],\n"
+  }
+]

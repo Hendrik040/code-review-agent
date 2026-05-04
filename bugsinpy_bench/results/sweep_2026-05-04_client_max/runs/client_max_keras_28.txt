@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: keras#28
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# fixed_commit: 5422fdd38baad36730cb6aeb946e17eeae6a551c
+# base_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631^
+# head_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# started: 2026-05-04T04:39:42+00:00
+# finished: 2026-05-04T04:44:06+00:00
+# duration_s: 263.9
+# cost_usd: 2.4861
+# num_turns: 21
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 261
+# repo: DaytonaRepo
+# refs: 7a1b9005c220afb9271d20a73e168cf18d0cd631^..7a1b9005c220afb9271d20a73e168cf18d0cd631
+# turns: 21
+# cost (USD, API rate): 2.486054
+# usage: {'input_tokens': 25, 'output_tokens': 17232, 'cache_creation_input_tokens': 29560, 'cache_read_input_tokens': 426019}
+# findings: 2
+# ---
+[
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 302,
+    "category": "logic",
+    "severity": "high",
+    "summary": "_empty_batch uses floor division length // sampling_rate, which underestimates the number of input timesteps when length is not a multiple of sampling_rate, causing a shape-mismatch ValueError on every __getitem__ call.",
+    "detail": "In `_empty_batch`, the samples buffer is allocated with second dimension `self.length // self.sampling_rate`. However, in `__getitem__`, the actual indices are `range(rows[j] - self.length, rows[j], self.sampling_rate)`, whose length is `ceil(length / sampling_rate)`, not `floor`. Whenever `length` is not divisible by `sampling_rate`, `range(...)` produces one more element than the buffer has space for, and `samples[j] = self.data[indices]` raises e.g. `ValueError: could not broadcast input array from shape (4,1) into shape (3,1)`.\n\nReproduced locally with the same logic the diff adds (data of length 50, length=10, sampling_rate=3): `data_gen[0]` raises a ValueError. The bundled tests only exercise length=10/sampling_rate=2 (evenly divisible), so they all pass and miss this case. Any user supplying e.g. length=10 and sampling_rate=3 (or 4, 6, 7, ...) gets a runtime crash on the very first batch.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        samples_shape = [num_rows, self.length // self.sampling_rate]\n+        samples_shape = [num_rows, int(np.ceil(self.length / self.sampling_rate))]\n         samples_shape.extend(self.data.shape[1:])"
+  },
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 290,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Default end_index is set to len(data) - 1, but __getitem__ treats end_index as exclusive (np.arange / np.random.randint upper bound), so the last data point is never used.",
+    "detail": "When `end_index is None`, `__init__` sets `self.end_index = len(data) - 1`. Both branches of `__getitem__` use this as an *exclusive* upper bound: `np.arange(i, min(..., self.end_index), self.stride)` and `np.random.randint(self.start_index, self.end_index, ...)`. Net effect: when the user does not pass `end_index`, the maximum reachable row is `len(data) - 2`, so `data[len(data) - 1]` and `targets[len(data) - 1]` are silently never sampled. This is also inconsistent with the user-supplied case (the new test passes `end_index=30` and the implementation treats 30 as exclusive, returning rows 20..29), so callers who do specify `end_index` get exclusive semantics while the default loses one sample on top of that. Impact is small (one sample), but it is a silent off-by-one in the default path.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        if end_index is None:\n-            end_index = len(data) - 1\n+        if end_index is None:\n+            end_index = len(data)"
+  }
+]

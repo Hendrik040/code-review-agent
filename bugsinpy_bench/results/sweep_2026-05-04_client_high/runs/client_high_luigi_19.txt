@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: luigi#19
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: 6cffbf438d023441f7f42c2019a51c62eecd9018
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-05-04T02:15:54+00:00
+# finished: 2026-05-04T02:18:26+00:00
+# duration_s: 152.2
+# cost_usd: 1.3512
+# num_turns: 11
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 185
+# repo: DaytonaRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 11
+# cost (USD, API rate): 1.351195
+# usage: {'input_tokens': 15, 'output_tokens': 10063, 'cache_creation_input_tokens': 14055, 'cache_read_input_tokens': 221809}
+# findings: 1
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "low",
+    "summary": "re_enable() can immediately re-disable a task when disable_failures == 1, regressing prior behavior",
+    "detail": "The new SimpleTaskState.re_enable(task, config) clears failures and then calls self.set_status(task, FAILED, config). set_status, in turn, calls task.add_failure() and checks has_excessive_failures(). Because failures was just cleared, the failure count becomes 1, so when disable_failures == 1 the check `1 >= 1` is True, causing set_status to set scheduler_disable_time = time.time(), force the new_status back to DISABLED, and call notifications.send_error_email a second time. The trailing task.failures.clear() in re_enable runs after the status has already been forced to DISABLED, so the task ends up DISABLED again (with a refreshed disable timer and a duplicate alert email) instead of being re-enabled to FAILED. The old Task.re_enable() set status = FAILED directly and never went through the failure-counting path, so this is a behavioral regression introduced by routing re_enable through set_status. It triggers both via the timed auto re-enable in prune() (line 319) and via the admin-facing CentralPlannerScheduler.re_enable_task (line 795). Verified by simulation: with disable_failures=1 and an initially-DISABLED task, after re_enable(task, config) the task is back to DISABLED with a fresh scheduler_disable_time and a second email sent.",
+    "line_end": 255,
+    "suggested_fix": "Avoid going through the failure-counting set_status path inside re_enable, e.g.:\n@@\n     def re_enable(self, task, config=None):\n-        task.scheduler_disable_time = None\n-        task.failures.clear()\n-        if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+        task.scheduler_disable_time = None\n+        task.failures.clear()\n+        if config:\n+            # move the task to FAILED without re-counting a failure\n+            self._status_tasks[task.status].pop(task.id, None)\n+            self._status_tasks[FAILED][task.id] = task\n+            task.status = FAILED\n"
+  }
+]

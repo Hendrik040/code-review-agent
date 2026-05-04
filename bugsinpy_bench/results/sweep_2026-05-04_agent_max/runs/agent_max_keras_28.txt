@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: keras#28
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# fixed_commit: 5422fdd38baad36730cb6aeb946e17eeae6a551c
+# base_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631^
+# head_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# started: 2026-05-04T05:52:43+00:00
+# finished: 2026-05-04T05:56:16+00:00
+# duration_s: 213.0
+# cost_usd: 0.8294
+# num_turns: 7
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 306
+# repo: DaytonaRepo
+# refs: 7a1b9005c220afb9271d20a73e168cf18d0cd631^..7a1b9005c220afb9271d20a73e168cf18d0cd631
+# turns: 7
+# cost (USD, harness-reported): 0.829431
+# cost (USD, public Opus 4 rate): 2.488292
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 30569, 'cache_read_input_tokens': 415289, 'output_tokens': 17226, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 30569}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 508, 'cache_read_input_tokens': 71165, 'cache_creation_input_tokens': 1498, 'cache_creation': {'ephemeral_5m_input_tokens': 1498, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 302,
+    "category": "logic",
+    "severity": "high",
+    "summary": "TimeseriesGenerator._empty_batch under-allocates the time dimension when length is not a multiple of sampling_rate, causing __getitem__ to raise ValueError on assignment.",
+    "detail": "`_empty_batch` allocates `samples` with shape `[num_rows, self.length // self.sampling_rate, ...]` (line 302), but in `__getitem__` (line 319) the per-row slice is built from `range(rows[j] - self.length, rows[j], self.sampling_rate)`, which yields `ceil(length / sampling_rate)` indices. These differ whenever `length % sampling_rate != 0`. Concrete example: length=10, sampling_rate=3 \u2014 allocated time dim = 3, but `range(0, 10, 3)` = [0, 3, 6, 9] (4 indices). The subsequent `samples[j] = self.data[indices]` then raises `ValueError: could not broadcast input array from shape (4,1) into shape (3,1)`. The added tests only exercise length=10/sampling_rate=2 (which is divisible), so they hide the bug. Any user passing a non-divisible (length, sampling_rate) combination will see the generator crash on the very first batch.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        samples_shape = [num_rows, self.length // self.sampling_rate]\n+        samples_shape = [num_rows, (self.length + self.sampling_rate - 1) // self.sampling_rate]\n         samples_shape.extend(self.data.shape[1:])\n"
+  },
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 290,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Default end_index = len(data) - 1 makes the last data/target index unreachable; off-by-one between the default and how end_index is used as an exclusive upper bound.",
+    "detail": "The default at line 290 sets `end_index = len(data) - 1`, but `__getitem__` uses `end_index` as an *exclusive* upper bound in both branches: `np.arange(i, min(i + batch_size*stride, self.end_index), stride)` (line 314-315) and `np.random.randint(self.start_index, self.end_index, size=...)` (line 310-311) \u2014 neither produces values equal to `end_index`. Net effect with the default: for `data` of length N (e.g., 50), the user can never sample target index N-1 (49). The reported `__len__` even claims 20 batches, but the last non-shuffle batch silently contains only 1 row instead of `batch_size`, and shuffle mode never picks index 49 at all. This drops the final training pair and surprises any user who reads the default as 'last valid index'. Fix is either to default `end_index = len(data)` (keeping the exclusive convention) or to use `end_index + 1` in the arange/randint calls (keeping the inclusive convention).",
+    "line_end": null,
+    "suggested_fix": "@@\n         if end_index is None:\n-            end_index = len(data) - 1\n+            end_index = len(data)\n         self.end_index = end_index\n"
+  }
+]

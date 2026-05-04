@@ -1,0 +1,67 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_high
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T04:59:59+00:00
+# finished: 2026-05-04T05:02:50+00:00
+# duration_s: 170.9
+# cost_usd: 5.1811
+# num_turns: 16
+# num_findings: 3
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 276
+# repo: DaytonaRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 16
+# cost (USD, API rate): 5.181109
+# usage: {'input_tokens': 20, 'output_tokens': 8921, 'cache_creation_input_tokens': 115865, 'cache_read_input_tokens': 1559510}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 837,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator.get_item_key uses math.floor/ceil on raw attribute, breaking on datetime-ordered querysets",
+    "detail": "OptimizedCursorPaginator.get_item_key reads the raw attribute and feeds it directly into math.floor/math.ceil:\n\n    value = getattr(item, self.key)\n    return int(math.floor(value) if self._is_asc(for_prev) else math.ceil(value))\n\nIt is wired up in OrganizationAuditLogsEndpoint with order_by=\"-datetime\" (the AuditLogEntry.datetime DateTimeField), but math.floor() of a datetime instance raises `TypeError: must be real number, not datetime.datetime`. DateTimePaginator deliberately converts via value.strftime(\"%s.%f\") * multiplier for this reason. As soon as any audit-log row is returned through the optimized path (use_optimized=true and the user is a superuser or a member with has_global_access \u2014 the default for open-membership orgs), build_cursor() invokes get_item_key on the first/last row and the request raises a 500. The optimized branch is therefore dead-on-arrival for the only endpoint that uses it.",
+    "line_end": 838,
+    "suggested_fix": "-    def get_item_key(self, item, for_prev=False):\n-        value = getattr(item, self.key)\n-        return int(math.floor(value) if self._is_asc(for_prev) else math.ceil(value))\n+    def get_item_key(self, item, for_prev=False):\n+        value = getattr(item, self.key)\n+        # Mirror DateTimePaginator: support datetime-ordered querysets\n+        if hasattr(value, \"strftime\"):\n+            value = float(value.strftime(\"%s.%f\")) * 1000\n+        return int(math.floor(value) if self._is_asc(for_prev) else math.ceil(value))"
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 877,
+    "category": "error",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator passes negative slice indices to a Django QuerySet, raising ValueError",
+    "detail": "When enable_advanced_features=True and the caller-supplied cursor.offset is negative, the paginator does:\n\n    start_offset = cursor.offset  # negative\n    stop = start_offset + limit + extra\n    results = list(queryset[start_offset:stop])\n\nDjango's QuerySet.__getitem__ explicitly rejects this: `if (k.start is not None and k.start < 0) ... raise ValueError(\"Negative indexing is not supported.\")` (django/db/models/query.py). Cursor.from_string parses the offset with int(...) and accepts negative integers, so any client of the audit-logs endpoint that the gating allows in (see the related has_global_access finding) can send `?optimized_pagination=true&cursor=0:-1:0` and reliably trigger an unhandled ValueError \u2192 HTTP 500 / unbounded error logging. The \u201cunderlying queryset will handle boundary conditions\u201d comment is false for Django ORM querysets.",
+    "line_end": 884,
+    "suggested_fix": "-        if self.enable_advanced_features and cursor.offset < 0:\n-            start_offset = cursor.offset  # Allow negative offsets for advanced pagination\n-            stop = start_offset + limit + extra\n-            results = list(queryset[start_offset:stop])\n-        else:\n-            start_offset = max(0, offset) if not cursor.is_prev else offset\n-            stop = start_offset + limit + extra\n-            results = list(queryset[start_offset:stop])\n+        start_offset = max(0, offset)\n+        stop = start_offset + limit + extra\n+        results = list(queryset[start_offset:stop])"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "security",
+    "severity": "medium",
+    "summary": "Audit-log 'advanced pagination' is gated on has_global_access, which is True by default for normal members",
+    "detail": "The new gate is:\n\n    use_optimized = request.GET.get(\"optimized_pagination\") == \"true\"\n    enable_advanced = request.user.is_superuser or organization_context.member.has_global_access\n\nThe surrounding comments call this \"Enable advanced pagination for admins\". However `has_global_access` on RpcOrganizationMember / OrganizationMember is the open-membership flag and defaults to True (`models/organizationmember.py:216: has_global_access = models.BooleanField(default=True)`), so any ordinary member of an open-membership org satisfies the condition \u2014 not only superusers/admins. While OrganizationAuditPermission still requires `org:write`, the diff\u2019s stated intent (\"authorized administrators\") is not what the code enforces, and this widens exposure of the broken OptimizedCursorPaginator path (see the negative-offset and datetime get_item_key findings) to any GET-authorized member able to flip the query string.",
+    "line_end": 73,
+    "suggested_fix": "-        use_optimized = request.GET.get(\"optimized_pagination\") == \"true\"\n-        enable_advanced = request.user.is_superuser or organization_context.member.has_global_access\n-\n-        if use_optimized and enable_advanced:\n+        # The optimized paginator is currently broken for datetime-ordered\n+        # querysets and accepts unsafe negative offsets; do not expose it.\n+        if False:\n             ..."
+  }
+]

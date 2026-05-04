@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: luigi#18
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: c521d59c5eacf6c19ce3c17a62f73e042fa0556e
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-05-04T02:48:25+00:00
+# finished: 2026-05-04T02:53:00+00:00
+# duration_s: 274.8
+# cost_usd: 1.1281
+# num_turns: 11
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 185
+# repo: DaytonaRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 11
+# cost (USD, harness-reported): 1.128112
+# cost (USD, public Opus 4 rate): 3.384335
+# usage: {'input_tokens': 20, 'cache_creation_input_tokens': 41495, 'cache_read_input_tokens': 729236, 'output_tokens': 20162, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 41495}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 204, 'cache_read_input_tokens': 82694, 'cache_creation_input_tokens': 895, 'cache_creation': {'ephemeral_5m_input_tokens': 895, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "low",
+    "summary": "re_enable now goes through set_status(FAILED), which calls add_failure() and can immediately re-disable the task before the trailing failures.clear()",
+    "detail": "The original Task.re_enable() simply set self.status = FAILED directly. The new SimpleTaskState.re_enable(task, config) instead routes through self.set_status(task, FAILED, config). set_status's FAILED branch (lines 276-289) unconditionally calls task.add_failure() when can_disable() is True, then evaluates has_excessive_failures(). Because re_enable cleared failures on line 252, the deque now contains exactly one fresh failure; if the user has configured disable_failures == 1 (a documented config option in luigi/server.py 'disable-num-failures'), has_excessive_failures() returns True. set_status then sets a brand-new scheduler_disable_time, switches new_status back to DISABLED, and sends a DISABLED notification email. The trailing task.failures.clear() on line 255 wipes the failure deque but does NOT reset scheduler_disable_time, so the task ends up DISABLED again with a freshly extended disable window. This affects both prune()'s automatic re-enable after disable_time expires and the user-initiated re_enable_task RPC: in the disable_failures==1 configuration the task can never actually be re-enabled, and a spurious 'DISABLED ... due to excessive failures' email is sent on every attempt.",
+    "line_end": 255,
+    "suggested_fix": "-    def re_enable(self, task, config=None):\n-        task.scheduler_disable_time = None\n-        task.failures.clear()\n-        if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+    def re_enable(self, task, config=None):\n+        task.scheduler_disable_time = None\n+        task.failures.clear()\n+        self._status_tasks[task.status].pop(task.id, None)\n+        self._status_tasks[FAILED][task.id] = task\n+        task.status = FAILED"
+  }
+]

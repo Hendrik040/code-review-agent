@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_high
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-05-04T05:28:22+00:00
+# finished: 2026-05-04T05:34:08+00:00
+# duration_s: 346.5
+# cost_usd: 1.2311
+# num_turns: 15
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 292
+# repo: DaytonaRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 15
+# cost (USD, harness-reported): 1.231144
+# cost (USD, public Opus 4 rate): 3.693432
+# usage: {'input_tokens': 24, 'cache_creation_input_tokens': 41616, 'cache_read_input_tokens': 896898, 'output_tokens': 20899, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 41616}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 361, 'cache_read_input_tokens': 79501, 'cache_creation_input_tokens': 4209, 'cache_creation': {'ephemeral_5m_input_tokens': 4209, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 248,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "FixedQueuePool.shutdown abandons in-flight queue items, defeating immediate=False drain semantics",
+    "detail": "FixedQueuePool.shutdown sets `worker.shutdown = True` on every worker BEFORE calling `q.shutdown(immediate=False)`. OrderedQueueWorker.run is `while not self.shutdown: work_item = self.work_queue.get(); ...process...`. The shutdown flag is checked only at the top of each iteration. So a worker that was blocked in get() will be unblocked by `q.shutdown(immediate=False)` (which is supposed to allow draining the remaining items before raising ShutDown), pull at most ONE more item, process it, loop back, see `self.shutdown` is True, and exit. Any remaining items in that queue are abandoned. This makes the `immediate=False` (graceful) shutdown effectively equivalent to `immediate=True` minus one item per worker. Combined with the fact that `ResultsStrategyFactory.shutdown` is the only place this is invoked at process exit (and `SimpleQueueProcessingStrategy.close` similarly defers to it), draining is never really achieved on rebalance/shutdown. It does not cause at-least-once data loss because the offsets for abandoned items remain outstanding and uncommitted, but it undermines the graceful-drain contract documented on FixedQueuePool and exposed via wait_until_empty, can produce surprising metrics, and ties up restart latency by always reprocessing whatever was queued.",
+    "line_end": 258,
+    "suggested_fix": "Either drop the `self.shutdown` flag and rely solely on `queue.ShutDown` raised from `.get()` (which `run()` already catches), or call `q.shutdown(immediate=False)` first and only set `worker.shutdown = True` after the queues are confirmed empty (e.g., after a successful `wait_until_empty`)."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 289,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "Arroyo Commit callback invoked from a background thread concurrently with submit/poll/close",
+    "detail": "SimpleQueueProcessingStrategy starts a background `commit_thread` in __init__ that calls `self.commit_function(committable)` once per second. `commit_function` ultimately invokes the arroyo `Commit` callable that was passed into `create_with_partitions` by the consumer. Every other mode in this factory commits from the strategy chain (`CommitOffsets` in serial / multiprocess / batched-parallel), i.e. on the same thread that arroyo drives `submit`/`poll`/`close` on. Arroyo's `Commit` callback is not documented as thread-safe and concurrent invocation with the main strategy thread can interleave with the consumer's own offset bookkeeping (assignment changes, paused partitions, in-flight commits). The offset state arroyo exposes is also a snapshot tied to its main loop. At minimum this is an unstated contract reversal vs the rest of the codebase; in practice it can lead to duplicate commits, commits for partitions just revoked, or races on the consumer's internal commit map. Recommendation is to drive the commit from arroyo's thread (e.g. in `poll`) instead of from a daemon thread.",
+    "line_end": 309,
+    "suggested_fix": "Move the `get_committable_offsets()` + `commit_function(...)` block out of `_commit_loop` and into `poll()`/`submit()` so it executes on arroyo's main strategy thread, and remove the background `commit_thread`."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 340,
+    "category": "error",
+    "severity": "low",
+    "summary": "Submission errors with non-BrokerValue messages silently drop the offset and let later offsets commit past it",
+    "detail": "In `SimpleQueueProcessingStrategy.submit`, if the body raises before tracking (e.g. the `assert isinstance(message.value, BrokerValue)` fails because arroyo handed in a non-BrokerValue Message, or `decoder` raises before reaching that assert), the `except` branch only records the offset when `isinstance(message.value, BrokerValue)` is True. For a non-BrokerValue message, the failure is logged but the offset is never added to the OffsetTracker. The next message that DOES have a BrokerValue will be tracked, become the new `min_offset` for that partition, and the commit loop's `start = max(last_committed + 1, min_offset)` will advance past the skipped offset and commit it as if processed. Combined with the worker also doing `complete_offset` in `finally` regardless of success, this is one of the few paths that can silently lose a message rather than just leaving it outstanding for re-processing on restart. In practice non-BrokerValue messages on this strategy are rare, hence low severity, but the failure mode is silent.",
+    "line_end": 345,
+    "suggested_fix": "Either tighten the type contract (raise instead of swallowing when message.value is not BrokerValue), or in the except branch fall back to `metrics.incr` + re-raise so arroyo can stop the consumer rather than allowing the commit pointer to skip the failed offset."
+  }
+]

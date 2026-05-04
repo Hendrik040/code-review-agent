@@ -1,0 +1,68 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: thefuck#21
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: nvbn/thefuck
+# introducing_commit: e4da8a2e5a6635d81443cf30cbb369a61b912be4
+# fixed_commit: 213791d3c2af379ffa37a140735998736b41912e
+# base_ref: e4da8a2e5a6635d81443cf30cbb369a61b912be4^
+# head_ref: e4da8a2e5a6635d81443cf30cbb369a61b912be4
+# started: 2026-05-04T03:35:09+00:00
+# finished: 2026-05-04T03:36:50+00:00
+# duration_s: 101.0
+# cost_usd: 3.7290
+# num_turns: 11
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 238
+# repo: DaytonaRepo
+# refs: e4da8a2e5a6635d81443cf30cbb369a61b912be4^..e4da8a2e5a6635d81443cf30cbb369a61b912be4
+# turns: 11
+# cost (USD, API rate): 3.728972
+# usage: {'input_tokens': 15, 'output_tokens': 5347, 'cache_creation_input_tokens': 103626, 'cache_read_input_tokens': 923156}
+# findings: 3
+# ---
+[
+  {
+    "file": "thefuck/rules/git_fix_stash.py",
+    "line": 6,
+    "category": "error",
+    "severity": "low",
+    "summary": "match() raises IndexError for bare `git` command",
+    "detail": "`command.script.split()[1] == 'stash'` indexes element 1 unconditionally. When the user runs just `git` (which prints its top-level usage to stderr \u2014 and 'usage:' is in stderr), `command.script.split()` is `['git']` and `[1]` raises IndexError. The framework catches exceptions in match() and logs them via `rule_failed`, so the tool keeps working, but the rule produces noise on every bare-git invocation and prevents legitimate later evaluation. Other git rules guard this by using `script.split()[1:] == [...]` or by testing on `command.script` strings. Suggested guard: `len(command.script.split()) >= 2 and command.script.split()[1] == 'stash' and 'usage:' in command.stderr`.",
+    "line_end": null,
+    "suggested_fix": "@@\n-def match(command, settings):\n-    return (command.script.split()[1] == 'stash'\n-            and 'usage:' in command.stderr)\n+def match(command, settings):\n+    parts = command.script.split()\n+    return (len(parts) >= 2\n+            and parts[1] == 'stash'\n+            and 'usage:' in command.stderr)\n"
+  },
+  {
+    "file": "thefuck/rules/git_fix_stash.py",
+    "line": 25,
+    "category": "error",
+    "severity": "medium",
+    "summary": "get_new_command() raises IndexError when script has no stash subcommand",
+    "detail": "`stash_cmd = command.script.split()[2]` assumes there is a third token. The match() function only checks that `split()[1] == 'stash'` and that 'usage:' appears in stderr \u2014 it never verifies the script has 3+ tokens. So if the matched script is `'git stash'` (with usage emitted, e.g., via an alias/wrapper, hub, or stash subcommand returning its usage), this raises IndexError inside run_rule(). run_rule() does NOT catch exceptions (unlike match), so the entire `fuck` invocation crashes with a traceback instead of suggesting a fix. The fix is either to validate length in match(), or to handle the missing-subcommand case in get_new_command (treat as the 'missing save' branch).",
+    "line_end": null,
+    "suggested_fix": "@@\n def get_new_command(command, settings):\n-    stash_cmd = command.script.split()[2]\n-    fixed = utils.get_closest(stash_cmd, stash_commands, fallback_to_first=False)\n+    cmd = command.script.split()\n+    if len(cmd) < 3:\n+        cmd.insert(2, 'save')\n+        return ' '.join(cmd)\n+    stash_cmd = cmd[2]\n+    fixed = utils.get_closest(stash_cmd, stash_commands, fallback_to_first=False)\n"
+  },
+  {
+    "file": "thefuck/rules/git_fix_stash.py",
+    "line": 29,
+    "category": "logic",
+    "severity": "low",
+    "summary": "command.script.replace() replaces all occurrences, not just the misspelled subcommand",
+    "detail": "`command.script.replace(stash_cmd, fixed)` substitutes every occurrence of the broken token in the entire script. If the same string appears later in the message (e.g., `git stash opp \"opp was a typo\"`), it is also rewritten, corrupting the user's message. Sibling rules in this repo (e.g., `git_not_command.py`, `pip_unknown_command.py`, `cargo_no_command.py`, `brew_unknown_command.py`) all pass `count=1` to `str.replace()` to limit substitution to the first occurrence; this rule should do the same.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        return command.script.replace(stash_cmd, fixed)\n+        return command.script.replace(stash_cmd, fixed, 1)\n"
+  }
+]

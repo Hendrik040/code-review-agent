@@ -1,0 +1,68 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: sanic#1
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: huge-success/sanic
+# introducing_commit: a6077a179067812766293f9ab4391b5e1499a9c6
+# fixed_commit: 44973125c15304b4262c51c78b5a86bd1daafa86
+# base_ref: a6077a179067812766293f9ab4391b5e1499a9c6^
+# head_ref: a6077a179067812766293f9ab4391b5e1499a9c6
+# started: 2026-05-04T03:11:38+00:00
+# finished: 2026-05-04T03:14:15+00:00
+# duration_s: 156.8
+# cost_usd: 2.4898
+# num_turns: 25
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 216
+# repo: DaytonaRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 25
+# cost (USD, API rate): 2.489824
+# usage: {'input_tokens': 29, 'output_tokens': 9267, 'cache_creation_input_tokens': 41147, 'cache_read_input_tokens': 681905}
+# findings: 3
+# ---
+[
+  {
+    "file": "sanic/app.py",
+    "line": 217,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "`@app.route` decorator now returns a `(routes, handler)` tuple instead of the handler, breaking the documented decorator contract and any user code that references the decorated symbol.",
+    "detail": "The inner `response` function used as the decorator now returns `routes, handler` (line 217) instead of `handler`. The same change is made for `@app.websocket` (line 527). When users write `@app.route(\"/\")\\ndef handler(request): ...`, the name `handler` in their module now refers to the tuple `([Route, ...], <function>)` rather than the function itself.\n\nConcrete impact:\n- `handler(...)` becomes uncallable (`TypeError: 'tuple' object is not callable`).\n- `handler.__name__`, `functools.wraps`, and any introspection on the decorated symbol break.\n- `add_websocket_route` (sanic/app.py:560-566) returns `self.websocket(...)(handler)` directly, so it now returns a tuple instead of the handler \u2014 an external API change with no caller updates.\n- Adopting a new tuple return is a backward-incompatible API change in a bugfix (changelog at changelogs/37.bugfix.rst). This pattern is documented and widespread in user code (tests/test_app.py, examples/blueprints.py, etc.).\n\nThe new return shape is only needed internally by `Blueprint.register` (sanic/blueprints.py:119, 137), which already destructures it as `_routes, _ = app.route(...)`. It would be safer to expose the routes via a different surface (e.g. attach `routes` to the handler, or via a separate internal method) and keep the public decorator contract intact (return the handler).",
+    "line_end": 217,
+    "suggested_fix": "Keep `@app.route` / `@app.websocket` returning `handler`. Expose the created routes through a different internal channel (e.g. `handler.routes = routes`) so `Blueprint.register` can read them without changing the public decorator return type:\n\n@@ sanic/app.py\n-            return routes, handler\n+            handler.routes = routes\n+            return handler\n\n(and similarly for websocket), then in sanic/blueprints.py read `handler.routes` instead of unpacking the decorator return."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 940,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Router lookup is now performed before request middleware runs, so request middleware can no longer intercept/transform requests for unknown routes (404s).",
+    "detail": "Previously `_run_request_middleware` was awaited before `self.router.get(request)` was invoked, so request middleware could short-circuit and return a response even if the URL wasn't registered (a common pattern for auth, redirects, etc.). The diff moves `self.router.get(request)` to the top of the `try` block (line 940). If the route doesn't exist, `router.get` raises `NotFound`/`MethodNotSupported` and falls into the outer `except Exception` clause, completely skipping request middleware. \n\nThis is a behavioral regression: any deployment that relied on `@app.middleware('request')` to handle unknown URLs (e.g. global redirects, custom 404 pages computed in middleware, request logging for missing routes) will silently stop working. The change is required only to obtain `name` for named middleware lookup, but the prior behavior could be preserved by performing lookup inside the try without short-circuiting global request middleware on lookup failure.",
+    "line_end": 947,
+    "suggested_fix": "Run global request middleware first, then perform router.get, then run named request middleware:\n\n-        try:\n-            handler, args, kwargs, uri, name = self.router.get(request)\n-            response = await self._run_request_middleware(request, request_name=name)\n+        try:\n+            # Run global request middleware first (preserves prior contract)\n+            response = await self._run_global_request_middleware(request)\n+            if not response:\n+                handler, args, kwargs, uri, name = self.router.get(request)\n+                response = await self._run_named_request_middleware(request, name)"
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 663,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Named response middleware is appended (FIFO), but global response middleware is prepended (LIFO via `appendleft`), creating inconsistent execution order between `@app.middleware('response')` and `@blueprint.middleware('response')`.",
+    "detail": "`register_middleware` (sanic/app.py:647) uses `self.response_middleware.appendleft(middleware)` so response middleware runs in reverse registration order \u2014 the conventional onion ordering (last registered runs first). The new `register_named_middleware` uses `self.named_response_middleware[_rn].append(middleware)` (line 663), so blueprint response middleware runs in registration order. \n\nBefore this PR, a blueprint response middleware ultimately went through `register_middleware` and got the LIFO ordering. After this PR, it gets FIFO. With multiple response middlewares on a blueprint, the order of execution silently flips, which can change response transformation results (e.g. a wrapping middleware now runs before the inner middleware it was supposed to wrap).",
+    "line_end": 663,
+    "suggested_fix": "Use `appendleft` for the named response middleware deque to match the global behavior:\n\n-                if middleware not in self.named_response_middleware[_rn]:\n-                    self.named_response_middleware[_rn].append(middleware)\n+                if middleware not in self.named_response_middleware[_rn]:\n+                    self.named_response_middleware[_rn].appendleft(middleware)"
+  }
+]

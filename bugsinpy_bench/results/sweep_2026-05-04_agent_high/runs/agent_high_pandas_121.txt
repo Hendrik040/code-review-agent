@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: pandas#121
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# fixed_commit: 958756af5cb40658e975a70d29089b68aea93040
+# base_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda^
+# head_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# started: 2026-05-04T03:54:21+00:00
+# finished: 2026-05-04T03:58:07+00:00
+# duration_s: 226.1
+# cost_usd: 1.2731
+# num_turns: 24
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 212
+# repo: DaytonaRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 24
+# cost (USD, harness-reported): 1.273141
+# cost (USD, public Opus 4 rate): 3.819423
+# usage: {'input_tokens': 38, 'cache_creation_input_tokens': 34202, 'cache_read_input_tokens': 1450577, 'output_tokens': 13356, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 34202}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 432, 'cache_read_input_tokens': 72412, 'cache_creation_input_tokens': 1215, 'cache_creation': {'ephemeral_5m_input_tokens': 1215, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/blocks.py",
+    "line": 2644,
+    "category": "logic",
+    "severity": "high",
+    "summary": "ObjectBlock._replace_coerce iterates a non-iterable Block when regex=True, raising TypeError",
+    "detail": "ObjectBlock._replace_coerce calls super()._replace_coerce, which for regex=True returns the result of self._replace_single(...) \u2014 a single Block object, not a list (only the non-regex putmask branch returns a list). The next line then unconditionally does `block = [b.convert(...) for b in block]`. Block defines no __iter__ or __getitem__ (only __len__), so iterating raises `TypeError: 'Block' object is not iterable`. This means any call like `df.replace({'a': 'x', 'b': 'y'}, regex=True)` (i.e. dict-based regex replacement, the typical replace_list path that exercises the new _replace_coerce) on object-dtype data with at least one match will crash on the final iteration where convert=True. The original (pre-PR) code took the regex+object path through ObjectBlock.replace -> _replace_single, which returned a single block \u2014 but it never iterated it. The new wrapper added in this PR introduces the iteration without normalizing the return type.",
+    "line_end": 2645,
+    "suggested_fix": "         if mask.any():\n             block = super(ObjectBlock, self)._replace_coerce(\n                 to_replace=to_replace, value=value, inplace=inplace,\n                 regex=regex, convert=convert, mgr=mgr, mask=mask)\n             if convert:\n-                block = [b.convert(by_item=True, numeric=False, copy=True)\n-                         for b in block]\n+                blocks = block if isinstance(block, list) else [block]\n+                block = [b.convert(by_item=True, numeric=False, copy=True)\n+                         for b in blocks]\n             return block\n         return self"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Regex element-wise check uses `isinstance(x, str)`, silently skipping Python 2 unicode strings",
+    "detail": "_compare_or_regex_match's regex branch builds `np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str) else False)`. Pandas at this revision still supports Python 2, where text data in object arrays is commonly the `unicode` type (and `str` is the bytes type); `isinstance(unicode_value, str)` is False in Py2, so every element is treated as a non-string and the mask comes back all-False. The result is that `df.replace({...}, regex=True)` silently produces no replacements for unicode/object Series under Python 2 \u2014 a correctness regression versus the pre-PR path that went through ObjectBlock._replace_single (which uses `compat.string_types`). The rest of this file already imports/uses `compat.string_types` for exactly this reason.",
+    "line_end": 1919,
+    "suggested_fix": "-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n-                          else False)\n+        op = np.vectorize(lambda x: bool(re.match(b, x))\n+                          if isinstance(x, compat.string_types) else False)"
+  }
+]

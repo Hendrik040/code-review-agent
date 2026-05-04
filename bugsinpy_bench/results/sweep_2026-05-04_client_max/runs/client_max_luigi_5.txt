@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: luigi#5
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: be88a318dce06254a66303a1c398ec28f89c60d7
+# fixed_commit: 1fbec18ceb7c5de352e6d1df12960c61f09e67c2
+# base_ref: be88a318dce06254a66303a1c398ec28f89c60d7^
+# head_ref: be88a318dce06254a66303a1c398ec28f89c60d7
+# started: 2026-05-04T04:52:33+00:00
+# finished: 2026-05-04T04:55:26+00:00
+# duration_s: 173.5
+# cost_usd: 2.5630
+# num_turns: 22
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 274
+# repo: DaytonaRepo
+# refs: be88a318dce06254a66303a1c398ec28f89c60d7^..be88a318dce06254a66303a1c398ec28f89c60d7
+# turns: 22
+# cost (USD, API rate): 2.562979
+# usage: {'input_tokens': 26, 'output_tokens': 10352, 'cache_creation_input_tokens': 39659, 'cache_read_input_tokens': 695055}
+# findings: 1
+# ---
+[
+  {
+    "file": "luigi/util.py",
+    "line": 144,
+    "category": "logic",
+    "severity": "high",
+    "summary": "@delegates decorator unconditionally shadows the user's subtasks() method with the empty default, so user-supplied subtasks are never executed.",
+    "detail": "In `delegates()`, `Wrapped` is created as a subclass of `task_that_delegates` and defines its own `subtasks()` returning `[]`. Because `Wrapped` is a subclass, Python's MRO resolves `self.subtasks()` to `Wrapped.subtasks` first, which means the user's `subtasks()` defined on `task_that_delegates` is never reached -- not from `Wrapped.deps()`, not from `Wrapped.run()`, and not even from `task_that_delegates.run(self)` (because `self` is still a `Wrapped` instance, so MRO again picks `Wrapped.subtasks`). The result is that any task decorated with @delegates silently behaves as if it has no subtasks: `deps()` returns only `requires()` (so the scheduler has no idea about the dependencies), and `run()` never invokes the subtasks. The deprecated `CompositionTask` worked because the user's class subclassed it (so MRO walked the user's override first); the new decorator inverts the relationship and broke this. The new test `SubtaskTest.test_multiple_workers` does not catch the bug because it has no assertions and additionally references the wrong class (`F(1)`/`F(2)` rather than `Subtask`). Fix by either not redefining `subtasks` in `Wrapped` (and instead `setattr(task_that_delegates, 'subtasks', lambda self: [])` only when the user hasn't supplied one), or by calling `task_that_delegates.subtasks(self)` from `Wrapped` and using its result.",
+    "line_end": 148,
+    "suggested_fix": "@@\n     class Wrapped(task_that_delegates):\n-        def subtasks(self):\n-            # This method can (optionally) define a couple of delegate tasks that\n-            # will be accessible as interfaces, meaning that the task can access\n-            # those tasks and run methods defined on them, etc\n-            return []  # default impl\n-\n         def deps(self):\n             # Overrides method in base class\n             return task.flatten(self.requires()) + task.flatten([t.deps() for t in task.flatten(self.subtasks())])\n@@\n+    if not hasattr(task_that_delegates, 'subtasks'):\n+        task_that_delegates.subtasks = lambda self: []  # default impl\n+\n     _cleanup_wrapper(Wrapped, task_that_delegates)\n"
+  }
+]

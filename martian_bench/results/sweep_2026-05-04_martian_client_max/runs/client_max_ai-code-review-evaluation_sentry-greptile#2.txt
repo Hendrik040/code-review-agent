@@ -1,0 +1,77 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_max
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T05:05:39+00:00
+# finished: 2026-05-04T05:14:14+00:00
+# duration_s: 514.4
+# cost_usd: 14.5205
+# num_turns: 50
+# num_findings: 4
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 279
+# repo: DaytonaRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 50
+# cost (USD, API rate): 14.520454
+# usage: {'input_tokens': 54, 'output_tokens': 27218, 'cache_creation_input_tokens': 155558, 'cache_read_input_tokens': 6374388}
+# findings: 4
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 838,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator.get_item_key crashes on datetime sort fields, breaking the audit log endpoint whenever ?optimized_pagination=true is used on non-empty data",
+    "detail": "OptimizedCursorPaginator.get_item_key does `int(math.floor(value))` (or ceil) on `getattr(item, self.key)`. The audit log endpoint instantiates this paginator with `order_by=\"-datetime\"`, so the value is a `datetime` instance. `math.floor(datetime(...))` raises `TypeError: must be real number, not datetime.datetime`.\n\nThe key callable is invoked from `build_cursor` \u2192 `_build_next_values` (line 122 in `src/sentry/utils/cursors.py`: `value = key(results[0])`) whenever results are non-empty. So as soon as a superuser or any org member (the `has_global_access` check is True for nearly all members) hits `/api/0/organizations/{slug}/audit-logs/?optimized_pagination=true` and the org has any audit log entries, the request returns HTTP 500.\n\nDateTimePaginator overrides `get_item_key` to first convert via `value.strftime(\"%s.%f\")` before flooring. OptimizedCursorPaginator copies the integer-only logic from `Paginator` instead of `DateTimePaginator`, so it cannot be used as a drop-in replacement for `DateTimePaginator` on a `datetime` column. Either the paginator should not be used here, or `get_item_key`/`value_from_cursor` need datetime-aware overrides like `DateTimePaginator` provides.",
+    "line_end": 840,
+    "suggested_fix": "--- a/src/sentry/api/endpoints/organization_auditlogs.py\n+++ b/src/sentry/api/endpoints/organization_auditlogs.py\n@@\n-        if use_optimized and enable_advanced:\n-            response = self.paginate(\n-                request=request,\n-                queryset=queryset,\n-                paginator_cls=OptimizedCursorPaginator,\n-                ...\n-            )\n-        else:\n-            response = self.paginate(\n-                ...paginator_cls=DateTimePaginator,\n-            )\n+        # OptimizedCursorPaginator uses Paginator-style integer keys and is\n+        # incompatible with the AuditLogEntry.datetime column. Either delete the\n+        # branch or implement DateTimePaginator-style get_item_key/value_from_cursor\n+        # on OptimizedCursorPaginator.\n"
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 877,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "OptimizedCursorPaginator's \"advanced\" negative-offset branch always crashes because Django rejects negative slice indices",
+    "detail": "When `enable_advanced_features=True` and a caller supplies a cursor with `cursor.offset < 0` (parsed from `?cursor=value:-N:0` since `Cursor.from_string` does `int(bits[1])` with no sign check), this branch runs:\n\n    start_offset = cursor.offset  # negative\n    stop = start_offset + limit + extra  # may also be negative\n    results = list(queryset[start_offset:stop])\n\nDjango's `QuerySet.__getitem__` explicitly raises `ValueError(\"Negative indexing is not supported.\")` whenever the start or stop of a slice is negative. The accompanying comments (\"The underlying Django ORM properly handles negative slicing automatically\", \"This is safe because permissions are checked at the queryset level\") are incorrect \u2014 the request returns HTTP 500 instead of any \"advanced pagination\" data. The same misleading comment is added to `Cursor.__init__` (`src/sentry/utils/cursors.py:26`) without any validation that `offset >= 0`. Either the negative-offset feature should be removed, or the offset must be validated/clamped (matching `OffsetPaginator`, which raises `BadPaginationError` on `offset < 0`).",
+    "line_end": 882,
+    "suggested_fix": "--- a/src/sentry/api/paginator.py\n+++ b/src/sentry/api/paginator.py\n@@\n-        if self.enable_advanced_features and cursor.offset < 0:\n-            start_offset = cursor.offset\n-            stop = start_offset + limit + extra\n-            results = list(queryset[start_offset:stop])\n-        else:\n-            start_offset = max(0, offset) if not cursor.is_prev else offset\n-            stop = start_offset + limit + extra\n-            results = list(queryset[start_offset:stop])\n+        if cursor.offset < 0:\n+            raise BadPaginationError(\"Pagination offset cannot be negative\")\n+        start_offset = offset\n+        stop = start_offset + limit + extra\n+        results = list(queryset[start_offset:stop])\n"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "security",
+    "severity": "medium",
+    "summary": "`enable_advanced` gate is effectively any-org-member because has_global_access defaults to True",
+    "detail": "`enable_advanced = request.user.is_superuser or organization_context.member.has_global_access`. The comment immediately above calls this \"authorized administrators\", but `OrganizationMember.has_global_access` is a `BooleanField(default=True)` (see `src/sentry/models/organizationmember.py:216`) \u2014 it indicates whether the member sees all teams (default), not whether they are an administrator. So `enable_advanced` is true for essentially every org member that already passed `OrganizationAuditPermission` (`org:write`).\n\nThis matters because the `?optimized_pagination=true` branch swaps the paginator to `OptimizedCursorPaginator`, which has the bugs described in the other findings (TypeError on datetime keys; ValueError on negative offsets). The misleading gating means any regular org owner/manager can trigger those failure paths, not only Sentry administrators. If the new paginator were ever fixed to do something other than crash, this gate would also gate any new behavior (e.g. negative-offset access) to roughly all org members despite the \"administrators\" wording.",
+    "line_end": null,
+    "suggested_fix": "--- a/src/sentry/api/endpoints/organization_auditlogs.py\n+++ b/src/sentry/api/endpoints/organization_auditlogs.py\n@@\n-        use_optimized = request.GET.get(\"optimized_pagination\") == \"true\"\n-        enable_advanced = request.user.is_superuser or organization_context.member.has_global_access\n-\n-        if use_optimized and enable_advanced:\n+        # Drop the misleading gate and the broken optimized branch entirely;\n+        # everything except superuser-only paths must use DateTimePaginator.\n+        if False:\n             ...\n"
+  },
+  {
+    "file": "src/sentry/spans/buffer.py",
+    "line": 449,
+    "category": "resource",
+    "severity": "low",
+    "summary": "Removed defense-in-depth max_segment_spans cap in _load_segment_data",
+    "detail": "Previously `_load_segment_data` enforced two independent caps on each flushed segment: `max_segment_bytes` (still present) and `max_segment_spans` (removed by this diff). The latter check now relies entirely on the new `add-buffer.lua` trim (`if span_count > 1000 then redis.call(\"zpopmin\", set_key, span_count - 1000) end`).\n\nTwo concerns: (1) the lua hard-codes 1000 while `SpansBuffer.max_segment_spans` defaults to 1001, so changing `max_segment_spans` in Python no longer has any effect on the actual cap; (2) if the lua trim ever fails to apply (ordering bug, script not yet deployed everywhere, future code paths that bypass `add-buffer.lua` and write to the segment set directly \u2014 e.g. `process_spans` does `p.zadd` without invoking the script), the Python flusher will now load and forward arbitrarily large segments downstream, instead of skipping them as before. Restoring the count check (using `self.max_segment_spans`, not the magic 1000) would preserve the prior safety property.",
+    "line_end": null,
+    "suggested_fix": "--- a/src/sentry/spans/buffer.py\n+++ b/src/sentry/spans/buffer.py\n@@\n             payloads[key].extend(span for span, _ in zscan_values)\n+            if len(payloads[key]) > self.max_segment_spans:\n+                metrics.incr(\"spans.buffer.flush_segments.segment_span_count_exceeded\")\n+                logger.error(\"Skipping too large segment, span count %s\", len(payloads[key]))\n+                del payloads[key]\n+                del cursors[key]\n+                continue\n             if cursor == 0:\n                 del cursors[key]\n             else:\n                 cursors[key] = cursor\n"
+  }
+]

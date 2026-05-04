@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: keras#3
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: e27b8b9343da4558b98570d6d45599bd0e365723
+# fixed_commit: c13d2723d01212d09dfdda39b0ad439803ec9230
+# base_ref: e27b8b9343da4558b98570d6d45599bd0e365723^
+# head_ref: e27b8b9343da4558b98570d6d45599bd0e365723
+# started: 2026-05-04T04:21:48+00:00
+# finished: 2026-05-04T04:30:35+00:00
+# duration_s: 527.5
+# cost_usd: 7.2918
+# num_turns: 46
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 253
+# repo: DaytonaRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 46
+# cost (USD, API rate): 7.291816
+# usage: {'input_tokens': 50, 'output_tokens': 33806, 'cache_creation_input_tokens': 80439, 'cache_read_input_tokens': 2164923}
+# findings: 1
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 1362,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`original_input_layer = x._keras_history[0]` resolves to the just-created wrapper InputLayer, not the source model's input layer, leaving `layer_map` without the intended mapping.",
+    "detail": "In `_clone_functional_model`, after `Input(tensor=x, name=...)` is invoked at line 1358, that call mutates `x` itself by setting `x._keras_history = (newly_created_wrapper_layer, 0, 0)` (see `InputLayer.__init__` at keras/engine/topology.py:1339). At line 1362 the code then reads `x._keras_history[0]`, which is now the newly created wrapper layer \u2014 NOT the source model's input layer. Consequently, the line `layer_map[original_input_layer] = newly_created_input_layer` reduces to `layer_map[new_wrapper] = new_wrapper` (a useless self-mapping). The intended mapping `model.input_layers[i] -> new_wrapper` is never recorded. The same omission applies to the symmetric branch at lines 1365-1366 when `x` is already a Keras tensor: no `layer_map` entry is written for `model.input_layers[i]` either. This compares poorly with the placeholder branch (lines 1339-1347), which correctly does `layer_map[layer] = newly_created_input_layer` against `model.input_layers`.\n\nDownstream impact: in the main depth-iteration loop (line 1382), `model.input_layers[i]` is not in `layer_map`, so it is cloned a second time via `layer.__class__.from_config(layer.get_config())` (line 1384), producing a redundant `InputLayer` with its own unused placeholder. The cloned model ends up structurally inconsistent \u2014 `Container.__init__` registers the user-provided/wrapper input layer in `self.input_layers`, while the actual computation graph routes through the from_config-cloned InputLayer's identity output. The new tests pass because the redundant placeholder is never on the trace path used for feeding, but the resulting cloned graph carries dangling layers and unused placeholders, and any subsequent introspection or serialization of the clone may surface these artifacts.",
+    "line_end": null,
+    "suggested_fix": "@@\n-            if not K.is_keras_tensor(x):\n-                name = model.input_layers[i].name\n-                input_tensor = Input(tensor=x,\n-                                     name='input_wrapper_for_' + name)\n-                _input_tensors.append(input_tensor)\n-                # Cache newly created input layer.\n-                original_input_layer = x._keras_history[0]\n-                newly_created_input_layer = input_tensor._keras_history[0]\n-                layer_map[original_input_layer] = newly_created_input_layer\n-            else:\n-                _input_tensors.append(x)\n+            original_input_layer = model.input_layers[i]\n+            if not K.is_keras_tensor(x):\n+                name = original_input_layer.name\n+                input_tensor = Input(tensor=x,\n+                                     name='input_wrapper_for_' + name)\n+                _input_tensors.append(input_tensor)\n+                newly_created_input_layer = input_tensor._keras_history[0]\n+                layer_map[original_input_layer] = newly_created_input_layer\n+            else:\n+                _input_tensors.append(x)\n+                layer_map[original_input_layer] = x._keras_history[0]"
+  }
+]

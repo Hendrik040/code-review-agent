@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: pandas#149
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# fixed_commit: fa1364d1299a53093bc704f9c34c595b602a568b
+# base_ref: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4^
+# head_ref: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# started: 2026-05-04T03:10:06+00:00
+# finished: 2026-05-04T03:11:38+00:00
+# duration_s: 92.2
+# cost_usd: 1.1406
+# num_turns: 8
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 215
+# repo: DaytonaRepo
+# refs: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4^..6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# turns: 8
+# cost (USD, API rate): 1.140576
+# usage: {'input_tokens': 12, 'output_tokens': 5558, 'cache_creation_input_tokens': 25870, 'cache_read_input_tokens': 158989}
+# findings: 1
+# ---
+[
+  {
+    "file": "pandas/io/parquet.py",
+    "line": 217,
+    "category": "resource",
+    "severity": "low",
+    "summary": "FastParquet S3 read opens an S3File but never uses or closes it, leaking a connection per read.",
+    "detail": "In FastParquetImpl.read, when the path is an s3:// URL, the code calls `s3, _, _ = get_filepath_or_buffer(path)` (which opens an s3fs S3File in read mode against the bucket), then discards that S3File and instead passes `s3.s3.open` (the underlying S3FileSystem.open method) to `self.api.ParquetFile(path, open_with=...)` so that fastparquet opens the object itself. The S3File obtained from `get_filepath_or_buffer` is therefore never used for I/O and never explicitly closed; it relies on garbage collection to release the underlying HTTP connection. Each read of a parquet file from S3 issues one extra unnecessary open against S3 and leaks a file handle until GC runs. The cleaner pattern is to obtain the filesystem directly (e.g. `import s3fs; fs = s3fs.S3FileSystem(anon=False)`) or to close the returned S3File before passing only `s3.s3.open` to ParquetFile.",
+    "line_end": 218,
+    "suggested_fix": "@@\n         if is_s3_url(path):\n             # When path is s3:// an S3File is returned.\n             # We need to retain the original path(str) while also\n             # pass the S3File().open function to fsatparquet impl.\n             s3, _, _ = get_filepath_or_buffer(path)\n-            parquet_file = self.api.ParquetFile(path, open_with=s3.s3.open)\n+            try:\n+                parquet_file = self.api.ParquetFile(path, open_with=s3.s3.open)\n+            finally:\n+                s3.close()\n"
+  }
+]

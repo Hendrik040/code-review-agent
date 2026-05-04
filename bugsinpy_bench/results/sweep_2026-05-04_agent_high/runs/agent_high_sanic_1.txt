@@ -1,0 +1,80 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: sanic#1
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: huge-success/sanic
+# introducing_commit: a6077a179067812766293f9ab4391b5e1499a9c6
+# fixed_commit: 44973125c15304b4262c51c78b5a86bd1daafa86
+# base_ref: a6077a179067812766293f9ab4391b5e1499a9c6^
+# head_ref: a6077a179067812766293f9ab4391b5e1499a9c6
+# started: 2026-05-04T04:08:05+00:00
+# finished: 2026-05-04T04:12:45+00:00
+# duration_s: 279.7
+# cost_usd: 1.1906
+# num_turns: 18
+# num_findings: 4
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 217
+# repo: DaytonaRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 18
+# cost (USD, harness-reported): 1.190632
+# cost (USD, public Opus 4 rate): 3.571896
+# usage: {'input_tokens': 27, 'cache_creation_input_tokens': 46426, 'cache_read_input_tokens': 881269, 'output_tokens': 18388, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 46426}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 529, 'cache_read_input_tokens': 86032, 'cache_creation_input_tokens': 2488, 'cache_creation': {'ephemeral_5m_input_tokens': 2488, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "sanic/router.py",
+    "line": 148,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Multi-host routes leave a `None` entry in the returned routes list, breaking blueprint registration",
+    "detail": "`Router._add` returns `None` whenever `host` is an iterable (list of hosts): the recursion at lines 210-212 calls `self.add(...)` for each host and discards the return values, then falls off the function without an explicit return. `Router.add` at line 148 unconditionally appends that result: `routes.append(self._add(uri, methods, handler, host, name))`, so for list-host routes `routes == [None]`. That value is propagated up through `Sanic.route`/`Sanic.websocket` (`return routes, handler`) and into `Blueprint.register`, where line 146 does `route_names = [route.name for route in routes]` and raises `AttributeError: 'NoneType' object has no attribute 'name'`. Any blueprint route that uses `host=[...]` (a documented, tested feature, e.g. `@app.route(\"/\", host=[\"hello.com\", \"world.com\"])`) will now crash at registration time. Even outside of blueprints, the returned `[None]` is observable via the new public return contract of `app.route`/`app.websocket`.",
+    "line_end": null,
+    "suggested_fix": "In `Router._add`, collect the recursive results and return them, e.g.:\n```\nfor host_ in host:\n    results.extend(self.add(uri, methods, handler, host_, name) or [])\nreturn results\n```\nor alternatively filter `None` out in `Router.add` and in `Blueprint.register` before building `route_names`."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 658,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Blueprint response middleware are appended (FIFO) while app-level response middleware are appendleft'd (LIFO), inverting the conventional response-unwrap order",
+    "detail": "`Sanic.register_middleware` adds response middleware via `self.response_middleware.appendleft(middleware)` so they execute in reverse registration order (the standard middleware-unwrap pattern: middleware registered last runs first on the response). The new `register_named_middleware` instead uses `.append(...)` for both request and response branches (line 663). Consequently:\n\n1. Within a blueprint, two `@bp.middleware(\"response\")` handlers now run in registration order (first registered, first executed) \u2014 the opposite of how `@app.middleware(\"response\")` behaves.\n2. In `_run_response_middleware`, `applicable_middleware = self.response_middleware + named_middleware` runs all app-level response middleware before any blueprint response middleware. Combined with the appendleft semantics this means request-side runs `app -> bp` while response-side also runs `app -> bp`, breaking the expected mirrored unwrapping (`bp -> app`).\n\nThis is a behavior regression for any user relying on the documented Sanic ordering for response middleware (e.g. wrapping/unwrapping pairs around blueprint logic).",
+    "line_end": null,
+    "suggested_fix": "For the response branch, mirror `register_middleware` and use `appendleft`:\n```\nif attach_to == \"response\":\n    for _rn in route_names:\n        self.named_response_middleware.setdefault(_rn, deque())\n        if middleware not in self.named_response_middleware[_rn]:\n            self.named_response_middleware[_rn].appendleft(middleware)\n```\nand in `_run_response_middleware`, prepend named middleware to app-level so blueprints unwrap before app middleware: `applicable_middleware = named_middleware + self.response_middleware`."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 566,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "`add_websocket_route` now returns a `(routes, handler)` tuple instead of the handler",
+    "detail": "`add_websocket_route` does `return self.websocket(...)(handler)` (sanic/app.py:560-566). Because `Sanic.websocket`'s inner decorator was changed to `return routes, handler`, `add_websocket_route` now returns a 2-tuple instead of the previously documented handler object (\"Objected decorated by :func:`websocket`\"). The sibling `add_route` was kept compatible by explicitly `return handler` after invoking the decorator (line 449-450), but `add_websocket_route` was not updated. Any caller that does `h = app.add_websocket_route(handler, '/ws')` and later treats `h` as a callable (or accesses handler attributes such as `__name__`) will silently get a tuple, leading to `TypeError: 'tuple' object is not callable` or attribute errors at use sites.",
+    "line_end": null,
+    "suggested_fix": "Mirror `add_route`: invoke the decorator, discard the tuple, and return `handler`:\n```\nself.websocket(uri, host=host, strict_slashes=strict_slashes, subprotocols=subprotocols, name=name)(handler)\nreturn handler\n```"
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 940,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Request middleware no longer runs on requests that fail routing (404 / 405), changing observable behavior of `@app.middleware(\"request\")`",
+    "detail": "Previously, `_run_request_middleware` was invoked before `self.router.get(request)`, so global `@app.middleware(\"request\")` callbacks ran for every incoming request, including ones that ended in `NotFound` or `MethodNotSupported`. The diff moves `handler, args, kwargs, uri, name = self.router.get(request)` to the very top of the `try` block (line 940), before any middleware. As a result, when the router raises (unknown URL, wrong HTTP method), control jumps straight to the `except Exception` error handling and request middleware is silently skipped. This breaks common use cases for app-level request middleware (request logging, auth, metrics, request-id assignment) on 4xx routing failures \u2014 a meaningful regression for app-level middleware that was not the target of this bugfix. The accompanying test change `tests/test_blueprint_group.py:86` (switching from `GET` to `PUT` so the route resolves before the auth middleware runs) appears to confirm this side effect.",
+    "line_end": null,
+    "suggested_fix": "Resolve the route name without raising, e.g. attempt `self.router.get(request)` in a way that yields `name=None` on routing failure (or split routing into a name-resolution step before middleware and the actual handler dispatch after), so global request middleware still runs on 404/405 paths. At minimum, document this as a deliberate breaking change in the changelog."
+  }
+]

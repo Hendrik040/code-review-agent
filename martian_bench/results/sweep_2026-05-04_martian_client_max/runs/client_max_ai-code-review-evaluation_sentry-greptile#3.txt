@@ -1,0 +1,67 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_max
+# pr: ai-code-review-evaluation_sentry-greptile#3
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/3
+# original_upstream_url: https://github.com/getsentry/sentry/pull/94376
+# pr_title: feat(upsampling) - Support upsampled error count with performance optimizations
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 6ad6fe3899f630ccf922ce7ac681147dc7987435
+# n_goldens: 3
+# started: 2026-05-04T05:14:14+00:00
+# finished: 2026-05-04T05:25:16+00:00
+# duration_s: 662.1
+# cost_usd: 10.5848
+# num_turns: 94
+# num_findings: 3
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 285
+# repo: DaytonaRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 94
+# cost (USD, API rate): 10.584818
+# usage: {'input_tokens': 98, 'output_tokens': 33369, 'cache_creation_input_tokens': 87097, 'cache_read_input_tokens': 4298403}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 92,
+    "category": "logic",
+    "severity": "high",
+    "summary": "eps()/epm() queries against allowlisted projects silently lose upsampling, returning raw rates",
+    "detail": "The simplified `transform_query_columns_for_error_upsampling` only transforms `count()` to `upsampled_count() as count` and passes everything else through unchanged. The previous version transformed `eps()` -> `upsampled_eps()` and `epm()` -> `upsampled_epm()` as well (and the corresponding SnQL functions `upsampled_eps`/`upsampled_epm` and their `resolve_*` aliases were also deleted from `discover.py` / `function_aliases.py`). For an allowlisted project sampling at 10%, a `yAxis=eps()` or `yAxis=epm()` request that previously returned the sample-weighted rate will now return the raw, sampled rate (~10x lower). This is a silent under-reporting regression for `eps()`/`epm()` time-series queries on the only remaining caller (`OrganizationEventsStatsEndpoint`). Trigger: any stats request with `yAxis=eps()` or `yAxis=epm()` and `query=event.type:error` against projects in `issues.client_error_sampling.project_allowlist`.",
+    "line_end": 98,
+    "suggested_fix": "@@\n         if column_lower == \"count()\":\n             transformed_columns.append(\"upsampled_count() as count\")\n+        elif column_lower == \"eps()\":\n+            transformed_columns.append(\"upsampled_eps() as eps\")\n+        elif column_lower == \"epm()\":\n+            transformed_columns.append(\"upsampled_epm() as epm\")\n         else:\n             transformed_columns.append(column)\n(and re-add the `upsampled_eps` / `upsampled_epm` SnQLFunction definitions and `resolve_upsampled_eps` / `resolve_upsampled_epm` helpers that were removed from discover.py / function_aliases.py)"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_events.py",
+    "line": 312,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "Tabular Events API no longer applies error upsampling for allowlisted projects",
+    "detail": "The previous `_data_fn` (and its sibling `_handle_results`) called `transform_query_columns_for_error_upsampling(selected_columns, include_alias=False)` before the query and `self.handle_error_upsampling(snuba_params.project_ids, results)` after it; together they rewrote `count()` to `upsampled_count()` in SQL and renamed the result keys back to `count`. Both have been removed in this diff (the `is_errors_query_for_error_upsampled_projects`/`transform_query_columns_for_error_upsampling` import and call are gone, `_handle_results` is gone, and the base class `handle_error_upsampling` method is gone). As a result, requests to `/organizations/<slug>/events/` with `field=count()` against allowlisted projects now return the raw, sampled count instead of the upsampled count \u2014 directly contradicting the `is_errors_query_for_error_upsampled_projects` contract that is still being maintained for the stats endpoint. Trigger: any Events API request with `field=count()` and `query=event.type:error` against allowlisted projects.",
+    "line_end": 341,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/search/events/datasets/discover.py",
+    "line": 1048,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "upsampled_count drops events with NULL sample_weight (defensive ifNull removed)",
+    "detail": "The aggregate was changed from `sum(ifNull(sample_weight, 1))` to `sum(sample_weight)`. ClickHouse's `sum` over a Nullable column ignores NULL rows entirely, so any event in an allowlisted project that does not have `sample_weight` populated is silently dropped from the count instead of being treated as 1. The original code's defensive `ifNull(_, 1)` is strong evidence that `sample_weight` can be NULL in practice; `sentry/event_manager.py:_derive_client_error_sampling_rate` only sets `sample_rate` when the event ships a `contexts.error_sampling.client_sample_rate`, so events from allowlisted projects without that context will not have a sampling rate set, producing exactly this gap. The accompanying docstring asserts \"we rely on the database schema to ensure sample_weight exists for all events in allowlisted projects\" without changing the schema or the ingestion path that would enforce that. Net effect: under-counting of `count()` results for allowlisted projects whenever any events are missing sampling metadata.",
+    "line_end": null,
+    "suggested_fix": "@@\n                     snql_aggregate=lambda args, alias: Function(\n                         \"toInt64\",\n-                        [Function(\"sum\", [Column(\"sample_weight\")])],\n+                        [Function(\"sum\", [Function(\"ifNull\", [Column(\"sample_weight\"), 1])])],\n                         alias,\n                     ),"
+  }
+]

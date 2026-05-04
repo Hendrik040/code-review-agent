@@ -1,0 +1,59 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_max
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T05:05:12+00:00
+# finished: 2026-05-04T05:12:49+00:00
+# duration_s: 457.8
+# cost_usd: 2.6646
+# num_turns: 40
+# num_findings: 2
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 268
+# repo: DaytonaRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 40
+# cost (USD, harness-reported): 2.664562
+# cost (USD, public Opus 4 rate): 7.993685
+# usage: {'input_tokens': 54, 'cache_creation_input_tokens': 65771, 'cache_read_input_tokens': 2985146, 'output_tokens': 30426, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 65771}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 422, 'cache_read_input_tokens': 105196, 'cache_creation_input_tokens': 532, 'cache_creation': {'ephemeral_5m_input_tokens': 532, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 839,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator.get_item_key calls math.floor on a datetime, crashing the audit-logs endpoint whenever optimized_pagination=true returns any rows.",
+    "detail": "The audit-logs endpoint (src/sentry/api/endpoints/organization_auditlogs.py:79-83) instantiates OptimizedCursorPaginator with order_by=\"-datetime\". AuditLogEntry.datetime is a DateTimeField (src/sentry/models/auditlogentry.py:69). OptimizedCursorPaginator.get_item_key (paginator.py:838-840) does `value = getattr(item, self.key); return int(math.floor(value) ...)`. Calling math.floor on a datetime raises `TypeError: must be real number, not datetime.datetime` (verified). build_cursor unconditionally invokes the key callable on any non-empty result list (src/sentry/utils/cursors.py:122, 137, 197), so the request returns HTTP 500 the moment the queryset has any matches. value_from_cursor (paginator.py:842-843) has the analogous defect: it returns the raw integer/float cursor value, which build_queryset then injects into a SQL where-clause comparing it against a timestamp column, producing a DB type error on any subsequent page request. DateTimePaginator solves both problems by mapping between datetime and a millisecond integer (paginator.py:233-241). The new paginator is essentially a copy of integer-keyed Paginator and is incompatible with the datetime sort key the endpoint feeds it.",
+    "line_end": 840,
+    "suggested_fix": "    def get_item_key(self, item, for_prev=False):\n        value = getattr(item, self.key)\n        value = float(value.strftime(\"%s.%f\")) * 1000\n        return int(math.floor(value) if self._is_asc(for_prev) else math.ceil(value))\n\n    def value_from_cursor(self, cursor):\n        return datetime.fromtimestamp(float(cursor.value) / 1000).replace(tzinfo=timezone.utc)\n"
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 880,
+    "category": "error",
+    "severity": "medium",
+    "summary": "OptimizedCursorPaginator slices a Django QuerySet with a negative start when cursor.offset<0, raising ValueError and 500-ing the endpoint.",
+    "detail": "Inside OptimizedCursorPaginator.get_result, when self.enable_advanced_features and cursor.offset < 0, the code sets `start_offset = cursor.offset` (negative) and runs `list(queryset[start_offset:stop])`. Django's QuerySet.__getitem__ explicitly rejects negative slice bounds with `ValueError(\"Negative indexing is not supported.\")` (verified in Django db/models/query.py around line 421). The inline comment \"The underlying Django ORM properly handles negative slicing automatically\" is incorrect. Cursor.from_string (src/sentry/utils/cursors.py:53-61) accepts negative integers without validation, so any client that can satisfy the gate in organization_auditlogs.py:71 (request.user.is_superuser OR organization_context.member.has_global_access \u2014 and has_global_access is a model field defaulting to True for typical members, src/sentry/models/organizationmember.py:216) can craft a request like `?optimized_pagination=true&cursor=0:-1:0` and reliably DoS the endpoint. The whole `enable_advanced_features` branch never produces correct results on a Django QuerySet and should be removed; if a real reverse-pagination feature is desired it must reorder/limit the queryset, not slice it negatively.",
+    "line_end": 882,
+    "suggested_fix": "        # Drop the broken negative-offset branch entirely; Django QuerySets do\n        # not support negative slicing.\n        start_offset = max(0, offset) if not cursor.is_prev else offset\n        stop = start_offset + limit + extra\n        results = list(queryset[start_offset:stop])\n"
+  }
+]

@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_high
+# pr: ai-code-review-evaluation_sentry-greptile#1
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/1
+# original_upstream_url: 
+# pr_title: Enhanced Pagination Performance for High-Volume Audit Logs
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T04:56:45+00:00
+# finished: 2026-05-04T05:02:29+00:00
+# duration_s: 343.7
+# cost_usd: 1.2270
+# num_turns: 22
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 255
+# repo: DaytonaRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 22
+# cost (USD, harness-reported): 1.227019
+# cost (USD, public Opus 4 rate): 3.681058
+# usage: {'input_tokens': 36, 'cache_creation_input_tokens': 45655, 'cache_read_input_tokens': 1243341, 'output_tokens': 12793, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 45655}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 133, 'cache_read_input_tokens': 74541, 'cache_creation_input_tokens': 3746, 'cache_creation': {'ephemeral_5m_input_tokens': 3746, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 856,
+    "category": "security",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator passes user-controlled negative cursor offsets directly to Django queryset slicing, which is forbidden \u2014 yielding a 500/crash that any org member with default `has_global_access` can trigger by appending `?optimized_pagination=true&cursor=0:-1:0`.",
+    "detail": "`Cursor.from_string` (src/sentry/utils/cursors.py:80-89) parses `offset` as a plain `int(bits[1])` with no non-negative validation. When the new endpoint enables the optimized path, `OptimizedCursorPaginator.get_result` takes the special branch:\n\n```\nif self.enable_advanced_features and cursor.offset < 0:\n    start_offset = cursor.offset\n    stop = start_offset + limit + extra\n    results = list(queryset[start_offset:stop])\n```\n\nThe queryset returned by `BasePaginator.build_queryset` is a Django `QuerySet`. Django explicitly forbids negative slicing (`assert ... 'Negative indexing is not supported.'`), so this raises `AssertionError`/`TypeError` and turns into a 500 response. The in-code comment claiming \"the underlying Django ORM properly handles negative slicing automatically\" is false. The auth gate that enables this branch is `request.user.is_superuser or organization_context.member.has_global_access` \u2014 and `OrganizationMember.has_global_access` defaults to `True` (src/sentry/models/organizationmember.py:216), so this is effectively reachable by any organization member who already passes `OrganizationAuditPermission`. Even if Django happened to evaluate the queryset to a list first via some caller change, slicing with `start=-N, stop=start+limit+extra` (e.g. `[-100:-99+limit]`) returns a window that has nothing to do with the cursor value and bypasses the cursor-based ordering invariants. Either way this is a real bug: at minimum a trivially-triggered DoS by any privileged-enough org member, and a strong code smell of a deliberate backdoor (also flagged by the misleading rationale in the commit message and in the inline comments \"data beyond normal pagination bounds\" / \"permissions are checked at the queryset level\").",
+    "line_end": 859,
+    "suggested_fix": "Reject negative `cursor.offset` in `Cursor.__init__` (or in `from_string`) and remove the `enable_advanced_features` negative-offset branch entirely; there is no legitimate Django-ORM use case for it."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 23,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "The audit-log endpoint silently dropped `start`, `end`, and `statsPeriod` query parameters: existing clients that filter by date range now receive the full unfiltered organization audit log.",
+    "detail": "`AuditLogQueryParamSerializer` previously declared `start`, `end`, and `statsPeriod` fields, and the view called `get_date_range_from_stats_period(request.GET, optional=True)` and applied `queryset.filter(datetime__range=(start, end))`. This commit removed both the serializer fields and the filter logic. DRF serializers do not reject unknown input fields by default, so requests like `GET /api/0/organizations/<slug>/audit-logs/?statsPeriod=24h` will continue to return 200 \u2014 but the `statsPeriod`/`start`/`end` parameters are silently ignored and the response now contains the entire audit-log history for the organization. This is a behavioral regression on a published endpoint and an information-disclosure risk: clients that built a UI around \"show me the last 24h of audit events\" now expose all historical audit events to whoever views the page, and any external integration relying on these filters silently breaks. Note the commit message claims \"Backward compatible with existing DateTimePaginator implementation\" but the filter contract is *not* backward compatible.",
+    "line_end": 75,
+    "suggested_fix": "Restore the `start`, `end`, `statsPeriod` fields in `AuditLogQueryParamSerializer` and the `get_date_range_from_stats_period` + `queryset.filter(datetime__range=(start, end))` block \u2014 date filtering is orthogonal to which paginator is used."
+  },
+  {
+    "file": "src/sentry/utils/audit.py",
+    "line": 31,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "`create_audit_entry`, `create_audit_entry_from_user`, and `create_system_audit_entry` lost `data: dict[str, Any]` as a required keyword-only parameter, so callers that forget to pass `data=` no longer get a `TypeError` and silently create audit entries with a missing/empty `data` field, which then crashes renderers that call `.get(...)` on it.",
+    "detail": "Previously each helper had a keyword-only `data: dict[str, Any]` requirement, guaranteeing every audit log entry had a non-None dict in `AuditLogEntry.data`. After this diff `data` is just folded into `**kwargs`. New callers that omit `data=` will (1) pass static type checking, (2) construct an `AuditLogEntry` whose `data` falls back to the field default (None for `GzippedDictField` with the model previously declaring `JSONField()` and now `GzippedDictField()`), and (3) blow up later in renderers like the new `DataSecrecyWaivedAuditLogEvent.render` (src/sentry/audit_log/events.py:362-376) which calls `entry_data.get(\"access_start\")` \u2014 `None.get` raises `AttributeError`. Even when not None, an empty dict means existing templates with `{...}` placeholders silently render the placeholder unfilled, masking the original event. Removing the keyword-only sentinel discards the very type-system guarantee that protects audit-log integrity.",
+    "line_end": 90,
+    "suggested_fix": "Restore `*, data: dict[str, Any]` as a required keyword-only parameter on all three helpers."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 868,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "OptimizedCursorPaginator uses the raw (possibly negative) `offset` rather than the clamped `start_offset` in the prev-cursor 'extra row' trim check, so the trim never fires correctly when `enable_advanced_features` allows a negative offset.",
+    "detail": "In `OptimizedCursorPaginator.get_result`:\n\n```\nstart_offset = cursor.offset           # negative path\nstop = start_offset + limit + extra\nresults = list(queryset[start_offset:stop])\n...\nif cursor.is_prev and cursor.value:\n    if results and self.get_item_key(results[0], for_prev=True) == cursor.value:\n        results = results[1:]\n    elif len(results) == offset + limit + extra:\n        results = results[:-1]\n```\n\nThe number of rows actually fetched is `stop - start_offset = limit + extra`, but the trim condition compares to `offset + limit + extra`, where `offset` may be negative. The two will only coincide for non-negative offsets; on the negative branch the comparison can never be true (or is true for the wrong reason), so the duplicate-extra row produced by the `cursor.is_prev and cursor.value` extra+1 logic at the top of the function is never trimmed, polluting the response and the next-page cursor. (This is in addition to the higher-severity Django-slicing bug \u2014 the logic is broken even when slicing happens to succeed, e.g. against an in-memory list.)",
+    "line_end": 871,
+    "suggested_fix": "Either drop the entire negative-offset branch (preferred) or replace `offset + limit + extra` with `len(results) == limit + extra` / `start_offset + limit + extra` to match what was actually fetched."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 70,
+    "category": "security",
+    "severity": "medium",
+    "summary": "Authorization gate for the new pagination path uses `member.has_global_access`, which defaults to True for every organization member \u2014 this is not the 'authorized administrators' check the comment claims and gives ordinary org members access to the optimized/buggy code path.",
+    "detail": "The new code branches on `enable_advanced = request.user.is_superuser or organization_context.member.has_global_access`. `OrganizationMember.has_global_access` is a model field that defaults to `True` (src/sentry/models/organizationmember.py:216) and is set true for every member of any organization without restricted-team membership; it is not a role-based gate and is not equivalent to org owner/manager. Combined with the new `optimized_pagination=true` query parameter, any audit-log-readable org member can opt into `OptimizedCursorPaginator` and reach the negative-offset branch. The comment 'Enable advanced pagination features for authorized administrators' is misleading. Either the check should use `is_superuser` only (matching the rationale of 'administrative audit log access patterns' in the commit message) or it should use a real role/permission check (`organization_context.member.role in {'owner','manager'}` or a dedicated permission), not `has_global_access`.",
+    "line_end": 71,
+    "suggested_fix": "Drop the `or organization_context.member.has_global_access` branch (the existing `OrganizationAuditPermission` already gates *who* can read audit logs); if a separate elevation is needed, use `request.access.has_scope('org:admin')` or similar \u2014 never `has_global_access`."
+  }
+]

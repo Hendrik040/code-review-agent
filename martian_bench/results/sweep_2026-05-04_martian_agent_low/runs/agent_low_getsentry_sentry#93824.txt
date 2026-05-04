@@ -1,0 +1,49 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_low
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: agent_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-05-04T05:06:20+00:00
+# finished: 2026-05-04T05:08:42+00:00
+# duration_s: 142.0
+# cost_usd: 0.5064
+# num_turns: 4
+# num_findings: 1
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 269
+# repo: DaytonaRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 4
+# cost (USD, harness-reported): 0.506384
+# cost (USD, public Opus 4 rate): 1.519152
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 29794, 'cache_read_input_tokens': 224363, 'output_tokens': 8318, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 29794}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 158, 'cache_read_input_tokens': 70815, 'cache_creation_input_tokens': 1073, 'cache_creation': {'ephemeral_5m_input_tokens': 1073, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 256,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Hung flusher process is no longer killed on restart, leading to duplicate flushers per shard",
+    "detail": "In `_ensure_processes_alive`, the kill is now gated by `isinstance(process, multiprocessing.Process)`. The flusher uses `multiprocessing.get_context('spawn')`, which produces `SpawnProcess` instances. `SpawnProcess` and `multiprocessing.Process` (a.k.a. `multiprocessing.context.Process`) are sibling classes \u2014 both inherit from `BaseProcess` directly \u2014 so `isinstance(spawn_process, multiprocessing.Process)` is `False` (verified at runtime). The previous code called `self.process.kill()` unconditionally (only catching `ValueError`), so a hung-but-alive flusher was actually SIGKILLed before a replacement was started. With this diff, when `cause == 'hang'` (process is alive but `healthy_since` is stale), the kill is skipped and `_create_process_for_shards` immediately spawns a second process for the same shards. The old hung process is daemonic and keeps running, so two flushers concurrently read the same Redis shards and produce duplicate segments to Kafka until the parent exits. Repeated hang/restart cycles compound this. Either drop the `isinstance` guard (the bare `process.kill()` already works for both `SpawnProcess` and `threading.Thread` would need a different branch \u2014 but the old code only ever called it for processes anyway), or check against `BaseProcess` / not-a-Thread instead.",
+    "line_end": 259,
+    "suggested_fix": "-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            if not isinstance(process, threading.Thread):\n+                try:\n+                    process.kill()\n+                except (ValueError, AttributeError):\n+                    pass  # Process already closed, ignore"
+  }
+]

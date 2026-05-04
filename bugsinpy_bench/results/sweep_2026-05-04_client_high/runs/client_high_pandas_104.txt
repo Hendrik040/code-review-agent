@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: pandas#104
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# fixed_commit: 8e9b3eee812b70197341c26c40200d8a1a77ed9c
+# base_ref: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0^
+# head_ref: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# started: 2026-05-04T02:54:10+00:00
+# finished: 2026-05-04T02:55:33+00:00
+# duration_s: 83.2
+# cost_usd: 0.7968
+# num_turns: 8
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 208
+# repo: DaytonaRepo
+# refs: 8f6118c6a1547ffd39d9b89df1b8e52128b63aa0^..8f6118c6a1547ffd39d9b89df1b8e52128b63aa0
+# turns: 8
+# cost (USD, API rate): 0.796781
+# usage: {'input_tokens': 12, 'output_tokens': 5194, 'cache_creation_input_tokens': 14368, 'cache_read_input_tokens': 91767}
+# findings: 1
+# ---
+[
+  {
+    "file": "pandas/core/groupby/groupby.py",
+    "line": 1949,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Off-by-one accumulation when computing take indices for multi-quantile groupby results: `arr` is mutated across iterations, producing wrong/out-of-bounds indices when ngroups >= 3.",
+    "detail": "In the new multi-quantile branch of `GroupBy.quantile`, the loop\n\n```python\narr = np.arange(0, hi, self.ngroups)\nfor i in range(self.ngroups):\n    arr = arr + i\n    arrays.append(arr)\n```\n\nrebinds `arr` to `arr + i` at every iteration, so the offsets accumulate (0, then 0+1=1, then 1+2=3, then 3+3=6, ...) instead of using a fresh base each time (0, 1, 2, 3, ...).\n\nFor `ngroups == 2` this happens to be correct (offsets 0, 1) which is why the new tests `test_quantile_array`, `test_quantile_array_no_sort` and `test_quantile_array_multiple_levels` (all with 2 groups) still pass. For `ngroups >= 3` the produced indices are wrong and quickly go out of bounds. Example with ngroups=3 and q=[0.25, 0.75]:\n\n- expected take indices: [0, 3, 1, 4, 2, 5]\n- actual take indices:   [0, 3, 1, 4, 3, 6]\n\nIndex 6 is out of bounds for a result of length 6, so `result.take(indices)` will raise `IndexError`, and the assert `len(indices) == len(result)` will not catch it (lengths are equal). Even if it didn't go out of bounds, the result would silently have duplicated rows for group 1 and missing rows for the last group. Any user calling `df.groupby(...).quantile([...])` on data with three or more groups (a very common case) hits this bug.",
+    "line_end": 1953,
+    "suggested_fix": "@@\n-            hi = len(q) * self.ngroups\n-            arr = np.arange(0, hi, self.ngroups)\n-            arrays = []\n-\n-            for i in range(self.ngroups):\n-                arr = arr + i\n-                arrays.append(arr)\n+            hi = len(q) * self.ngroups\n+            base = np.arange(0, hi, self.ngroups)\n+            arrays = [base + i for i in range(self.ngroups)]\n"
+  }
+]

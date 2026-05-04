@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: keras#28
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# fixed_commit: 5422fdd38baad36730cb6aeb946e17eeae6a551c
+# base_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631^
+# head_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# started: 2026-05-04T02:03:50+00:00
+# finished: 2026-05-04T02:04:48+00:00
+# duration_s: 58.8
+# cost_usd: 0.5531
+# num_turns: 4
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 175
+# repo: DaytonaRepo
+# refs: 7a1b9005c220afb9271d20a73e168cf18d0cd631^..7a1b9005c220afb9271d20a73e168cf18d0cd631
+# turns: 4
+# cost (USD, API rate): 0.553060
+# usage: {'input_tokens': 8, 'output_tokens': 3994, 'cache_creation_input_tokens': 11024, 'cache_read_input_tokens': 31127}
+# findings: 2
+# ---
+[
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 290,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "TimeseriesGenerator's end_index is off-by-one: the last data point is never used as a target",
+    "detail": "The default `end_index = len(data) - 1` implies inclusive-delimiter semantics (otherwise it would be `len(data)`), and the docstring describes `end_index` as a delimiter for the sub-set of data/targets to use. However, both code paths in `__getitem__` treat it as exclusive: `np.arange(i, min(i + batch_size*stride, self.end_index), self.stride)` (arange's stop is exclusive) and `np.random.randint(self.start_index, self.end_index, ...)` (randint's high is exclusive). The result is that the row index `end_index` itself \u2014 i.e. the *last* element `data[len(data)-1]` by default \u2014 can never be selected as a target. For example, with `data` of length 50 and the defaults, `data[49]/targets[49]` are silently dropped. Likewise a user who passes `end_index=30` expecting the 30th sample to be usable will not see it. `__len__` is also computed against this same exclusive bound, so simply changing the bounds in `__getitem__` requires a corresponding fix in `__len__` (e.g. use `end_index + 1` consistently in arange/randint, or change the default to `len(data)` and adjust the semantics accordingly).",
+    "line_end": 315,
+    "suggested_fix": "@@\n         if self.shuffle:\n             rows = np.random.randint(\n-                self.start_index, self.end_index, size=self.batch_size)\n+                self.start_index, self.end_index + 1, size=self.batch_size)\n         else:\n             i = self.start_index + self.batch_size * self.stride * index\n             rows = np.arange(i, min(i + self.batch_size *\n-                                    self.stride, self.end_index), self.stride)\n+                                    self.stride, self.end_index + 1), self.stride)\n@@\n     def __len__(self):\n         return int(np.ceil(\n-            (self.end_index - self.start_index) /\n+            (self.end_index - self.start_index + 1) /\n             (self.batch_size * self.stride)))"
+  },
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 302,
+    "category": "logic",
+    "severity": "low",
+    "summary": "_empty_batch uses floor division for timestep count while range() rounds up, causing a shape mismatch when length is not a multiple of sampling_rate",
+    "detail": "`_empty_batch` allocates `samples` with second-axis size `self.length // self.sampling_rate` (floor), but `__getitem__` computes per-sample indices via `range(row - self.length, row, self.sampling_rate)` whose length is `ceil(length / sampling_rate)`. When `length` is not divisible by `sampling_rate`, these differ. For example `length=10, sampling_rate=3` produces indices `[row-10, row-7, row-4, row-1]` (4 elements) but `samples[j]` has only 3 timesteps, so the assignment `samples[j] = self.data[indices]` raises a broadcast/shape error. Either validate that `length % sampling_rate == 0`, or use `int(np.ceil(self.length / self.sampling_rate))` (and align `range` accordingly) so allocation and indexing agree.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

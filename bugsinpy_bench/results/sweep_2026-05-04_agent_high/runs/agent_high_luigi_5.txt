@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: luigi#5
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: be88a318dce06254a66303a1c398ec28f89c60d7
+# fixed_commit: 1fbec18ceb7c5de352e6d1df12960c61f09e67c2
+# base_ref: be88a318dce06254a66303a1c398ec28f89c60d7^
+# head_ref: be88a318dce06254a66303a1c398ec28f89c60d7
+# started: 2026-05-04T02:42:42+00:00
+# finished: 2026-05-04T02:44:47+00:00
+# duration_s: 124.6
+# cost_usd: 0.6394
+# num_turns: 12
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 182
+# repo: DaytonaRepo
+# refs: be88a318dce06254a66303a1c398ec28f89c60d7^..be88a318dce06254a66303a1c398ec28f89c60d7
+# turns: 12
+# cost (USD, harness-reported): 0.639417
+# cost (USD, public Opus 4 rate): 1.918252
+# usage: {'input_tokens': 21, 'cache_creation_input_tokens': 21613, 'cache_read_input_tokens': 645362, 'output_tokens': 7262, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 21613}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 593, 'cache_read_input_tokens': 62322, 'cache_creation_input_tokens': 1385, 'cache_creation': {'ephemeral_5m_input_tokens': 1385, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/util.py",
+    "line": 144,
+    "category": "logic",
+    "severity": "high",
+    "summary": "@delegates wrapper unconditionally overrides the user's subtasks() method, returning [] regardless of what the decorated class defined.",
+    "detail": "In `delegates`, `Wrapped(task_that_delegates)` defines `subtasks(self)` returning `[]` with a comment calling it a \"default impl\". Because `Wrapped` is a subclass of `task_that_delegates`, Python's MRO always resolves `instance.subtasks()` to `Wrapped.subtasks` and shadows any `subtasks()` the user defined on the decorated class. As a result, the documented usage pattern silently breaks: in the docstring example `@delegates class T: def subtasks(self): return PowersOfN(5)`, calling `t.subtasks()` returns `[]` instead of `PowersOfN(5)`, so neither `Wrapped.run`'s `for t in task.flatten(self.subtasks()): t.run()` nor `Wrapped.deps`'s subtasks dependency walk ever sees the user's subtasks. Delegated tasks are never executed and their deps are not surfaced to the scheduler \u2014 the entire purpose of @delegates. The added test (`SubtaskDelegator`) hides this because it never reaches code that would notice (e.g. `F` is undefined but never evaluated since subtasks() returns []). The default impl should only be installed if `task_that_delegates` does not already define `subtasks` (e.g. `if not hasattr(task_that_delegates, 'subtasks'): ...`), or `subtasks` should simply not be redefined on `Wrapped`.",
+    "line_end": 148,
+    "suggested_fix": "-    class Wrapped(task_that_delegates):\n-        def subtasks(self):\n-            # ...\n-            return []  # default impl\n-\n-        def deps(self):\n+    if not hasattr(task_that_delegates, 'subtasks'):\n+        task_that_delegates.subtasks = lambda self: []  # default impl\n+\n+    class Wrapped(task_that_delegates):\n+        def deps(self):\n             ..."
+  },
+  {
+    "file": "luigi/task.py",
+    "line": 278,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "clone() silently drops explicit kwargs that are not parameters of the target class, masking caller errors.",
+    "detail": "The new `clone(self, cls=None, **kwargs)` builds `k = self.param_kwargs.copy(); k.update(kwargs)` and then keeps only entries whose name appears in `cls.get_nonglobal_params()` (`new_k[param_name] = k[param_name]` if `param_name in k`). Anything in `kwargs` that is not a parameter of `cls` is silently dropped. Previously `self.__class__(**k)` would raise on an unknown kwarg, surfacing typos. After this change, e.g. `task.clone(prarm1='x')` (typo) succeeds and produces a task that still uses the old `param1` value, with no error. This is most dangerous in the default `cls is None` path where users have no reason to expect their kwargs to be filtered. Consider validating that every key in the explicit `kwargs` corresponds to a parameter of `cls` and raising otherwise.",
+    "line_end": 282,
+    "suggested_fix": ""
+  }
+]

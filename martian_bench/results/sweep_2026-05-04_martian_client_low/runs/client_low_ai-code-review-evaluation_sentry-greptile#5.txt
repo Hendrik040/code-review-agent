@@ -1,0 +1,47 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_low
+# pr: ai-code-review-evaluation_sentry-greptile#5
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/5
+# original_upstream_url: 
+# pr_title: Replays Self-Serve Bulk Delete System
+# sdk: client_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 49a275847631e231672d01b5dcd66558c069d25b
+# head_sha: ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# n_goldens: 3
+# started: 2026-05-04T05:04:52+00:00
+# finished: 2026-05-04T05:06:23+00:00
+# duration_s: 91.4
+# cost_usd: 6.7586
+# num_turns: 7
+# num_findings: 1
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 279
+# repo: DaytonaRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 7
+# cost (USD, API rate): 6.758564
+# usage: {'input_tokens': 11, 'output_tokens': 2667, 'cache_creation_input_tokens': 249305, 'cache_read_input_tokens': 1255937}
+# findings: 1
+# ---
+[
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 118,
+    "category": "logic",
+    "severity": "high",
+    "summary": "fetch_error_details mis-pairs error_ids with event data because nodestore.get_multi returns a dict keyed by node_id, not aligned to error_ids order",
+    "detail": "`nodestore.backend.get_multi(node_ids)` returns `dict[node_id, data|None]`. The code then does `zip(error_ids, events.values())`, which assumes the values are ordered the same as the input `error_ids` list and contain an entry for every input. In practice: (1) the values are keyed by node_id, not event_id, and the dict insertion order can be split between cached and uncached lookups (`items.update(cache_items)` in `NodeStorage.get_multi` puts cache hits at the end), so values do not necessarily align with `error_ids`; (2) when any node is missing, `events.values()` yields fewer items than `error_ids` (or yields `None` placeholders), and the `if data is not None` filter only hides \u2014 does not correct \u2014 the resulting offset. The end result is that each `ErrorEvent` is constructed with `id=error_ids[i]` but `data` taken from a different event, so titles, messages, and timestamps get attached to the wrong error id. Those mismatched timestamps then drive ordering in `get_request_data`, producing incorrect AI summary input. Fix: derive both id and data from the dict, e.g. iterate `for event_id, data in zip(error_ids, (events.get(node_id) for node_id in node_ids)) if data is not None`, or build node_id\u2192event_id mapping and iterate `events.items()`.",
+    "line_end": 120,
+    "suggested_fix": "-        return [\n-            ErrorEvent(\n-                category=\"error\",\n-                id=event_id,\n-                title=data.get(\"title\", \"\"),\n-                timestamp=data.get(\"timestamp\", 0.0),\n-                message=data.get(\"message\", \"\"),\n-            )\n-            for event_id, data in zip(error_ids, events.values())\n-            if data is not None\n-        ]\n+        results = []\n+        for event_id, node_id in zip(error_ids, node_ids):\n+            data = events.get(node_id)\n+            if data is None:\n+                continue\n+            results.append(ErrorEvent(\n+                category=\"error\",\n+                id=event_id,\n+                title=data.get(\"title\", \"\"),\n+                timestamp=data.get(\"timestamp\", 0.0),\n+                message=data.get(\"message\", \"\"),\n+            ))\n+        return results"
+  }
+]

@@ -1,0 +1,68 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: thefuck#9
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: nvbn/thefuck
+# introducing_commit: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# fixed_commit: feb36ede5c518fdc3b6eddf945b2d8b1e2294d15
+# base_ref: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0^
+# head_ref: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# started: 2026-05-04T03:30:38+00:00
+# finished: 2026-05-04T03:31:47+00:00
+# duration_s: 69.9
+# cost_usd: 0.5671
+# num_turns: 7
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 234
+# repo: DaytonaRepo
+# refs: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0^..aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# turns: 7
+# cost (USD, API rate): 0.567129
+# usage: {'input_tokens': 11, 'output_tokens': 4804, 'cache_creation_input_tokens': 7514, 'cache_read_input_tokens': 43851}
+# findings: 3
+# ---
+[
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 25,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`is not -1` uses identity comparison on an int literal; relies on CPython small-int caching and emits a SyntaxWarning on Python 3.8+",
+    "detail": "`if upstream_option_index is not -1:` compares object identity, not value. It happens to work today only because CPython caches small integers including -1, so the literal `-1` in this module ends up being the same object as the int returned by `list.index`. This is not language-guaranteed behavior, and starting in Python 3.8 the compiler emits `SyntaxWarning: \"is not\" with a literal. Did you mean \"!=\"?` for exactly this construct. The correct comparison is `!= -1`.",
+    "line_end": null,
+    "suggested_fix": "-    if upstream_option_index is not -1:\n+    if upstream_option_index != -1:"
+  },
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 21,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Second `try` block can overwrite a successful `--set-upstream` lookup with the `-u` lookup result",
+    "detail": "The two `try` blocks are independent and the second one unconditionally overwrites `upstream_option_index` when `-u` is found. If a user happens to pass both `--set-upstream` and `-u` (unusual but legal in git's parser as repeated options), only `-u` and its following token will be popped, leaving `--set-upstream <arg>` in `script_parts`; the suggested command then becomes `git push --set-upstream origin master --set-upstream <arg>` which is malformed. A small, robust fix is to make the second lookup conditional on the first having failed (or use an `elif`-style flow).",
+    "line_end": null,
+    "suggested_fix": "     upstream_option_index = -1\n     try:\n         upstream_option_index = command.script_parts.index('--set-upstream')\n     except ValueError:\n-        pass\n-    try:\n-        upstream_option_index = command.script_parts.index('-u')\n-    except ValueError:\n-        pass\n+        try:\n+            upstream_option_index = command.script_parts.index('-u')\n+        except ValueError:\n+            pass"
+  },
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 27,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Blindly popping twice at the same index can IndexError or strip a non-argument token",
+    "detail": "After locating `--set-upstream` or `-u`, the code does `pop(idx)` twice. This assumes the option's argument is the very next token and that such a token exists. Two real failure modes: (1) If the option is the last token (e.g. user typed `git push -u` or `git push --set-upstream` without an argument before hitting enter \u2014 exactly the kind of malformed command thefuck is meant to fix), the second `pop` raises `IndexError` and the rule crashes instead of producing a suggestion. (2) If unrelated arguments precede the option (e.g. `git push --quiet -u origin master`), the second pop correctly removes `origin`, but `master` is left as a trailing positional that gets concatenated onto git's suggested `git push --set-upstream origin master`, yielding `git push --set-upstream origin master --quiet master` with a duplicate/bogus branch name. Guarding the second pop and only popping the next token when it doesn't itself look like an option would be safer.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

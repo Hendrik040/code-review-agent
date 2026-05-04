@@ -1,0 +1,68 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: keras#3
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: e27b8b9343da4558b98570d6d45599bd0e365723
+# fixed_commit: c13d2723d01212d09dfdda39b0ad439803ec9230
+# base_ref: e27b8b9343da4558b98570d6d45599bd0e365723^
+# head_ref: e27b8b9343da4558b98570d6d45599bd0e365723
+# started: 2026-05-04T01:57:42+00:00
+# finished: 2026-05-04T01:59:24+00:00
+# duration_s: 101.8
+# cost_usd: 1.0072
+# num_turns: 9
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 167
+# repo: DaytonaRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 9
+# cost (USD, API rate): 1.007189
+# usage: {'input_tokens': 13, 'output_tokens': 6211, 'cache_creation_input_tokens': 18924, 'cache_read_input_tokens': 124229}
+# findings: 3
+# ---
+[
+  {
+    "file": "keras/engine/topology.py",
+    "line": 1794,
+    "category": "error",
+    "severity": "medium",
+    "summary": "RuntimeError now receives two positional args, producing a tuple-formatted error message instead of a readable string",
+    "detail": "The change replaced the closing string concatenation with `, all_names`, so the call is now `raise RuntimeError('... Layer names: ', all_names)`. Python's `RuntimeError` accepts multiple args, but `str(e)` will then format as the repr of the args tuple, e.g. `(\"The name \\\"x\\\" is used 2 times in the model. All layer names should be unique. Layer names: \", ['a', 'b', 'x', 'x'])`. Tools/users that read `str(exc)` (logs, pytest output, user error reporting) will get a confusing tuple-shaped string rather than the intended human-readable message. The previous version raised a single, clean string. The fix is to concatenate the list as a string with `+ str(all_names)` (or use an f-string / format) so the exception is constructed with a single message argument.",
+    "line_end": null,
+    "suggested_fix": "-                                   'All layer names should be unique. '\n-                                   'Layer names: ', all_names)\n+                                   'All layer names should be unique. '\n+                                   'Layer names: ' + str(all_names))"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1364,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "When `input_tensors` are already Keras tensors, the original model's InputLayers are never added to layer_map, causing the clone loop to instantiate and call a fresh InputLayer that overwrites the user-provided tensor in tensor_map",
+    "detail": "In `_clone_functional_model`, the `else` branch (line 1350+) only populates `layer_map[original_input_layer] = newly_created_input_layer` when the supplied tensor is NOT a Keras tensor (lines 1356-1364). When the user passes a Keras tensor (`K.is_keras_tensor(x)` True, line 1365-1366), nothing is added to `layer_map` for that input. Later, the depth-iteration loop encounters the original `InputLayer` node, finds it absent from `layer_map`, takes the `if layer not in layer_map` branch (line 1382-1386), clones a brand-new InputLayer via `from_config`, and calls it on `computed_tensor` \u2014 overwriting `tensor_map[model.inputs[i]]` (which had been set to `(user_tensor, None)` at line 1369-1370) with a tensor produced by the unrelated cloned InputLayer. Downstream layers will then be wired to the new placeholder rather than the user-supplied Keras tensor, defeating the purpose of `input_tensors=`. The non-Keras-tensor branch handles this correctly because it explicitly populates `layer_map`. Fix: in the `else` branch, also do `layer_map[x._keras_history[0]] = x._keras_history[0]` (or equivalent), so the existing-InputLayer skip path (line 1391-1392) is taken.",
+    "line_end": null,
+    "suggested_fix": "             else:\n+                # Cache the original input layer so it is not re-cloned.\n+                original_input_layer = x._keras_history[0]\n+                layer_map[original_input_layer] = original_input_layer\n                 _input_tensors.append(x)"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1348,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Dead loop over an always-empty `input_layers` list in `_clone_functional_model` placeholder branch",
+    "detail": "Lines 1334-1349: `input_layers = []` is initialized and never appended to, but line 1348 then runs `for original_input_layer, cloned_input_layer in zip(model.input_layers, input_layers): layer_map[original_input_layer] = cloned_input_layer`. Since `input_layers` is always empty, this loop is a no-op. The actual mapping is performed correctly inside the prior loop via `layer_map[layer] = newly_created_input_layer`, so behavior is fine, but the dead-code loop signals an incomplete refactor and is misleading: a future maintainer who reads it may assume `layer_map` is being established here and rely on it. Remove the dead loop (and the unused `input_layers` variable) or actually populate `input_layers` and delete the in-place mapping above.",
+    "line_end": null,
+    "suggested_fix": "-        input_layers = []\n         input_tensors = []\n         for layer in model.input_layers:\n             ...\n             layer_map[layer] = newly_created_input_layer\n-        for original_input_layer, cloned_input_layer in zip(model.input_layers, input_layers):\n-            layer_map[original_input_layer] = cloned_input_layer"
+  }
+]

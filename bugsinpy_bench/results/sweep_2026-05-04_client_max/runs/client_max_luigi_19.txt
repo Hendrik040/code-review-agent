@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: luigi#19
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: 6cffbf438d023441f7f42c2019a51c62eecd9018
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-05-04T05:13:03+00:00
+# finished: 2026-05-04T05:23:22+00:00
+# duration_s: 619.2
+# cost_usd: 8.6327
+# num_turns: 58
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 285
+# repo: DaytonaRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 58
+# cost (USD, API rate): 8.632732
+# usage: {'input_tokens': 62, 'output_tokens': 42376, 'cache_creation_input_tokens': 81335, 'cache_read_input_tokens': 2619047}
+# findings: 1
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "re_enable() re-disables the task immediately when disable_failures == 1, leaving the task permanently DISABLED",
+    "detail": "The new SimpleTaskState.re_enable(task, config) (lines 250-255) calls self.set_status(task, FAILED, config) to move the task from the DISABLED bucket into the FAILED bucket. However, set_status (line 276) executes `task.add_failure(); if task.has_excessive_failures(): ... new_status = DISABLED` whenever new_status == FAILED and task.can_disable(). Because re_enable just called task.failures.clear() (line 252), add_failure makes failures count 1; if disable_failures == 1, has_excessive_failures returns True, so set_status sets a fresh task.scheduler_disable_time = time.time() and changes new_status back to DISABLED before doing the bucket move. The trailing `task.failures.clear()` on line 255 zeroes the failure count but cannot undo the re-disable. End state with disable_failures==1: task.status == DISABLED with a freshly bumped scheduler_disable_time, instead of FAILED as in the previous Task.re_enable() implementation. Concrete impacts: (a) re_enable_task RPC is a no-op for these configs, (b) the periodic auto re-enable in SimpleTaskState.prune (line 317-319) repeatedly re-disables the task on every tick after disable_time, so the task can never recover. Note this contradicts the commit message's claim of 'no functionality changes'.",
+    "line_end": 255,
+    "suggested_fix": "-    def re_enable(self, task, config=None):\n-        task.scheduler_disable_time = None\n-        task.failures.clear()\n-        if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+    def re_enable(self, task, config=None):\n+        task.scheduler_disable_time = None\n+        task.failures.clear()\n+        if config:\n+            # Move the bucket directly; do NOT route through set_status,\n+            # otherwise add_failure can immediately re-disable the task\n+            # (e.g. when disable_failures == 1).\n+            self._status_tasks[task.status].pop(task.id, None)\n+            self._status_tasks[FAILED][task.id] = task\n+            task.status = FAILED"
+  }
+]

@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_low
+# bug: tornado#11
+# bug_source: blame
+# sdk: agent_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-05-04T01:58:11+00:00
+# finished: 2026-05-04T02:00:00+00:00
+# duration_s: 109.3
+# cost_usd: 0.5700
+# num_turns: 10
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 147
+# repo: DaytonaRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 10
+# cost (USD, harness-reported): 0.569959
+# cost (USD, public Opus 4 rate): 1.709876
+# usage: {'input_tokens': 19, 'cache_creation_input_tokens': 23231, 'cache_read_input_tokens': 525190, 'output_tokens': 6483, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 23231}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 124, 'cache_read_input_tokens': 62538, 'cache_creation_input_tokens': 2303, 'cache_creation': {'ephemeral_5m_input_tokens': 2303, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 95,
+    "category": "logic",
+    "severity": "high",
+    "summary": "After recursing to handle a real response following a 1xx, the outer _process_message call falls through and reads the body / finishes the delegate a second time",
+    "detail": "In `_process_message`, when a client receives a 1xx informational response, the code does `yield self._process_message(delegate, is_client, method=method)` to read the next response. The inner recursive call performs the full handling for the real response: it parses headers, reads the body via `_read_body(...)`, calls `delegate.finish()`, and yields `self._finish_future`.\n\nHowever, after that recursion returns, control in the outer (1xx) frame falls through to:\n\n    if not skip_body:\n        body_future = self._read_body(is_client, headers, delegate)\n        ...\n    delegate.finish()\n    yield self._finish_future\n\nThe outer call still has `skip_body=False` and the 1xx `headers` (no Content-Length, no Transfer-Encoding). For `is_client=True`, `_read_body` therefore returns `_read_body_until_close(delegate)`, which yields until the underlying stream closes and then calls `delegate.data_received(...)` with whatever extra bytes (or an empty buffer). After that the outer call invokes `delegate.finish()` a second time and re-yields a `_finish_future` (which was overwritten by the inner call).\n\nConsequences for any 1xx response (e.g., a 100 Continue or 102 Processing from the server, which `_process_message` will route through this branch since the websocket 101 path takes the earlier `ret == 'detach'` exit): the client reads phantom body data, double-finishes the response (the simple_httpclient delegate's `finish()` will run twice, calling `_run_callback` twice / mishandling state), and stalls until the connection is closed.\n\nThe outer 1xx frame must short-circuit after the recursion (e.g., `return` / `raise gen.Return(True)` after the inner call), the same way the old `_handle_1xx` simply re-armed the header read without finishing the response.",
+    "line_end": 104,
+    "suggested_fix": "@@\n             if code >= 100 and code < 200:\n-                yield self._process_message(delegate, is_client, method=method)\n+                yield self._process_message(delegate, is_client, method=method)\n+                return\n"
+  }
+]

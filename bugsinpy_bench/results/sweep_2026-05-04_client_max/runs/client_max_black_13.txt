@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: black#13
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: psf/black
+# introducing_commit: d9c6b9907390ca73130df1d8253481505eb2bce7
+# fixed_commit: 883689366ce0f0e0ddd66d81360c61abfd19b01a
+# base_ref: d9c6b9907390ca73130df1d8253481505eb2bce7^
+# head_ref: d9c6b9907390ca73130df1d8253481505eb2bce7
+# started: 2026-05-04T04:00:51+00:00
+# finished: 2026-05-04T04:13:56+00:00
+# duration_s: 785.0
+# cost_usd: 12.2550
+# num_turns: 87
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 246
+# repo: DaytonaRepo
+# refs: d9c6b9907390ca73130df1d8253481505eb2bce7^..d9c6b9907390ca73130df1d8253481505eb2bce7
+# turns: 87
+# cost (USD, API rate): 12.254963
+# usage: {'input_tokens': 91, 'output_tokens': 49527, 'cache_creation_input_tokens': 91329, 'cache_read_input_tokens': 4551103}
+# findings: 1
+# ---
+[
+  {
+    "file": "blib2to3/pgen2/tokenize.py",
+    "line": 562,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Flushing the stashed `async` token on a `\\` line continuation breaks parsing of `async \\<newline>def foo(): pass`.",
+    "detail": "The newly added `if stashed: yield stashed; stashed = None` block in the `\\` (continued statement) branch flushes any stashed `async` NAME token before the next line is read. The `async`/`def` rendezvous logic in the namechars branch (lines 542-553) relies on `stashed` still holding the `async` token when `def` is seen so that an ASYNC token can be emitted. With this flush, `async \\\\\\ndef foo(): pass` \u2014 which is valid Python because the `\\` joins both lines into a single logical statement \u2014 now tokenizes as NAME('async'), NL, NAME('def'), \u2026 instead of ASYNC, NAME('def'), \u2026 The grammar rule `async_funcdef: ASYNC funcdef` no longer matches, and black raises `ValueError: Cannot parse: 2:0: def foo(): pass`. I verified the regression by running black against the pre-PR (HEAD~1) tree on the same input \u2014 it formatted to `async def foo():\\n    pass\\n` correctly. The same input is also accepted by `ast.parse`, confirming it is real Python. The pre-PR blib2to3 code (and upstream CPython 3.6 tokenize, which this is backporting from) does not flush stashed in this branch. Inside an `async def` body the bug is masked because `async`/`await` are emitted as ASYNC/AWAIT immediately (line 532-535) without ever being stashed; this is a top-level / legacy-context regression. Severity is low because line-continued `async def` is uncommon in real code, but it is a real regression of code that previously formatted cleanly.",
+    "line_end": 564,
+    "suggested_fix": "@@\n                 elif initial == '\\\\':                      # continued stmt\n                     # This yield is new; needed for better idempotency:\n-                    if stashed:\n-                        yield stashed\n-                        stashed = None\n                     yield (NL, token, spos, (lnum, pos), line)\n                     continued = 1\n\n(Note: simply removing the flush requires care \u2014 the stashed token's start position is on the previous line, while the NL is emitted with the current `\\`'s position. Driver.py asserts non-decreasing positions, so the next time `stashed` is yielded its position will be earlier than the just-yielded NL. A safer fix is to also defer the NL yield, e.g. don't yield NL at all on `\\` (matching upstream CPython 3.6) until/unless we resolve the stashed token, or yield stashed first with its original position before yielding NL.)"
+  }
+]

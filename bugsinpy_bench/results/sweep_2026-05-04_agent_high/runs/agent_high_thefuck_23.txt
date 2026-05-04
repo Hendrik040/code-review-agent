@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: thefuck#23
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# fixed_commit: 9a02e821cdc58a4aba2c0acc521fb25cacab87a5
+# base_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^
+# head_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# started: 2026-05-04T04:45:49+00:00
+# finished: 2026-05-04T04:48:58+00:00
+# duration_s: 188.2
+# cost_usd: 0.6505
+# num_turns: 6
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 243
+# repo: DaytonaRepo
+# refs: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^..4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# turns: 6
+# cost (USD, harness-reported): 0.650455
+# cost (USD, public Opus 4 rate): 1.951366
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 26529, 'cache_read_input_tokens': 341148, 'output_tokens': 12561, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 26529}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 453, 'cache_read_input_tokens': 65813, 'cache_creation_input_tokens': 2810, 'cache_creation': {'ephemeral_5m_input_tokens': 2810, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/utils.py",
+    "line": 184,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "`with shelve.open(...) as db:` raises AttributeError on Python 2.7 / 3.3, which setup.py and tox.ini still claim to support.",
+    "detail": "shelve.Shelf only got __enter__/__exit__ in Python 3.4 (see https://docs.python.org/3/library/shelve.html changelog). setup.py guards on `version < (2, 7)` / `(3, 0) < version < (3, 3)` and tox.ini lists `envlist = py27,py33,py34`, so Python 2.7 and 3.3 are explicitly supported. On those interpreters the very first call into Bash.get_aliases / Zsh.get_aliases will raise `AttributeError: Shelf instance has no attribute '__enter__'` and the entire shell-alias path breaks. Either bump the supported Python floor to 3.4 (and drop the matching tox envs) or wrap the shelf with `contextlib.closing(shelve.open(cache_path))`.",
+    "line_end": 191,
+    "suggested_fix": "-        with shelve.open(cache_path) as db:\n+        from contextlib import closing\n+        with closing(shelve.open(cache_path)) as db:"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 178,
+    "category": "security",
+    "severity": "medium",
+    "summary": "Cache file is placed in the shared system tempdir, causing PermissionError and potential information leak on multi-user hosts.",
+    "detail": "`tempfile.gettempdir()` returns a process-wide tempdir (e.g. `/tmp`) shared across all users on the system. The decorator unconditionally writes `<tmp>/.thefuck-cache` (plus shelve's `.db`/`.dir`/`.pag` siblings). The first user to run thefuck creates the file owned by themselves; any subsequent user opening it via `shelve.open()` (default flag `'c'`, read/write) gets PermissionError, which `_cache` does not catch \u2014 every Bash/Zsh `get_aliases()` call then propagates an unhandled exception. Even when permissions happen to allow it, two users on the same box read each other's alias dumps, which can leak private command names and lets a hostile local user poison another user's cache (the value is whatever the first writer stored). Use a per-user path such as `os.path.expanduser('~/.thefuck-cache')` or include `getpass.getuser()` in the filename, and catch shelve open errors so a broken cache does not break alias lookup.",
+    "line_end": null,
+    "suggested_fix": "-        cache_path = os.path.join(tempfile.gettempdir(), '.thefuck-cache')\n+        cache_path = os.path.join(\n+            tempfile.gettempdir(),\n+            '.thefuck-cache-{}'.format(getpass.getuser()))"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Cache key built with `repr(fn).split('at')[0]` collides on Python 2 (and on any function name containing 'at').",
+    "detail": "On Python 2 the repr of a plain function does not include the owning class name \u2014 both `Bash.get_aliases` and `Zsh.get_aliases` produce `<function get_aliases at 0x...>`. After `repr(fn).split('at')[0]` they collapse to the identical key `thefuck.shells.<function get_aliases ` (same module, same prefix). The etag check prevents returning the wrong value, but every call from the other shell now invalidates the cache and rewrites it, so on Py2 the on-disk cache effectively never hits when both shells are exercised. The split is also fragile for any future cached function whose name contains the substring `at` (e.g. `cat`, `concat`, `format`) \u2014 `<function eat at 0x..>` and `<function eater at 0x..>` both reduce to `<function e`. Prefer a stable key like `'{}.{}'.format(fn.__module__, fn.__qualname__)` (Py3) / `fn.__name__` plus the qualifying class.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

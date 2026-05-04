@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_low
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T04:58:59+00:00
+# finished: 2026-05-04T05:01:06+00:00
+# duration_s: 127.2
+# cost_usd: 0.5076
+# num_turns: 9
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 259
+# repo: DaytonaRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 9
+# cost (USD, harness-reported): 0.507641
+# cost (USD, public Opus 4 rate): 1.522924
+# usage: {'input_tokens': 13, 'cache_creation_input_tokens': 21167, 'cache_read_input_tokens': 458615, 'output_tokens': 5839, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 21167}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 423, 'cache_read_input_tokens': 57956, 'cache_creation_input_tokens': 2129, 'cache_creation': {'ephemeral_5m_input_tokens': 2129, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 872,
+    "category": "security",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator authorization gate is far too permissive and exposes a negative-offset code path",
+    "detail": "OrganizationAuditLogsEndpoint enables OptimizedCursorPaginator (with enable_advanced_features=True) when `request.user.is_superuser or organization_context.member.has_global_access`. `has_global_access` is True for any organization member whose role/team membership grants access across the org (typical for many regular members), not just admins. Combined with `?optimized_pagination=true`, an authenticated org member can route their request through OptimizedCursorPaginator. That paginator (paginator.py:872-880) explicitly allows `cursor.offset < 0` to be passed straight into a Django QuerySet slice (`queryset[start_offset:stop]`). Django's QuerySet.__getitem__ rejects negative slice bounds with `ValueError: Negative indexing is not supported.` \u2014 so at minimum this is an attacker-triggerable 500/DoS on the audit-log endpoint. The comment claiming this 'enables access to data beyond normal pagination bounds' (and 'permissions are checked at the queryset level') is misleading; there is no extra permission check between the cursor and the query. Either (a) restrict to is_superuser only and remove the negative-offset branch, or (b) drop OptimizedCursorPaginator entirely \u2014 it provides no real optimization and only widens attack surface.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "BasePaginator still passes negative offsets to Django slicing on prev cursors",
+    "detail": "The new code reads `start_offset = max(0, offset) if not cursor.is_prev else offset`. When `cursor.is_prev` is True and the cursor offset is negative (now possible because Cursor.offset no longer clamps \u2013 see cursors.py change), `queryset[offset:stop]` is evaluated with a negative start. Django's QuerySet.__getitem__ raises `ValueError: Negative indexing is not supported`, turning any crafted prev-cursor with negative offset into a 500 on every endpoint backed by BasePaginator. The pre-existing code computed `stop = offset + limit + extra` and would have raised similarly only if offset was negative, but Cursor.offset used to be defensively unsigned in practice; the new branch advertises that prev cursors may legitimately carry negative offsets, yet the slicing cannot accept them.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/utils/cursors.py",
+    "line": 26,
+    "category": "security",
+    "severity": "medium",
+    "summary": "Cursor.offset no longer constrained to be non-negative",
+    "detail": "Previously offsets parsed from user-supplied cursor strings were effectively non-negative (any negative was clamped at the slicing site via `offset + limit + extra` semantics + Django assertions). The new comment explicitly endorses negative offsets and the call sites in paginator.py now propagate them. This regresses an implicit invariant: cursor strings are user-controlled (they round-trip in the URL) and Cursor.from_string accepts arbitrary signed integers via `int(bits[1])`. Combined with OptimizedCursorPaginator's `cursor.offset < 0` branch, this becomes a user-reachable input that previously could not influence the SQL slice. Recommend rejecting negative offsets in Cursor.__init__ (or Cursor.from_string) unless a paginator opts in deliberately.",
+    "line_end": null,
+    "suggested_fix": "if int(offset) < 0:\n    raise ValueError(\"Cursor offset must be non-negative\")\nself.offset = int(offset)"
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 30,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Redirect-chain iteration cap reduced from 10000 to 1000 with no comment update",
+    "detail": "The loop bound dropped from `for i = 0, 10000` (with a comment noting depth-10k segment trees may not join) to `for i = 0, 1000` and the explanatory comment was removed. Segment trees deeper than 1000 redirects will now silently fail to be joined where previously they would have been joined up to depth 10k. If this 10\u00d7 reduction was intentional, the previous comment about correctness should have been preserved/updated; otherwise this looks like an inadvertent edit that worsens an already-known correctness boundary.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/spans/buffer.py",
+    "line": 446,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "max_segment_spans guard removed; oversized segments are now silently truncated",
+    "detail": "The previous flush_segments code logged + skipped a segment whose Python-side payload exceeded `self.max_segment_spans` (`metrics.incr('spans.buffer.flush_segments.segment_span_count_exceeded')` + `logger.error(...)`). That branch is deleted. The replacement relies on `add-buffer.lua` calling `zpopmin set_key (span_count - 1000)` to cap the sorted set at 1000 members. This (a) hardcodes a 1000-cap that is independent of `self.max_segment_spans` (drift risk if max_segment_spans is configured differently), and (b) trims oldest spans by `end_timestamp_precise` silently \u2014 losing data with no metric or log, where the prior implementation explicitly emitted both. If silent trimming is intended, please add an equivalent metric/log in the Lua path or in flush; otherwise restore the Python guard.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

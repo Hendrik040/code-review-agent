@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: keras#3
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: e27b8b9343da4558b98570d6d45599bd0e365723
+# fixed_commit: c13d2723d01212d09dfdda39b0ad439803ec9230
+# base_ref: e27b8b9343da4558b98570d6d45599bd0e365723^
+# head_ref: e27b8b9343da4558b98570d6d45599bd0e365723
+# started: 2026-05-04T02:24:53+00:00
+# finished: 2026-05-04T02:28:42+00:00
+# duration_s: 228.6
+# cost_usd: 0.9669
+# num_turns: 11
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 168
+# repo: DaytonaRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 11
+# cost (USD, harness-reported): 0.966855
+# cost (USD, public Opus 4 rate): 2.900566
+# usage: {'input_tokens': 20, 'cache_creation_input_tokens': 36015, 'cache_read_input_tokens': 702123, 'output_tokens': 15624, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 36015}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 373, 'cache_read_input_tokens': 76490, 'cache_creation_input_tokens': 1619, 'cache_creation': {'ephemeral_5m_input_tokens': 1619, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 1362,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Non-Keras-tensor branch builds a self-referential layer_map entry instead of mapping the original input layer.",
+    "detail": "In _clone_functional_model, when input_tensors contains a non-Keras tensor x, `Input(tensor=x, ...)` is called first. Inside InputLayer.__init__ (topology.py:1339) this sets `x._keras_history = (newly_created_input_layer, 0, 0)` on x itself (Input(tensor=x) returns the same x). The very next line `original_input_layer = x._keras_history[0]` therefore reads the *just-installed* layer, so `original_input_layer is newly_created_input_layer` and `layer_map[original_input_layer] = newly_created_input_layer` becomes a self-mapping. The original `model.input_layers[i]` is never inserted into layer_map. Consequently, in the depth-ordered traversal below, each original input layer is `not in layer_map` and gets re-cloned via `layer.__class__.from_config(...)` and then *called* with the user's input tensor, instead of the fast-path `continue` taken by the InputLayer-already-mapped branch (line 1391). This creates redundant InputLayer instances in the cloned graph and bypasses the user-supplied input wrapper for layer-mapping purposes. The same problem exists in the `else: _input_tensors.append(x)` branch (line 1365-1366), which never updates layer_map at all when the user supplies Keras input tensors. The fix is to map the original input layer explicitly: `layer_map[model.input_layers[i]] = newly_created_input_layer` (and add the analogous mapping in the Keras-tensor else branch using `x._keras_history[0]`).",
+    "line_end": 1364,
+    "suggested_fix": "-                # Cache newly created input layer.\n-                original_input_layer = x._keras_history[0]\n-                newly_created_input_layer = input_tensor._keras_history[0]\n-                layer_map[original_input_layer] = newly_created_input_layer\n+                # Cache newly created input layer.\n+                newly_created_input_layer = input_tensor._keras_history[0]\n+                layer_map[model.input_layers[i]] = newly_created_input_layer\n             else:\n-                _input_tensors.append(x)\n+                _input_tensors.append(x)\n+                layer_map[model.input_layers[i]] = x._keras_history[0]"
+  },
+  {
+    "file": "keras/engine/topology.py",
+    "line": 1794,
+    "category": "error",
+    "severity": "low",
+    "summary": "RuntimeError is constructed with two positional args, producing a tuple-formatted error message.",
+    "detail": "The diff replaced the closing string `'All layer names should be unique.')` with `'All layer names should be unique. ' 'Layer names: ', all_names)`. The trailing comma before `all_names` makes `RuntimeError(big_string, all_names)` rather than concatenating the list into the message. `str(exc)` therefore prints the args tuple `(\"...Layer names: \", [\"name1\", ...])` instead of a clean message, defeating the apparent intent of including the layer names in the error text. The same anti-pattern was introduced in three places in models.py within this PR: line 1303 (`'... got ', model`), line 1306 (`'... instead:', model`), and line 1389 (`'... but got:', model`). Each should concatenate (or use str()/format) instead of passing extra positional arguments.",
+    "line_end": 1794,
+    "suggested_fix": "-                                   'All layer names should be unique. '\n-                                   'Layer names: ', all_names)\n+                                   'All layer names should be unique. '\n+                                   'Layer names: ' + str(all_names))"
+  }
+]

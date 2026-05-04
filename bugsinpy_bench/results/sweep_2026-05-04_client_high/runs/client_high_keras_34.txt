@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: keras#34
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# fixed_commit: 4b74fc5418944c9f449eb88ed4b40ada280fa5ca
+# base_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^
+# head_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# started: 2026-05-04T02:06:11+00:00
+# finished: 2026-05-04T02:06:58+00:00
+# duration_s: 46.5
+# cost_usd: 0.6364
+# num_turns: 6
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 177
+# repo: DaytonaRepo
+# refs: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^..ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# turns: 6
+# cost (USD, API rate): 0.636413
+# usage: {'input_tokens': 10, 'output_tokens': 2797, 'cache_creation_input_tokens': 16808, 'cache_read_input_tokens': 74225}
+# findings: 1
+# ---
+[
+  {
+    "file": "keras/engine/training.py",
+    "line": 2107,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "workers=0 path crashes with TypeError when generator is a keras.utils.Sequence (next() on non-iterator)",
+    "detail": "The new `workers=0` branch sets `output_generator = generator` and the consuming loops then call `next(output_generator)` (training.py:2115, :2280, :2407). This works for generator functions (which return iterator objects) but fails for `keras.utils.Sequence` instances: `Sequence` only defines `__getitem__` and `__len__` (see keras/utils/data_utils.py:300-361) \u2014 it is not an iterator. Calling `next()` on it raises `TypeError: 'Sequence' object is not an iterator` on the very first batch.\n\nThe newly added documentation explicitly advertises `workers=0` as a supported mode (\"If 0, will execute the generator on the main thread.\"), and the same `workers=0` codepath is duplicated in `fit_generator` (line 2107), `evaluate_generator` (line 2277), and `predict_generator` (line 2401), so all three are affected. The new tests only exercise plain generator functions, so they don't catch this \u2014 but `Sequence` is the recommended safer API per Keras docs and the existing code has a dedicated `OrderedEnqueuer` branch for it, so users will pass it.\n\nFix: when `workers == 0` and `is_sequence`, wrap the sequence in an iterator (e.g. iterate by index, or use `iter_sequence_infinite(generator)` / a small helper that yields `generator[i]` modulo `len(generator)` and calls `on_epoch_end()` at the end). E.g.:\n\n    def _iter_sequence(seq):\n        while True:\n            for i in range(len(seq)):\n                yield seq[i]\n            seq.on_epoch_end()\n    output_generator = _iter_sequence(generator) if is_sequence else generator",
+    "line_end": 2107,
+    "suggested_fix": "             else:\n-                output_generator = generator\n+                if is_sequence:\n+                    output_generator = iter_sequence_infinite(generator)\n+                else:\n+                    output_generator = generator"
+  }
+]

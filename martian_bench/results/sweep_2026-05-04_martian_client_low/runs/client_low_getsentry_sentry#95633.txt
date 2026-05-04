@@ -1,0 +1,67 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_low
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: client_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-05-04T05:09:11+00:00
+# finished: 2026-05-04T05:11:19+00:00
+# duration_s: 128.1
+# cost_usd: 1.6554
+# num_turns: 4
+# num_findings: 3
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 283
+# repo: DaytonaRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 4
+# cost (USD, API rate): 1.655425
+# usage: {'input_tokens': 8, 'output_tokens': 6618, 'cache_creation_input_tokens': 52908, 'cache_read_input_tokens': 111287}
+# findings: 3
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 149,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Failed messages are still marked complete and their offsets committed, contradicting documented at-least-once semantics",
+    "detail": "In OrderedQueueWorker.run(), the call to self.result_processor(...) is wrapped in `except Exception: logger.exception(...)` followed by a `finally` that always invokes self.offset_tracker.complete_offset(...). This means any exception in result_processor (network/db errors, bugs, etc.) is swallowed and the offset is treated as successfully processed, so the commit thread will commit it. This directly contradicts the strategy docstring (\"Only commits offsets after successful processing\") and causes silent data loss: a failed uptime/monitor result will never be retried because its Kafka offset advances past it. The included test `test_thread_queue_parallel_error_handling` even relies on a flaky `len == 0 or partition not in committed_offsets` check that only passes by timing, not correctness. Either failed offsets must NOT be marked complete (block the partition), or the failure must be routed to a DLQ before completing.",
+    "line_end": 149,
+    "suggested_fix": "@@\n-            try:\n-                with sentry_sdk.start_transaction(\n-                    ...\n-                ):\n-                    self.result_processor(self.identifier, work_item.result)\n-\n-            except queue.ShutDown:\n-                break\n-            except Exception:\n-                logger.exception(...)\n-            finally:\n-                self.offset_tracker.complete_offset(work_item.partition, work_item.offset)\n+            success = False\n+            try:\n+                with sentry_sdk.start_transaction(...):\n+                    self.result_processor(self.identifier, work_item.result)\n+                success = True\n+            except queue.ShutDown:\n+                break\n+            except Exception:\n+                logger.exception(\"Unexpected error in queue worker\", ...)\n+                # do NOT mark complete; partition stalls until handled (or send to DLQ)\n+            if success:\n+                self.offset_tracker.complete_offset(work_item.partition, work_item.offset)\n"
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 314,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Shutdown ordering causes successfully-processed messages to be left uncommitted",
+    "detail": "SimpleQueueProcessingStrategy.close() does (1) set shutdown_event, (2) join commit_thread, then (3) queue_pool.shutdown() which drains/joins workers. After step 1 the commit loop performs at most one final commit pass and exits. After commit_thread is joined, workers may still be processing items in their queues (queue.shutdown(immediate=False) lets them drain), and they will call complete_offset on each, but no one ever calls commit_function for those completions. On a clean shutdown, all messages that were in-flight or queued at shutdown time get reprocessed after restart even though they were fully handled. Order should be: drain workers first, then do one last commit pass, then stop the commit thread.",
+    "line_end": 317,
+    "suggested_fix": "Stop accepting new work, then call queue_pool.shutdown() to drain workers, then perform one final get_committable_offsets()/commit, then set shutdown_event and join commit_thread."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/result_consumer.py",
+    "line": 185,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "ResultsStrategyFactory.shutdown() drops queue_pool reference while SimpleQueueProcessingStrategy still uses it",
+    "detail": "shutdown() calls self.queue_pool.shutdown() and then sets self.queue_pool = None. However, the active SimpleQueueProcessingStrategy (returned from create_thread_queue_parallel_worker) still holds a reference to the same FixedQueuePool and its commit_thread keeps reading queue_pool.offset_tracker and calling commit_function once per second until the strategy itself is closed. If the factory is shut down before the strategy (as the new test `test_thread_queue_parallel_graceful_shutdown` does), the commit thread continues trying to commit against a pool whose worker threads are already torn down. At minimum it spams metrics/log; worse, a commit_function bound to a now-invalid Commit can raise. Lifetime ownership should be inverted: the strategy.close()/terminate() owns the queue_pool teardown, or the factory.shutdown() must close the strategy first.",
+    "line_end": 185,
+    "suggested_fix": ""
+  }
+]

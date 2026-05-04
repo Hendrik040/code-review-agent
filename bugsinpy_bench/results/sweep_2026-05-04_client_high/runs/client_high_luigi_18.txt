@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: luigi#18
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: c521d59c5eacf6c19ce3c17a62f73e042fa0556e
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-05-04T02:12:54+00:00
+# finished: 2026-05-04T02:15:54+00:00
+# duration_s: 179.4
+# cost_usd: 1.9341
+# num_turns: 16
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 184
+# repo: DaytonaRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 16
+# cost (USD, API rate): 1.934125
+# usage: {'input_tokens': 20, 'output_tokens': 11898, 'cache_creation_input_tokens': 29405, 'cache_read_input_tokens': 326754}
+# findings: 1
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "re_enable now routes through set_status(FAILED), which triggers add_failure()/has_excessive_failures(), so re-enabling a task can immediately re-disable it and send a spurious 'DISABLED due to excessive failures' email.",
+    "detail": "The original Task.re_enable() set self.status = FAILED directly. The new SimpleTaskState.re_enable(task, config) instead does:\n\n  task.scheduler_disable_time = None\n  task.failures.clear()\n  if config:\n      self.set_status(task, FAILED, config)\n      task.failures.clear()\n\nset_status(task, FAILED, config) executes the FAILED branch unconditionally:\n\n  if new_status == FAILED and task.can_disable():\n      task.add_failure()\n      if task.has_excessive_failures():\n          task.scheduler_disable_time = time.time()\n          new_status = DISABLED\n          notifications.send_error_email(... 'DISABLED ... due to excessive failures' ...)\n\nBecause failures was just cleared and add_failure() then increments it to 1, has_excessive_failures() returns True whenever the configured disable_failures threshold is 1 (a valid, supported setting). In that case re_enable will:\n  * reset scheduler_disable_time to time.time() (effectively re-disabling the task for another full disable_time window),\n  * leave the task indexed under DISABLED instead of FAILED,\n  * send a misleading 'DISABLED due to excessive failures' email even though the scheduler was actually re-enabling the task.\n\nThis fires from both code paths that re_enable with config: SimpleTaskState.prune() (auto re-enable after disable_time elapses) and CentralPlannerScheduler.re_enable_task() (manual re-enable RPC). The user-visible bug is 'I asked the scheduler to re-enable a task but it stays disabled and I get another disable email' / 'tasks never come back from DISABLED with disable_failures=1'.\n\nThe old code avoided this by mutating task.status directly without going through the failure-accounting branch.",
+    "line_end": null,
+    "suggested_fix": "-    def re_enable(self, task, config=None):\n-        task.scheduler_disable_time = None\n-        task.failures.clear()\n-        if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+    def re_enable(self, task, config=None):\n+        task.scheduler_disable_time = None\n+        task.failures.clear()\n+        # Move directly to FAILED without re-running the failure/disable logic.\n+        self._status_tasks[task.status].pop(task.id, None)\n+        self._status_tasks[FAILED][task.id] = task\n+        task.status = FAILED"
+  }
+]

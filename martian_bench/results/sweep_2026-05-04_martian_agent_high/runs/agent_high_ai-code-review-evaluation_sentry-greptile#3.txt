@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_high
+# pr: ai-code-review-evaluation_sentry-greptile#3
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/3
+# original_upstream_url: https://github.com/getsentry/sentry/pull/94376
+# pr_title: feat(upsampling) - Support upsampled error count with performance optimizations
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 6ad6fe3899f630ccf922ce7ac681147dc7987435
+# n_goldens: 3
+# started: 2026-05-04T05:07:13+00:00
+# finished: 2026-05-04T05:12:13+00:00
+# duration_s: 300.3
+# cost_usd: 1.1504
+# num_turns: 22
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 270
+# repo: DaytonaRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 22
+# cost (USD, harness-reported): 1.150393
+# cost (USD, public Opus 4 rate): 3.451178
+# usage: {'input_tokens': 36, 'cache_creation_input_tokens': 33788, 'cache_read_input_tokens': 1278675, 'output_tokens': 11988, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 33788}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 552, 'cache_read_input_tokens': 73121, 'cache_creation_input_tokens': 2010, 'cache_creation': {'ephemeral_5m_input_tokens': 2010, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 27,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Eligibility cache key omits the allowlist option, so allowlist changes return stale results for up to 60s and are not invalidatable in practice",
+    "detail": "is_errors_query_for_error_upsampled_projects caches the boolean result of _are_all_projects_error_upsampled under the key f\"error_upsampling_eligible:{organization.id}:{hash(tuple(sorted(snuba_params.project_ids)))}\". The key encodes only the organization id and the queried project set; it does NOT include any fingerprint of the underlying option `issues.client_error_sampling.project_allowlist`. Consequences: (1) When an admin removes a project from the allowlist, requests whose project tuple was previously cached as eligible will keep returning True for up to 60 seconds and will rewrite count() to upsampled_count() against projects whose events have no sample_weight column, producing wrong counts (or empty/zero results) until the entry expires. (2) When a project is newly added to the allowlist, requests whose project tuple was cached as ineligible will keep skipping the transformation for up to 60s, so users will see un-upsampled counts. (3) The provided invalidate_upsampling_cache(organization_id, project_ids) helper is effectively unusable as a fix because callers updating the option do not know which (org_id, sorted_project_ids) tuples have actually been cached \u2014 every distinct project subset a user queried is a separate key, and there can be combinatorially many of them. The PR description claims \"eventual consistency is acceptable\", but the staleness window can serve incorrect query results, not merely a delayed permission check. Either include a hash of the allowlist (or its option version) in the key, or version-stamp the cache so option updates invalidate the whole namespace.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 90,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "Rewritten transform_query_columns_for_error_upsampling silently drops upsampling for eps()/epm() (and the reverse sample_*() normalizations)",
+    "detail": "The previous implementation transformed count()\u2192upsampled_count(), eps()\u2192upsampled_eps(), epm()\u2192upsampled_epm(), and also normalized sample_count()/sample_eps()/sample_epm() back to count()/eps()/epm(). The new implementation matches only the literal string \"count()\" and passes everything else through unchanged. organization_events_stats.py forwards user-selected y-axes (which can include eps() and epm()) into this function, so for allowlisted projects those aggregations are no longer rewritten to their upsampled equivalents \u2014 users will silently see un-sample-weighted timeseries for eps/epm on allowlisted projects, and any sample_*() inputs flow through unchanged. The commit message only claims to remove null checks in upsampled_count(), so this loss of eps/epm/sample_* handling appears to be unintentional behavioral drift introduced alongside the caching change.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 27,
+    "category": "logic",
+    "severity": "low",
+    "summary": "hash(tuple(sorted(project_ids))) in the cache key admits collisions that map distinct project sets to the same cached eligibility decision",
+    "detail": "The cache key compresses the project tuple through Python's built-in hash() into a 64-bit integer. Two different project_id tuples that hash to the same value within the same organization will share a cache entry, so a request for projects {A, B} (eligible) could be answered from a prior entry computed for projects {C, D} (ineligible) or vice-versa, leading to a wrong eligibility decision. Collisions are statistically rare but not impossible at scale and are entirely avoidable by embedding the sorted ids directly (e.g. \",\".join(map(str, sorted(project_ids)))) instead of hashing them.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

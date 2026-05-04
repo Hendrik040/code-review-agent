@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_max
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-05-04T05:38:50+00:00
+# finished: 2026-05-04T05:44:21+00:00
+# duration_s: 331.5
+# cost_usd: 1.2620
+# num_turns: 12
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 295
+# repo: DaytonaRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 12
+# cost (USD, harness-reported): 1.262002
+# cost (USD, public Opus 4 rate): 3.786005
+# usage: {'input_tokens': 17, 'cache_creation_input_tokens': 55529, 'cache_read_input_tokens': 574321, 'output_tokens': 25108, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 55529}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 655, 'cache_read_input_tokens': 95380, 'cache_creation_input_tokens': 2243, 'cache_creation': {'ephemeral_5m_input_tokens': 2243, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "high",
+    "summary": "`isinstance(process, multiprocessing.Process)` is always False for SpawnProcess, so hung flushers are never killed when restarted",
+    "detail": "In `_ensure_processes_alive`, when a process is detected as hung or dead, the new code attempts `if isinstance(process, multiprocessing.Process): process.kill()`. However, `self.processes[process_index]` is created via `self.mp_context.Process(...)` where `mp_context = multiprocessing.get_context('spawn')`, which produces a `multiprocessing.context.SpawnProcess` instance. `SpawnProcess` and `multiprocessing.Process` are *siblings* \u2014 both inherit directly from `BaseProcess` \u2014 so `isinstance(SpawnProcess_instance, multiprocessing.Process)` returns False (verified empirically: `issubclass(SpawnProcess, multiprocessing.Process) == False`). Net effect: the kill() branch is dead code in production. The previous implementation called `self.process.kill()` unconditionally and did kill hung workers; this PR regresses that behavior. After `_create_process_for_shards` creates a replacement, the original (hung-but-still-alive) SpawnProcess keeps running as an orphan, holding its Redis connections, file descriptors, and Kafka producer for the lifetime of the consumer, and continues to operate on the same shards in parallel with the new worker. With `MAX_PROCESS_RESTARTS=10` this can leak up to 10 orphaned processes per shard before the consumer is finally killed. SpawnProcess does have `.kill()` (inherited from BaseProcess) \u2014 the isinstance gate is what's wrong.",
+    "line_end": 257,
+    "suggested_fix": "-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            try:\n+                if isinstance(process, multiprocessing.context.BaseProcess):\n+                    process.kill()\n+            except (ValueError, AttributeError):\n+                pass  # Process already closed, ignore"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 199,
+    "category": "other",
+    "severity": "low",
+    "summary": "`spans.buffer.flusher.wait_produce` uses tag key `shards` (plural) while every other shard tag in this file uses `shard` (singular)",
+    "detail": "The other emitted metrics in `main` (`spans.buffer.flusher.produce` at line 185 and `spans.buffer.segment_size_bytes` at line 192) are tagged `shard=<shard_tag>`, and `_ensure_processes_alive` tags `flusher_unhealthy` as `shard=<shard>`. Only `wait_produce` uses the plural key `shards`. This breaks consistency for any dashboard / alert that filters or groups by `shard`: it cannot include `wait_produce` without a separate clause. Likely a typo, since `shard_tag` is the same value in both cases.",
+    "line_end": 199,
+    "suggested_fix": "-                with metrics.timer(\"spans.buffer.flusher.wait_produce\", tags={\"shards\": shard_tag}):\n+                with metrics.timer(\"spans.buffer.flusher.wait_produce\", tags={\"shard\": shard_tag}):"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 337,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "`join()` stops processing later workers as soon as the deadline expires on an earlier worker, leaving them un-terminated, and the same isinstance bug prevents `terminate()` from running for SpawnProcess",
+    "detail": "Two issues compound here. (1) The for-loop iterates processes sequentially: if waiting on `processes[0]` exhausts the deadline, the next iteration's `if remaining_time <= 0: break` exits the loop before `processes[1..N]` are even checked, so they are never terminated and not even looked at \u2014 those still-alive SpawnProcesses are simply abandoned. The original code joined a single process so this concern didn't exist. (2) Even for the processes that ARE reached, `if isinstance(process, multiprocessing.Process): process.terminate()` is guarded by the same broken isinstance check as in `_ensure_processes_alive` \u2014 `SpawnProcess` is not a subclass of `multiprocessing.Process`, so terminate() never runs in production. The pre-existing single-process code had the same isinstance bug, but multiplying processes makes it strictly worse: the consumer can no longer rely on shutdown reliably tearing them down, and orphan workers from rebalances accumulate until the parent process exits.",
+    "line_end": 347,
+    "suggested_fix": "         # Wait for all processes to finish\n         for process_index, process in self.processes.items():\n-            if deadline is not None:\n-                remaining_time = deadline - time.time()\n-                if remaining_time <= 0:\n-                    break\n-\n             while process.is_alive() and (deadline is None or deadline > time.time()):\n                 time.sleep(0.1)\n \n-            if isinstance(process, multiprocessing.Process):\n+            if isinstance(process, multiprocessing.context.BaseProcess):\n                 process.terminate()"
+  }
+]

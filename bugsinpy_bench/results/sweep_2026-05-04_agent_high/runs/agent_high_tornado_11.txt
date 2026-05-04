@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: tornado#11
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-05-04T04:58:26+00:00
+# finished: 2026-05-04T05:02:05+00:00
+# duration_s: 218.8
+# cost_usd: 1.0314
+# num_turns: 16
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 258
+# repo: DaytonaRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 16
+# cost (USD, harness-reported): 1.031421
+# cost (USD, public Opus 4 rate): 3.094263
+# usage: {'input_tokens': 25, 'cache_creation_input_tokens': 35448, 'cache_read_input_tokens': 938142, 'output_tokens': 13627, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 35448}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 451, 'cache_read_input_tokens': 73128, 'cache_creation_input_tokens': 3263, 'cache_creation': {'ephemeral_5m_input_tokens': 3263, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 95,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Missing return after recursive _process_message for 1xx responses causes double finish() and re-read of body",
+    "detail": "When a client receives a 1xx informational response, _process_message recursively calls itself to consume the next response. After the recursive call resolves, control falls through to the body-read and delegate.finish() block. Because skip_body is never set when code is 1xx, the outer call:\n  1. Calls _read_body() with the 1xx headers (no Content-Length / no Transfer-Encoding, is_client=True), which returns _read_body_until_close() \u2014 yielding additional data into delegate.data_received() after the recursive call already delivered the real body.\n  2. Calls delegate.finish() a second time (the recursive call already called it for the actual response).\n  3. Yields self._finish_future, which was overwritten by the recursive call (so the outer awaits the wrong future).\nIn simple_httpclient.py headers_received() this would, at minimum, double-invoke the user's streaming_callback / push extra bytes into self.chunks and produce a duplicated/garbled HTTPResponse. The pre-refactor code returned out of _on_headers immediately after dispatching _handle_1xx; the new control flow is missing the equivalent early exit. The WebSocket subclass dodges this by returning 'detach' for code 101, so the bug is masked there, but the generic 1xx (e.g. 100 Continue) path is broken.",
+    "line_end": 96,
+    "suggested_fix": "@@\n             if code >= 100 and code < 200:\n                 yield self._process_message(delegate, is_client, method=method)\n+                raise gen.Return(True)\n"
+  },
+  {
+    "file": "tornado/http1connection.py",
+    "line": 240,
+    "category": "logic",
+    "severity": "low",
+    "summary": "_read_chunked_body does not consume the chunked-encoding terminator (trailer + final CRLF)",
+    "detail": "After reading the last-chunk size line `0\\r\\n`, _read_chunked_body returns immediately. Per RFC 2616 \u00a73.6.1, a chunked body ends with last-chunk *(entity-header CRLF) CRLF \u2014 at minimum a trailing `\\r\\n` remains on the wire after `0\\r\\n`. This commit newly enables chunked request bodies on the server side (per the commit message). On a keep-alive HTTP/1.1 connection, the leftover `\\r\\n` (and any trailer headers) is left in the stream buffer, so the next request in _process_requests sees `\\r\\nGET /... HTTP/1.1\\r\\n...\\r\\n\\r\\n`. _parse_headers then treats the leading empty line as the start line (eol=0 \u2192 start_line=\"\"), _can_keep_alive returns False, and delegate.headers_received is invoked with a malformed start line \u2014 silently corrupting the next pipelined request. Client-side use is masked by no_keep_alive=True, but the new server-side path is exposed.",
+    "line_end": 241,
+    "suggested_fix": "After detecting chunk_len == 0, read and discard trailer lines until an empty line, e.g. `while (yield self.stream.read_until(b\"\\r\\n\")) != b\"\\r\\n\": pass` before returning."
+  }
+]

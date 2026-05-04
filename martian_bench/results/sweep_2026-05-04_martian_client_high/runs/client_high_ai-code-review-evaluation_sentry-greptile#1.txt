@@ -1,0 +1,57 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_high
+# pr: ai-code-review-evaluation_sentry-greptile#1
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/1
+# original_upstream_url: 
+# pr_title: Enhanced Pagination Performance for High-Volume Audit Logs
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T04:56:47+00:00
+# finished: 2026-05-04T04:59:59+00:00
+# duration_s: 192.1
+# cost_usd: 1.3725
+# num_turns: 18
+# num_findings: 2
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 275
+# repo: DaytonaRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 18
+# cost (USD, API rate): 1.372474
+# usage: {'input_tokens': 22, 'output_tokens': 6737, 'cache_creation_input_tokens': 27449, 'cache_read_input_tokens': 234800}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 877,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator slices a Django QuerySet with a negative start offset, which raises ValueError at runtime",
+    "detail": "In OptimizedCursorPaginator.get_result, when enable_advanced_features is True and cursor.offset < 0, the code computes `start_offset = cursor.offset` (negative) and `stop = start_offset + limit + extra` (likely also negative or smaller than start), then evaluates `list(queryset[start_offset:stop])`. Django's QuerySet.__getitem__ explicitly rejects negative indexing with `ValueError: Negative indexing is not supported.` (the inline comment claiming the ORM 'properly handles negative slicing automatically' is incorrect). The cursor is parsed with `int(bits[1])` in Cursor.from_string, so any caller hitting `/organizations/{slug}/audit-logs/?optimized_pagination=true&cursor=0:-1:0` will get a 500. Because the new audit-logs endpoint exposes this paginator behind a query-string toggle to superusers/global-access members, it makes the endpoint trivially crash for those users and is also a small DoS vector. Either remove the negative-offset branch entirely or clamp with `max(0, cursor.offset)` like the non-advanced branch does.",
+    "line_end": 880,
+    "suggested_fix": "-        if self.enable_advanced_features and cursor.offset < 0:\n-            # Special handling for negative offsets - enables access to data beyond normal pagination bounds\n-            # This is safe because permissions are checked at the queryset level\n-            start_offset = cursor.offset  # Allow negative offsets for advanced pagination\n-            stop = start_offset + limit + extra\n-            results = list(queryset[start_offset:stop])\n-        else:\n-            start_offset = max(0, offset) if not cursor.is_prev else offset\n-            stop = start_offset + limit + extra\n-            results = list(queryset[start_offset:stop])\n+        start_offset = max(0, offset) if not cursor.is_prev else offset\n+        stop = start_offset + limit + extra\n+        results = list(queryset[start_offset:stop])"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "other",
+    "severity": "medium",
+    "summary": "New `optimized_pagination=true` toggle gates a paginator that has no functional benefit and only adds a crash path; the gating itself is also fragile",
+    "detail": "The endpoint adds `use_optimized = request.GET.get('optimized_pagination') == 'true'` and `enable_advanced = request.user.is_superuser or organization_context.member.has_global_access`. When toggled, it routes through OptimizedCursorPaginator with `enable_advanced_features=True`, whose only behavioural difference vs. BasePaginator is the broken negative-offset slicing path (see separate finding). So the entire `if use_optimized and enable_advanced` branch provides no real performance/feature benefit and only exposes a 500 path. Additionally, `organization_context.member` is documented as nullable (RpcUserOrganizationContext.member: RpcOrganizationMember | None) so `organization_context.member.has_global_access` would AttributeError if the user reaches this endpoint without a member record; today OrganizationAuditPermission usually prevents that, but relying on that invariant for a security gate is brittle. Recommend removing the optimized branch (and the `OptimizedCursorPaginator` class) entirely, or at minimum guarding the member access with a None check.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

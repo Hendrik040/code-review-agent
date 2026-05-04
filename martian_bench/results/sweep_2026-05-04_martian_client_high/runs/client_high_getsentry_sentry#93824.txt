@@ -1,0 +1,57 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_high
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-05-04T05:13:17+00:00
+# finished: 2026-05-04T05:15:54+00:00
+# duration_s: 157.8
+# cost_usd: 1.6974
+# num_turns: 13
+# num_findings: 2
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 285
+# repo: DaytonaRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 13
+# cost (USD, API rate): 1.697408
+# usage: {'input_tokens': 17, 'output_tokens': 8604, 'cache_creation_input_tokens': 31537, 'cache_read_input_tokens': 307023}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Hung/dead flusher processes are no longer killed before restart in production (spawn context), because `isinstance(process, multiprocessing.Process)` is False for `SpawnProcess`.",
+    "detail": "The previous implementation called `self.process.kill()` unconditionally before restarting an unhealthy flusher. The new code wraps the call in `if isinstance(process, multiprocessing.Process): process.kill()`. However, `multiprocessing.Process` aliases `multiprocessing.context.Process`, while processes created via `self.mp_context.Process` (with `mp_context = multiprocessing.get_context('spawn')`) are instances of `multiprocessing.context.SpawnProcess`, which is NOT a subclass of `multiprocessing.context.Process` (only of `BaseProcess`). Verified: `isinstance(spawn_process, multiprocessing.Process)` returns False. As a result, in production the hung/zombie process is never killed; `_create_process_for_shards` then spawns a fresh process for the same shards while the old one is still running. Two processes will then concurrently flush the same Redis shards to Kafka, causing duplicate segment emissions and double Redis state mutations (e.g. `done_flush_segments` deletes). On every subsequent unhealthy detection a third, fourth, ... process will be spawned (up to MAX_PROCESS_RESTARTS=10) while the previous ones keep running. The threading.Thread (test) path is unaffected because the original code intentionally skipped kill() there, but the production path is now broken. The except clause was also changed from `ValueError` to `(ValueError, AttributeError)`, which masks any incidental error and confirms the intent was to keep calling kill().",
+    "line_end": 255,
+    "suggested_fix": "@@\n-            try:\n-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n-            except (ValueError, AttributeError):\n-                pass  # Process already closed, ignore\n+            try:\n+                if not isinstance(process, threading.Thread):\n+                    process.kill()\n+            except (ValueError, AttributeError):\n+                pass  # Process already closed, ignore\n"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 341,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "`join()` `break`s out of the per-process loop on deadline expiry without terminating the remaining processes.",
+    "detail": "When the join deadline is exceeded while waiting on process #N, the loop `break`s and the subsequent `process.terminate()` call is skipped for processes #N+1..end. With multiple flusher processes (the new feature added by this PR), only a prefix of the processes ever has terminate() called on them during shutdown. While the workers are `daemon=True` and will eventually be killed at interpreter shutdown, this defeats the purpose of explicitly calling terminate() during graceful shutdown/rebalance and can leave processes flushing to Kafka/mutating Redis after the consumer believes it has stopped. (Note: terminate() also has the same `isinstance(process, multiprocessing.Process)` issue as kill(), so on spawn processes it is a no-op even when reached \u2014 see other finding.)",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

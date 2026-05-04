@@ -1,0 +1,100 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_max
+# bug: keras#3
+# bug_source: blame
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: e27b8b9343da4558b98570d6d45599bd0e365723
+# fixed_commit: c13d2723d01212d09dfdda39b0ad439803ec9230
+# base_ref: e27b8b9343da4558b98570d6d45599bd0e365723^
+# head_ref: e27b8b9343da4558b98570d6d45599bd0e365723
+# started: 2026-05-04T05:27:55+00:00
+# finished: 2026-05-04T05:40:45+00:00
+# duration_s: 769.5
+# cost_usd: 3.0617
+# num_turns: 28
+# num_findings: 6
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 291
+# repo: DaytonaRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 28
+# cost (USD, harness-reported): 3.061660
+# cost (USD, public Opus 4 rate): 9.184981
+# usage: {'input_tokens': 33, 'cache_creation_input_tokens': 91841, 'cache_read_input_tokens': 1850328, 'output_tokens': 62493, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 91841}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 619, 'cache_read_input_tokens': 133499, 'cache_creation_input_tokens': 436, 'cache_creation': {'ephemeral_5m_input_tokens': 436, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 6
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 1362,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Cloning with non-Keras input tensors maps the new InputLayer to itself instead of mapping the original input layer; produces an orphan duplicate InputLayer in the cloned graph.",
+    "detail": "In `_clone_functional_model`, the non-Keras-tensor branch executes:\n\n    input_tensor = Input(tensor=x, name='input_wrapper_for_' + name)\n    ...\n    original_input_layer = x._keras_history[0]\n    newly_created_input_layer = input_tensor._keras_history[0]\n    layer_map[original_input_layer] = newly_created_input_layer\n\nBut `Input(tensor=x, ...)` (via InputLayer.__init__ at topology.py:1339) mutates `x` so that `x._keras_history = (new_input_layer, 0, 0)`, i.e. the very InputLayer that was just created for the wrapper. Hence `original_input_layer` is the SAME object as `newly_created_input_layer`, and the resulting `layer_map[new_layer] = new_layer` is a no-op self-mapping. The actual original input layer (`model.input_layers[i]`) is never inserted into `layer_map`.\n\nDownstream, the depth-ordered loop reaches the original input layer's node (`node.outbound_layer = model.input_layers[i]`), finds `layer not in layer_map`, calls `from_config(get_config())` to clone it (creating an orphan InputLayer with a fresh placeholder), and then executes `layer(computed_tensor)` on the wrapper tensor. Because `Layer.__call__` (topology.py:594-602) wraps an output tensor that equals the input in `K.identity`, this call adds an extra inbound node to the orphan InputLayer and pushes `K.identity(input_tensors[i])` (with `_keras_history` now pointing to the orphan) into `tensor_map`. The orphan is therefore reachable from `outputs`, ends up inside `Model.layers`, and the cloned model contains a redundant pass-through InputLayer that the docstring/test never anticipates.\n\nThis bug is exercised by the new `test_clone_functional_model` non-Keras-tensor case but goes undetected because `compile`/`train_on_batch` still work through the extra identity layer.",
+    "line_end": 1364,
+    "suggested_fix": "-            original_input_layer = x._keras_history[0]\n-            newly_created_input_layer = input_tensor._keras_history[0]\n-            layer_map[original_input_layer] = newly_created_input_layer\n+            newly_created_input_layer = input_tensor._keras_history[0]\n+            layer_map[model.input_layers[i]] = newly_created_input_layer"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1365,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "When `input_tensors` is a Keras tensor, no entry is inserted into `layer_map` for the original input layer, so the depth-traversal loop again clones the original InputLayer and inserts an orphan pass-through layer.",
+    "detail": "In the same `_clone_functional_model` helper, the `else` branch (line 1365-1366) handles tensors for which `K.is_keras_tensor(x)` is True by simply appending `x` to `_input_tensors` and doing nothing else. Crucially, it never updates `layer_map`. As a result, the original input layer at `model.input_layers[i]` is missing from `layer_map` when the depth-ordered loop reaches its node. The `if layer not in layer_map:` branch (line 1382-1386) then re-clones the original InputLayer via `from_config(get_config())`, calls it on the user-supplied Keras tensor, and the K.identity-wrapping in `Layer.__call__` causes an orphan InputLayer to be inserted into the cloned graph (between the user's tensor and the rest of the model). The cloned `Model` ends up containing two InputLayers per real input: the user's, and an orphan with the original model's input-layer name. This is exercised by `test_clone_functional_model`'s `# On top of new tensors` block but masked because training still works through the redundant layer.",
+    "line_end": 1367,
+    "suggested_fix": "-        else:\n-            _input_tensors.append(x)\n+        else:\n+            _input_tensors.append(x)\n+            layer_map[model.input_layers[i]] = x._keras_history[0]"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1337,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Dead loop: `input_layers = []` is initialized but never appended to, so the subsequent `zip(model.input_layers, input_layers)` iterates zero times.",
+    "detail": "In `_clone_functional_model`, lines 1337-1349:\n\n    input_layers = []\n    input_tensors = []\n    for layer in model.input_layers:\n        input_tensor = Input(...)\n        input_tensors.append(input_tensor)\n        newly_created_input_layer = input_tensor._keras_history[0]\n        layer_map[layer] = newly_created_input_layer\n    for original_input_layer, cloned_input_layer in zip(model.input_layers, input_layers):\n        layer_map[original_input_layer] = cloned_input_layer\n\n`input_layers` stays empty, so the second loop is a no-op. The actual mapping is correctly performed inside the first loop, so behavior is not broken, but the second loop and the unused list are dead code that suggests someone intended a different mapping pattern and forgot to delete one of them. Worth removing both to avoid confusion (and potential future bugs if the live mapping line in the first loop is moved).",
+    "line_end": 1349,
+    "suggested_fix": "-        input_layers = []\n         input_tensors = []\n         for layer in model.input_layers:\n             input_tensor = Input(batch_shape=layer.batch_input_shape,\n                                  dtype=layer.dtype,\n                                  sparse=layer.sparse,\n                                  name=layer.name)\n             input_tensors.append(input_tensor)\n             # Cache newly created input layer.\n             newly_created_input_layer = input_tensor._keras_history[0]\n             layer_map[layer] = newly_created_input_layer\n-        for original_input_layer, cloned_input_layer in zip(model.input_layers, input_layers):\n-            layer_map[original_input_layer] = cloned_input_layer"
+  },
+  {
+    "file": "keras/engine/topology.py",
+    "line": 1790,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`raise RuntimeError(string, all_names)` passes the layer name list as a separate exception argument, so the rendered error message becomes a Python tuple repr instead of a clean human-readable string.",
+    "detail": "The diff adds:\n\n    raise RuntimeError('The name \"' + name + '\" is used ' +\n                       str(all_names.count(name)) +\n                       ' times in the model. '\n                       'All layer names should be unique. '\n                       'Layer names: ', all_names)\n\nNote the `,` before `all_names`. `RuntimeError` accepts variadic args, so this constructs an exception whose `.args` is `(string, list)` and whose `str(e)` renders as a Python tuple, e.g. `(\"The name 'x' is used 2 times in the model. All layer names should be unique. Layer names: \", ['a', 'b', 'a'])`. The user gets noisy quoted, parenthesized output rather than the intended sentence followed by the list. The fix is to concatenate `str(all_names)` into the existing message string. Verified locally with a tiny repro: `str(e)` returns the tuple form.",
+    "line_end": 1794,
+    "suggested_fix": "-                raise RuntimeError('The name \"' + name + '\" is used ' +\n-                                   str(all_names.count(name)) +\n-                                   ' times in the model. '\n-                                   'All layer names should be unique. '\n-                                   'Layer names: ', all_names)\n+                raise RuntimeError('The name \"' + name + '\" is used ' +\n+                                   str(all_names.count(name)) +\n+                                   ' times in the model. '\n+                                   'All layer names should be unique. '\n+                                   'Layer names: ' + str(all_names))"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1306,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Three `raise ValueError('msg', model)` sites in the new clone helpers pass the model as a separate positional argument, producing tuple-format error messages instead of clean strings.",
+    "detail": "Three new `raise ValueError(...)` calls in this PR pass an object after a comma rather than concatenating its repr into the message:\n\n  - `_clone_functional_model`: `raise ValueError('Expected `model` argument to be a `Model` instance, got ', model)` (~line 1306-1307)\n  - `_clone_functional_model`: `raise ValueError('Expected `model` argument to be a functional `Model` instance, got a `Sequential` instance instead:', model)` (~line 1308-1311)\n  - `_clone_sequential_model`: `raise ValueError('Expected `model` argument to be a `Sequential` model instance, but got:', model)` (~line 1487-1490)\n\nIn each case, `e.args` becomes `(string, model)` and `str(e)` is the Python tuple repr, which is harder to read and embeds the model's verbose repr inside parentheses/quotes. Consistent with the topology.py finding above.",
+    "line_end": 1311,
+    "suggested_fix": "-        raise ValueError('Expected `model` argument '\n-                         'to be a `Model` instance, got ', model)\n+        raise ValueError('Expected `model` argument '\n+                         'to be a `Model` instance, got ' + str(model))\n(and similarly for the other two ValueError sites)"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1418,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Multi-output layers whose `compute_mask` returns a single `None` produce `output_masks=[None]` of length 1, which `zip` then truncates against `output_tensors`, dropping all but one output from `tensor_map`.",
+    "detail": "In `_clone_functional_model`, both branches do:\n\n    output_tensors = topology._to_list(layer(computed_tensor, **kwargs))\n    output_masks   = topology._to_list(layer.compute_mask(computed_tensor, computed_mask))\n    ...\n    for x, y, mask in zip(reference_output_tensors, output_tensors, output_masks):\n        tensor_map[x] = (y, mask)\n\nThe default `Layer.compute_mask` (topology.py:716-744) returns `None` for non-masking layers, regardless of how many output tensors the layer has. `topology._to_list(None)` is `[None]` (length 1). For a multi-output non-masking layer, `output_tensors` has length N\u22652 while `output_masks` has length 1, so `zip` truncates at length 1 and only the first reference output gets mapped. Subsequent layers consuming the un-mapped outputs will silently fail the `len(computed_data) == len(reference_input_tensors)` guard, and the final `assert x in tensor_map, 'Could not compute output ' + str(x)` (line ~1453) trips when one of those outputs is a model output.\n\n`Layer.__call__` (topology.py:613-615) handles this exact case explicitly:\n\n    if not isinstance(output_mask, (list, tuple)) and len(output_ls) > 1:\n        output_mask = [output_mask] * len(output_ls)\n\nThe cloning code skips that augmentation. Not exercised by the new tests (which use only single-output layers), so it lurks until someone clones a model containing a multi-output non-masking layer.",
+    "line_end": 1438,
+    "suggested_fix": "After computing `output_tensors`/`output_masks` in both the single-input and multi-input branches, broadcast a scalar mask:\n\n    if not isinstance(output_masks, list):\n        output_masks = [output_masks]\n    if len(output_masks) == 1 and len(output_tensors) > 1:\n        output_masks = output_masks * len(output_tensors)"
+  }
+]

@@ -1,0 +1,68 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: keras#4
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# fixed_commit: 4185cbb50bfcae9cc30b0fc7b67e81d67a50a8ac
+# base_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^
+# head_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# started: 2026-05-04T04:30:35+00:00
+# finished: 2026-05-04T04:32:29+00:00
+# duration_s: 113.5
+# cost_usd: 1.1829
+# num_turns: 14
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 254
+# repo: DaytonaRepo
+# refs: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^..650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# turns: 14
+# cost (USD, API rate): 1.182901
+# usage: {'input_tokens': 18, 'output_tokens': 7245, 'cache_creation_input_tokens': 19107, 'cache_read_input_tokens': 187333}
+# findings: 3
+# ---
+[
+  {
+    "file": "keras/optimizers.py",
+    "line": 587,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "TFOptimizer.weights is a property that raises NotImplementedError, breaking save_model() for any model trained with a TF optimizer.",
+    "detail": "keras/models.py:71 calls `symbolic_weights = getattr(model.optimizer, 'weights')` as part of `save_model`. The base Optimizer assigns `self.weights = []` in `__init__`, so for normal Keras optimizers this returns a (possibly empty) list and the subsequent `if symbolic_weights:` short-circuits cleanly when there are no weights yet. In TFOptimizer, `weights` is overridden as a `@property` that raises `NotImplementedError`, so the `getattr` call itself raises (it does not return a falsy value or fall back to a default \u2014 there is no default arg). The end result is that saving any model whose optimizer is a wrapped tf.train.Optimizer crashes with NotImplementedError, defeating the purpose of registering TFOptimizer at all. The property should at minimum return `[]` (or use `getattr(model.optimizer, 'weights', [])` on the caller side).",
+    "line_end": 588,
+    "suggested_fix": "@@\n     @property\n     def weights(self):\n-        raise NotImplementedError\n+        # TF optimizers manage their own slot variables internally; expose none for Keras-side save/load.\n+        return []"
+  },
+  {
+    "file": "keras/optimizers.py",
+    "line": 590,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "TFOptimizer.get_config() raises NotImplementedError, breaking save_model() for any model using a wrapped TF optimizer.",
+    "detail": "keras/models.py:60-63 unconditionally calls `model.optimizer.get_config()` whenever `model` has an optimizer, in order to write the training_config attribute. For TFOptimizer this raises NotImplementedError before save_model can write anything, so calling `model.save(...)` after `model.compile(optimizer=tf.train.AdamOptimizer(...))` (the canonical use case introduced by this PR) fails. Either get_config should return a minimal placeholder dict (e.g. `{}`) and the save path should accept that the optimizer is non-serializable, or save_model should special-case TFOptimizer. As-is, the new TFOptimizer support is incompatible with the existing save/load workflow.",
+    "line_end": 591,
+    "suggested_fix": ""
+  },
+  {
+    "file": "keras/optimizers.py",
+    "line": 593,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "TFOptimizer.from_config is defined as an instance method, but the parent class and optimizer_from_config invoke it as a classmethod.",
+    "detail": "Optimizer.from_config (line 108-110) is decorated with @classmethod and optimizer_from_config (line 31) calls `cls.from_config(config['config'])`. TFOptimizer's override drops the @classmethod decorator and uses signature `def from_config(self, config)`. Because of the dict registration `'tfoptimizer': TFOptimizer` at line 22, anyone going through the standard optimizer_from_config path (e.g. via load_model on a saved tf-optimized model, or a custom config dict) will hit `TFOptimizer.from_config(config_dict)` \u2014 which binds `self=config_dict` and reports a missing positional argument `config`, producing a confusing TypeError rather than the intended NotImplementedError. Either decorate the override as @classmethod (matching the parent contract) or remove the override entirely so the parent is used (which will then fail loudly because TFOptimizer.__init__ requires an `optimizer` arg).",
+    "line_end": 594,
+    "suggested_fix": "@@\n-    def from_config(self, config):\n-        raise NotImplementedError\n+    @classmethod\n+    def from_config(cls, config):\n+        raise NotImplementedError"
+  }
+]

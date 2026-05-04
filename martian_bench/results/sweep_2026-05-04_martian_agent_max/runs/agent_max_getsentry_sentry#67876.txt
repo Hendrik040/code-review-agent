@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_max
+# pr: getsentry_sentry#67876
+# pr_url: https://github.com/getsentry/sentry/pull/67876
+# original_upstream_url: 
+# pr_title: GitHub OAuth Security Enhancement
+# sdk: agent_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: 344aa102e7818606e29426ebe69d5a680d8727c6
+# head_sha: bb75657fc8f13923c1d7983f422290908a1e7310
+# n_goldens: 3
+# started: 2026-05-04T05:20:43+00:00
+# finished: 2026-05-04T05:30:22+00:00
+# duration_s: 579.2
+# cost_usd: 3.4656
+# num_turns: 52
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 282
+# repo: DaytonaRepo
+# refs: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+# turns: 52
+# cost (USD, harness-reported): 3.465618
+# cost (USD, public Opus 4 rate): 10.396854
+# usage: {'input_tokens': 81, 'cache_creation_input_tokens': 81846, 'cache_read_input_tokens': 4027001, 'output_tokens': 37607, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 81846}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 528, 'cache_read_input_tokens': 108319, 'cache_creation_input_tokens': 4737, 'cache_creation': {'ephemeral_5m_input_tokens': 4737, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 402,
+    "category": "security",
+    "severity": "high",
+    "summary": "OAuth `state` parameter uses `pipeline.signature`, which is a deterministic public hash and provides no CSRF protection",
+    "detail": "In the new `OAuthLoginView`, the OAuth2 `state` is derived from `pipeline.signature` (line 402) and validated via equality with the same value (line 412). However, `pipeline.signature` is computed in `src/sentry/pipeline/base.py:133` as `md5_text(*pipe_ids).hexdigest()` over the fully-qualified pipeline-view class names \u2014 there is no per-session entropy. For this pipeline the value is the constant `9cae5e88803f35ed7970fc131e6e65d3` (verified by hashing `sentry.integrations.github.integration.OAuthLoginView` + `sentry.integrations.github.integration.GitHubInstallation`; the same value is hard-coded across multiple unrelated tests in `tests/sentry/integrations/github/test_integration.py`). Anyone can compute it. This breaks the `state` parameter's purpose (an unguessable per-session nonce) and enables an OAuth CSRF / installation-hijack attack: an attacker can install the GitHub App on their own GitHub org (causing the `installation` webhook to populate an `Integration` row with `metadata.sender.login = attacker`), independently complete a GitHub `oauth/authorize` round-trip to capture an `access_token` `code` for their own GH user, and then trick a victim mid-install into loading `\u2026/extensions/github/setup/?code=<attacker_code>&state=9cae5e8\u2026&installation_id=<attacker_install_id>`. The victim's active pipeline rebinds `installation_id` to the attacker's value, the constant `state` matches, the `code` exchange yields the attacker's GH login (so `github_authenticated_user == metadata.sender.login` \u2014 the new identity check passes), and the pipeline creates an `OrganizationIntegration` linking the attacker's GitHub installation to the victim's Sentry organization. The compare on line 412 should use a per-session random nonce \u2014 see `OAuth2LoginView.dispatch` in `src/sentry/identity/oauth2.py:245-252`, which generates `secrets.token_hex()` and stores it via `pipeline.bind_state(\"state\", state)`; the callback validates with `pipeline.fetch_state(\"state\")`.",
+    "line_end": 412,
+    "suggested_fix": "-        if not request.GET.get(\"state\"):\n-            state = pipeline.signature\n+        if not request.GET.get(\"state\"):\n+            state = secrets.token_hex()\n+            pipeline.bind_state(\"oauth_state\", state)\n@@\n-        if request.GET.get(\"state\") != pipeline.signature:\n+        if request.GET.get(\"state\") != pipeline.fetch_state(\"oauth_state\"):\n             return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "medium",
+    "summary": "`integration.metadata[\"sender\"][\"login\"]` raises KeyError when sender is absent",
+    "detail": "The new identity check unconditionally indexes `integration.metadata[\"sender\"][\"login\"]`. However, the `sender` key is only conditionally written to `metadata` \u2014 `GitHubIntegrationProvider.build_integration` (line 376-377) does `if state.get(\"sender\"): integration[\"metadata\"][\"sender\"] = state[\"sender\"]`, and `ensure_integration` (in `src/sentry/integrations/pipeline.py:32-44`) replaces `metadata` wholesale with `data[\"metadata\"]`. So an existing active `Integration` whose last write came from a non-webhook code path (older install flow that didn't carry `sender` in pipeline state, or a legacy row created before the field was tracked) will not have `metadata[\"sender\"]`. In that case the lookup raises `KeyError`, returning a 500 to the user instead of the styled `error(...)` page. The neighbouring `installation.py:43` deliberately guards this with `if \"sender\" not in integration.metadata: return HttpResponse(status=404)` \u2014 the new check should do the same.",
+    "line_end": 504,
+    "suggested_fix": "-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n+        sender_login = integration.metadata.get(\"sender\", {}).get(\"login\")\n+        if (\n+            sender_login is None\n+            or pipeline.fetch_state(\"github_authenticated_user\") != sender_login\n+        ):\n             return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 423,
+    "category": "error",
+    "severity": "low",
+    "summary": "`safe_urlopen` call is outside the try/except, so transient network errors return a 500 instead of the styled error page",
+    "detail": "`safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)` (line 423) is invoked outside the surrounding try/except (which only wraps `safe_urlread`/`parse_qsl`). `safe_urlopen` calls `requests` (`session.request`, see `src/sentry/http.py:106-114`) which can raise `requests.exceptions.ConnectionError`, `SSLError`, `Timeout`, etc. For an analogous OAuth code exchange the existing `OAuth2CallbackView.exchange_token` in `src/sentry/identity/oauth2.py:286-314` wraps the `safe_urlopen` call itself in try/except. Without this, a transient GitHub access-token endpoint failure crashes the install pipeline with an HTTP 500 instead of rendering the user-friendly `error(...)` template.",
+    "line_end": 429,
+    "suggested_fix": "-        req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n-\n-        try:\n-            body = safe_urlread(req).decode(\"utf-8\")\n-            payload = dict(parse_qsl(body))\n-        except Exception:\n-            payload = {}\n+        try:\n+            req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n+            body = safe_urlread(req).decode(\"utf-8\")\n+            payload = dict(parse_qsl(body))\n+        except Exception:\n+            payload = {}"
+  }
+]

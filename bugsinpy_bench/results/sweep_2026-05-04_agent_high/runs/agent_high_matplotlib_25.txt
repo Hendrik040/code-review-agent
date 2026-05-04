@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: matplotlib#25
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# fixed_commit: 184225bc5639fbd2f29c1253602806a8b6462d9f
+# base_ref: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf^
+# head_ref: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# started: 2026-05-04T03:12:46+00:00
+# finished: 2026-05-04T03:14:15+00:00
+# duration_s: 89.6
+# cost_usd: 0.3831
+# num_turns: 4
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 194
+# repo: DaytonaRepo
+# refs: 9e908d9c6b6f4015c0abf91bcae8470fecd03cbf^..9e908d9c6b6f4015c0abf91bcae8470fecd03cbf
+# turns: 4
+# cost (USD, harness-reported): 0.383075
+# cost (USD, public Opus 4 rate): 1.149226
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 20637, 'cache_read_input_tokens': 206708, 'output_tokens': 6028, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20637}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 418, 'cache_read_input_tokens': 60400, 'cache_creation_input_tokens': 2331, 'cache_creation': {'ephemeral_5m_input_tokens': 2331, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1143,
+    "category": "logic",
+    "severity": "high",
+    "summary": "EventCollection.__init__ leaves self._is_horizontal unset when positions is empty, breaking every subsequent orientation-aware method.",
+    "detail": "When len(positions) == 0, the branch sets only `segments = []` and skips both the `self._is_horizontal = True` and `= False` assignments. After that, calling any of `is_horizontal()`, `get_orientation()`, `switch_orientation()`, `set_positions()`, `set_orientation()`, `set_linelength()`, `set_lineoffset()`, or `get_positions()` on this instance raises AttributeError because `_is_horizontal` was never initialized. Constructing an empty EventCollection (e.g. to populate later via `add_positions`) is a perfectly natural use case that the docstring even encourages (`Can be None`), so this AttributeError will hit users immediately on the first follow-up call. The fix is to determine and assign `self._is_horizontal` based on `orientation` regardless of whether `positions` is empty.",
+    "line_end": 1144,
+    "suggested_fix": "         segment = (lineoffset + linelength / 2.,\n                    lineoffset - linelength / 2.)\n+        if orientation is None or orientation.lower() in ('none', 'horizontal'):\n+            self._is_horizontal = True\n+        elif orientation.lower() == 'vertical':\n+            self._is_horizontal = False\n+        else:\n+            raise ValueError(\"orientation must be 'horizontal' or 'vertical'\")\n         if len(positions) == 0:\n             segments = []\n         elif hasattr(positions, 'ndim') and positions.ndim > 1:\n             raise ValueError(...)\n-        elif (orientation is None or orientation.lower() == 'none' or\n-              orientation.lower() == 'horizontal'):\n+        elif self._is_horizontal:\n             positions.sort()\n             segments = [[(coord1, coord2) for coord2 in segment] for\n                         coord1 in positions]\n-            self._is_horizontal = True\n-        elif orientation.lower() == 'vertical':\n+        else:\n             positions.sort()\n             segments = [[(coord2, coord1) for coord2 in segment] for\n                         coord1 in positions]\n-            self._is_horizontal = False\n-        else:\n-            raise ValueError(\"orientation must be 'horizontal' or 'vertical'\")"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1143,
+    "category": "error",
+    "severity": "high",
+    "summary": "EventCollection.__init__ raises TypeError when positions=None, despite the docstring saying positions 'Can be None'.",
+    "detail": "The very first line of the constructor body that touches `positions` is `if len(positions) == 0:`. `len(None)` raises `TypeError: object of type 'NoneType' has no len()`, so passing `positions=None` (which the docstring explicitly advertises as valid) crashes before any of the orientation handling runs. Either the docstring is wrong or the code needs an early `if positions is None: positions = []` (or similar) guard.",
+    "line_end": null,
+    "suggested_fix": "         segment = (lineoffset + linelength / 2.,\n                    lineoffset - linelength / 2.)\n+        if positions is None:\n+            positions = []\n         if len(positions) == 0:\n             segments = []"
+  },
+  {
+    "file": "lib/matplotlib/collections.py",
+    "line": 1188,
+    "category": "logic",
+    "severity": "low",
+    "summary": "hasattr(positions, 'len') checks the wrong attribute; the empty-input guard in set_positions/add_positions never fires.",
+    "detail": "Both `set_positions` (line ~1188) and `add_positions` (line ~1213) gate the empty-input early return on `hasattr(positions, 'len')`. Python's length protocol uses `__len__`, not `len`, so this is False for every list, tuple, or ndarray a real caller would pass. The guard is effectively dead code: only `positions is None` ever short-circuits. The downstream code paths happen to handle empty inputs correctly via `np.asanyarray([])` / `np.hstack`, so this is currently latent rather than crashing \u2014 but the protective check the author wrote is not actually protecting anything, and subtle behavior changes (e.g. `positions.sort()` mutating an external empty list, or future refactors) can turn this into a real bug. Use `hasattr(positions, '__len__')` (or just `len(positions) == 0` after the None check).",
+    "line_end": 1189,
+    "suggested_fix": "-        if positions is None or (hasattr(positions, 'len') and\n-                                 len(positions) == 0):\n+        if positions is None or (hasattr(positions, '__len__') and\n+                                 len(positions) == 0):"
+  }
+]

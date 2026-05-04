@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: matplotlib#23
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# fixed_commit: 418a1adf597b4d7759dcd64b864bd64cc1b507f4
+# base_ref: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80^
+# head_ref: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# started: 2026-05-04T03:04:11+00:00
+# finished: 2026-05-04T03:12:46+00:00
+# duration_s: 515.1
+# cost_usd: 1.9365
+# num_turns: 21
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 193
+# repo: DaytonaRepo
+# refs: 87c742b99dc6b9a190f8c89bc6256ced72f5ab80^..87c742b99dc6b9a190f8c89bc6256ced72f5ab80
+# turns: 21
+# cost (USD, harness-reported): 1.936520
+# cost (USD, public Opus 4 rate): 5.809559
+# usage: {'input_tokens': 32, 'cache_creation_input_tokens': 55313, 'cache_read_input_tokens': 1280357, 'output_tokens': 38019, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 55313}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 278, 'cache_read_input_tokens': 95864, 'cache_creation_input_tokens': 1543, 'cache_creation': {'ephemeral_5m_input_tokens': 1543, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "lib/matplotlib/axes/_base.py",
+    "line": 1502,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "apply_aspect computes xr/yr from dataLim using inverted().transform \u2014 the wrong transform direction; xr/yr end up in incompatible units with xsize/ysize, breaking the margin/branch logic for non-linear scales (log, logit, symlog).",
+    "detail": "xsize and ysize a few lines above are obtained by applying the *forward* axis transform to get_xbound()/get_ybound() \u2014 i.e., they live in transformed (e.g. log10) space. To compare against them, xr and yr must also be in transformed space.\n\nself.dataLim is in **data** coordinates (e.g. dL.intervalx == [1, 100] for a log axis), so the correct conversion is the forward transform. The pre-PR log path expressed exactly this: `xr = 1.05 * (math.log10(dL.x1) - math.log10(dL.x0))`. The new code instead applies `x_trf.inverted().transform`, which is the opposite direction.\n\nFor a log axis with dataLim `[1, 100]`, pre-PR `xr \u2248 1.05*2 = 2.1`; post-PR `xr \u2248 1.05*(10**100 - 10**1) \u2248 1e100`. xmarg = xsize - xr therefore goes from a small positive value to a huge negative one, and the `if xmarg > 0 and ymarg > 0:` branch \u2014 which selects whether to adjust x or y based on Xmarg/Ymarg/y_expander \u2014 is essentially never taken anymore. The else branch unconditionally falls back to `adjy = y_expander > 0`, so the choice of axis to adjust no longer depends on which side has more room.\n\nReproducer (square aspect, log\u2013log, data well inside the view bounds, rectangular figure):\n  fig = plt.figure(figsize=(10, 5))\n  ax = fig.add_axes([.1,.1,.8,.8])\n  ax.plot([10, 100], [10, 100])\n  ax.set(xscale='log', xlim=(1,1000), yscale='log', ylim=(1,1000), aspect=1, adjustable='datalim')\n  ax.apply_aspect()\nPre-PR result: ylim shrunk to \u2248(5.62, 177.83); xlim unchanged (\"if\" branch picked y). Post-PR: xlim expanded to \u2248(0.0316, 31623); ylim unchanged (\"else\" branch picked x). Both satisfy the aspect constraint, but the post-PR choice silently diverges from the longstanding log/log behavior solely because xr/yr are computed in the wrong direction.\n\nLinear axes are unaffected because the linear transform's forward and inverse are both the identity, which is why this bug is also invisible to the new mixed-scale test added in the PR (the test happens to land on the asserted xlim by coincidence \u2014 it would also pass with the dimensionally-correct forward transform \u2014 but only because xmarg goes negative and forces the `adjy = y_expander > 0` shortcut).",
+    "line_end": 1505,
+    "suggested_fix": "@@\n         dL = self.dataLim\n-        x0, x1 = map(x_trf.inverted().transform, dL.intervalx)\n-        y0, y1 = map(y_trf.inverted().transform, dL.intervaly)\n+        x0, x1 = map(x_trf.transform, dL.intervalx)\n+        y0, y1 = map(y_trf.transform, dL.intervaly)\n         xr = 1.05 * (x1 - x0)\n         yr = 1.05 * (y1 - y0)\n"
+  }
+]

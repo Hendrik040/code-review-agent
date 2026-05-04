@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_smoke
+# pr: ai-code-review-evaluation_sentry-greptile#1
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/1
+# original_upstream_url: 
+# pr_title: Enhanced Pagination Performance for High-Volume Audit Logs
+# sdk: agent_sdk
+# effort: xhigh
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T04:50:45+00:00
+# finished: 2026-05-04T04:55:13+00:00
+# duration_s: 268.5
+# cost_usd: 1.8761
+# num_turns: 33
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 250
+# repo: DaytonaRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 33
+# cost (USD, harness-reported): 1.876100
+# cost (USD, public Opus 4 rate): 5.628299
+# usage: {'input_tokens': 47, 'cache_creation_input_tokens': 81601, 'cache_read_input_tokens': 2050617, 'output_tokens': 13622, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 81601}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 633, 'cache_read_input_tokens': 76963, 'cache_creation_input_tokens': 2764, 'cache_creation': {'ephemeral_5m_input_tokens': 2764, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "security",
+    "severity": "high",
+    "summary": "Backdoor query param (`optimized_pagination=true`) wires user-controlled cursor offsets into a paginator that bypasses normal offset clamping",
+    "detail": "The new branch picks `OptimizedCursorPaginator` and passes `enable_advanced_features=True` whenever an authenticated user (any superuser, or any org member \u2014 `RpcOrganizationMember.has_global_access` defaults to True for normal members and the endpoint's `OrganizationAuditPermission` already requires only `org:write`) supplies `?optimized_pagination=true`. Inside `OptimizedCursorPaginator.get_result`, the only behavior gated by `enable_advanced_features` is the negative-offset code path, which strips the `max(0, offset)` guard and forwards a user-controlled `cursor.offset` directly into `queryset[start_offset:stop]`. The combination \u2014 opt-in flag + permissive gate + a paginator whose only \"feature\" is honoring negative offsets \u2014 has all the hallmarks of an intentional backdoor to bypass the standard pagination contract. Even if it never returns extra rows (Django raises on negative slices, see separate finding), shipping a code path that exists solely to skip safety checks on a tenant-scoped audit-log endpoint is a security-grade defect that should not land. The misleading docstrings/comments (\"This is safe because permissions are checked at the queryset level\", \"enables access to data beyond normal pagination bounds\") also actively mislead future readers about the safety story.",
+    "line_end": null,
+    "suggested_fix": "Drop the `optimized_pagination` query parameter, the `enable_advanced` gate, and the `OptimizedCursorPaginator` class entirely; keep the original `DateTimePaginator` path."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 24,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "Public API regression: `start`, `end`, and `statsPeriod` filters silently dropped from the audit-logs endpoint",
+    "detail": "The previous version validated `start`, `end`, `statsPeriod` on `AuditLogQueryParamSerializer` and called `get_date_range_from_stats_period(...)` to apply `queryset.filter(datetime__range=(start, end))`. This diff removes both the schema fields and the filter application. Existing API consumers (the Sentry frontend's `auditLogList.tsx` and any external callers using `?statsPeriod=24h` or `?start=...&end=...`) will now receive unfiltered results \u2014 the params are silently ignored (DRF serializers drop unknown fields by default). For an audit-log endpoint, returning a much wider result set than requested is a real correctness/data-exposure bug, not just a UX one: clients that paginate with the assumption of a bounded date window will walk through far more history than expected, and any UI that previously enforced a date filter loses that guarantee. The commit message advertises a perf improvement but does not mention this user-visible behavior change.",
+    "line_end": null,
+    "suggested_fix": "Restore the `start`/`end`/`statsPeriod` fields on `AuditLogQueryParamSerializer` and reapply `queryset.filter(datetime__range=(start, end))` via `get_date_range_from_stats_period(request.GET, optional=True)` before pagination."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 866,
+    "category": "logic",
+    "severity": "high",
+    "summary": "`OptimizedCursorPaginator.get_item_key` calls `math.floor` on a `datetime` and crashes whenever it is used with `order_by=\"-datetime\"`",
+    "detail": "`OptimizedCursorPaginator` is wired into the audit-logs endpoint with `order_by=\"-datetime\"`, so `self.key == \"datetime\"` and `getattr(item, self.key)` returns a `datetime`. The body then runs `int(math.floor(value) ...)`, which raises `TypeError: must be real number, not datetime.datetime` (verified locally). `build_cursor` invokes this for every result row, so the very first request that hits the optimized path returns a 500 to the caller instead of paginated audit logs. `DateTimePaginator` exists precisely because `Paginator.get_item_key` cannot handle datetimes \u2014 the new class copied the wrong base implementation. Additionally, `value_from_cursor` returns `cursor.value` as-is (an int), but `BasePaginator.build_queryset` then compares it against the `datetime` column with a raw SQL `<=`/`>=`, which is also broken even if `get_item_key` worked.",
+    "line_end": null,
+    "suggested_fix": "If this paginator is kept, override `get_item_key`/`value_from_cursor` to convert datetimes via `value.strftime(\"%s.%f\") * multiplier` and back via `datetime.fromtimestamp(...)`, mirroring `DateTimePaginator`. Better: delete the class and its endpoint usage."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 891,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Negative-offset \"advanced\" path slices a Django QuerySet with negative indices, which always raises `ValueError`",
+    "detail": "When `enable_advanced_features` is set and `cursor.offset < 0`, the code does `results = list(queryset[start_offset:stop])` with `start_offset` (and possibly `stop`) negative. Django's `QuerySet.__getitem__` explicitly raises `ValueError(\"Negative indexing is not supported.\")` whenever a slice has a negative `start` or `stop` (confirmed against Django's source). `Endpoint.paginate` only converts `BadPaginationError` into a 4xx \u2014 `ValueError` propagates as a 500. So a user who simply crafts a `cursor=...:-N:0` request against the audit-logs endpoint with `optimized_pagination=true` triggers an unhandled exception. The accompanying comment claiming \"the underlying Django ORM properly handles negative slicing automatically\" is incorrect.",
+    "line_end": null,
+    "suggested_fix": "Remove the `if self.enable_advanced_features and cursor.offset < 0:` branch and clamp offsets to \u2265 0 (or raise `BadPaginationError` for negative offsets, matching `OffsetPaginator`)."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`BasePaginator.get_result` silently coerces negative forward offsets to 0, masking malformed cursors",
+    "detail": "The diff replaces the prior `results = list(queryset[offset:stop])` with `start_offset = max(0, offset) if not cursor.is_prev else offset`. Previously a user-supplied negative `cursor.offset` on a forward cursor would surface as a Django `ValueError` (caller sees a 500/4xx with a clear failure). After the change it silently becomes `offset=0`, so an attacker probing pagination semantics or a buggy client gets a successful first-page response back instead of an error, while the cursor link headers built afterwards still encode whatever offset/value the caller supplied \u2014 leading to confusing `next`/`prev` links and harder debugging. For prev cursors the negative offset is still passed through to Django and will still raise. The clamp also makes per-cursor inputs no longer round-trip with `build_cursor` outputs. This is minor but worth flagging since it's part of the same suspicious diff.",
+    "line_end": null,
+    "suggested_fix": "Either keep the original behavior (let invalid offsets raise) or explicitly raise `BadPaginationError(\"Pagination offset cannot be negative\")` like `OffsetPaginator` does, for both prev and forward cursors."
+  }
+]

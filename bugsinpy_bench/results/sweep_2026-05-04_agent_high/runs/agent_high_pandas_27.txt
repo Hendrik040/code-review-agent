@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: pandas#27
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 9f00f10cb94671be6d251d856ca09322a8ce95a2
+# fixed_commit: 13dc13f12c0fca943979cde065b7484bb0e40d66
+# base_ref: 9f00f10cb94671be6d251d856ca09322a8ce95a2^
+# head_ref: 9f00f10cb94671be6d251d856ca09322a8ce95a2
+# started: 2026-05-04T03:24:03+00:00
+# finished: 2026-05-04T03:30:52+00:00
+# duration_s: 408.9
+# cost_usd: 2.3618
+# num_turns: 33
+# num_findings: 1
+# file_hit_strict: N
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 200
+# repo: DaytonaRepo
+# refs: 9f00f10cb94671be6d251d856ca09322a8ce95a2^..9f00f10cb94671be6d251d856ca09322a8ce95a2
+# turns: 33
+# cost (USD, harness-reported): 2.361768
+# cost (USD, public Opus 4 rate): 7.085305
+# usage: {'input_tokens': 52, 'cache_creation_input_tokens': 62655, 'cache_read_input_tokens': 2520229, 'output_tokens': 28392, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 62655}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 720, 'cache_read_input_tokens': 100717, 'cache_creation_input_tokens': 1684, 'cache_creation': {'ephemeral_5m_input_tokens': 1684, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/indexes/datetimes.py",
+    "line": 678,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "DatetimeIndex.to_period regresses on empty index because PeriodIndex.__new__ wasn't taught to accept PeriodArrayMixin",
+    "detail": "After the refactor, DatetimeIndex.to_period() now does:\n\n    result = DatetimeArrayMixin.to_period(self, freq=freq)\n    return PeriodIndex(result, name=self.name)\n\nwhere `result` is a PeriodArrayMixin. The companion change in DatetimeIndex.__new__ added DatetimeArrayMixin to its isinstance whitelist, but the parallel change was NOT made in PeriodIndex.__new__. PeriodArrayMixin is the *parent* of PeriodIndex, so `isinstance(data, PeriodIndex)` is False, and the whitelist `(np.ndarray, PeriodIndex, DatetimeIndex, Int64Index)` does not match either. As a result the wrapper falls through to the generic iterable branch (pandas/core/indexes/period.py:219-245):\n\n    data = list(data)\n    data = np.asarray(data)\n    ...\n    data = ensure_object(data)\n    freq = freq or period.extract_freq(data)   # <-- problem\n    data = period.extract_ordinals(data, freq)\n\nNo `freq` was passed in by DatetimeIndex.to_period (the call is `PeriodIndex(result, name=self.name)`), and the carried-over freq on the PeriodArrayMixin is discarded by the iterable round-trip. For an empty PeriodArrayMixin, `list(result)` is `[]`, so `period.extract_freq` runs over a zero-length object array and raises `ValueError('freq not specified and cannot be inferred')` (pandas/_libs/tslibs/period.pyx:1481). Before this commit, `pd.DatetimeIndex([]).to_period('D')` produced an empty PeriodIndex with freq='D'; after, it raises ValueError. For non-empty data the round-trip works but boxes every element into a Period and re-extracts ordinals \u2014 a silent perf regression on a hot conversion path.",
+    "line_end": 679,
+    "suggested_fix": "Either pass freq explicitly when wrapping (`return PeriodIndex(result, name=self.name, freq=result.freq)`) or, mirroring the DatetimeIndex.__new__ fix, extend PeriodIndex.__new__ to handle PeriodArrayMixin via a fastpath that takes its `_ndarray_values` and `freq` directly:\n\n     if isinstance(data, PeriodArrayMixin):\n         if freq is None:\n             freq = data.freq\n         return cls._simple_new(data._ndarray_values, name=name, freq=freq)"
+  }
+]

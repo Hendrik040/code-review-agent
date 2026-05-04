@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: pandas#26
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 37526c1ddbe0952dffe16ac0fe158a00aa7b397f
+# fixed_commit: 70ca24680d3e51fa4b957366e8093b3cc755462d
+# base_ref: 37526c1ddbe0952dffe16ac0fe158a00aa7b397f^
+# head_ref: 37526c1ddbe0952dffe16ac0fe158a00aa7b397f
+# started: 2026-05-04T02:33:54+00:00
+# finished: 2026-05-04T02:35:54+00:00
+# duration_s: 119.9
+# cost_usd: 3.0135
+# num_turns: 18
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 198
+# repo: DaytonaRepo
+# refs: 37526c1ddbe0952dffe16ac0fe158a00aa7b397f^..37526c1ddbe0952dffe16ac0fe158a00aa7b397f
+# turns: 18
+# cost (USD, API rate): 3.013482
+# usage: {'input_tokens': 22, 'output_tokens': 7106, 'cache_creation_input_tokens': 59320, 'cache_read_input_tokens': 911968}
+# findings: 1
+# ---
+[
+  {
+    "file": "pandas/core/arrays/categorical.py",
+    "line": 2146,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Categorical.min/max raise ValueError on an all-NaN ordered Categorical instead of returning np.nan",
+    "detail": "When every value in an ordered Categorical is NaN (i.e. every code is -1), the new implementation takes the `not good.all()` branch and, for the default `skipna=True`, executes `self._codes[good].min()` (resp. `.max()`). Because `good` is all-False, `self._codes[good]` is empty and numpy's `.min()`/`.max()` raise `ValueError: zero-size array to reduction operation minimum which has no identity`.\n\nPreviously the code computed `self._codes.min(**kwargs)` unconditionally and short-circuited with `return np.nan` when `pointer == -1`, so an all-NaN Categorical produced `np.nan` for both `.min()` and `.max()`. This is a behavioral regression that also propagates to `Series.min()`/`Series.max()` on a Categorical Series (since `Series._reduce` now forwards `skipna=True` by default, see pandas/core/series.py:3823), so e.g. an all-NaN groupby key category, or `pd.Categorical([np.nan, np.nan], categories=['a'], ordered=True).min()`, will now raise instead of returning NaN.\n\nReproduction (logic-only):\n```\ncodes = np.array([-1, -1, -1])\ngood = codes != -1                # all False\ncodes[good].min()                  # ValueError\n```\n\nThe same bug exists in `Categorical.max` at line 2173.",
+    "line_end": 2148,
+    "suggested_fix": "@@\n-        good = self._codes != -1\n-        if not good.all():\n-            if skipna:\n-                pointer = self._codes[good].min()\n-            else:\n-                return np.nan\n-        else:\n-            pointer = self._codes.min()\n-        return self.categories[pointer]\n+        good = self._codes != -1\n+        if not good.all():\n+            if not skipna or not good.any():\n+                return np.nan\n+            pointer = self._codes[good].min()\n+        else:\n+            pointer = self._codes.min()\n+        return self.categories[pointer]\n"
+  }
+]

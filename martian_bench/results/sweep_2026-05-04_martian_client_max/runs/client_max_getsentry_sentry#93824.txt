@@ -1,0 +1,57 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_max
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-05-04T05:41:13+00:00
+# finished: 2026-05-04T05:48:40+00:00
+# duration_s: 447.0
+# cost_usd: 7.7909
+# num_turns: 65
+# num_findings: 2
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 295
+# repo: DaytonaRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 65
+# cost (USD, API rate): 7.790856
+# usage: {'input_tokens': 69, 'output_tokens': 27161, 'cache_creation_input_tokens': 70242, 'cache_read_input_tokens': 2957139}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Hung flusher processes are no longer killed before restart due to wrong isinstance check",
+    "detail": "In `_ensure_processes_alive`, the new code wraps `process.kill()` in `if isinstance(process, multiprocessing.Process)`. In production the flusher uses `mp_context = multiprocessing.get_context('spawn')` and creates processes via `mp_context.Process(...)`, which produces `multiprocessing.context.SpawnProcess` instances. `isinstance(spawn_proc, multiprocessing.Process)` returns False (multiprocessing.Process is `multiprocessing.context.Process`, the default-context class \u2014 SpawnProcess does NOT subclass it; both inherit from `BaseProcess` independently). The previous code called `self.process.kill()` unconditionally inside `try/except ValueError`, and `kill()` does work on a SpawnProcess. With this change, a hung flusher process detected via the `cause = 'hang'` branch is NEVER killed; instead `_create_process_for_shards` is called and a new process is spawned while the old hung process keeps running (it is daemon, so it only dies when the parent exits). Worst case the old process keeps holding Redis connections, may resume processing and produce duplicate Kafka segments to the same shards as the new process, and up to MAX_PROCESS_RESTARTS+1 ghost processes per shard can accumulate over the consumer's lifetime. The same isinstance bug exists at line 346 (`process.terminate()` in `join`), but that was already present in the pre-PR code; the regression here is that the `kill()` call newly gained the isinstance guard. (You can verify the isinstance behavior with `python -c \"import multiprocessing; ctx=multiprocessing.get_context('spawn'); p=ctx.Process(target=lambda: None); print(isinstance(p, multiprocessing.Process))\"` \u2192 prints False on Python 3.13.)",
+    "line_end": 257,
+    "suggested_fix": "         try:\n-            if isinstance(process, multiprocessing.Process):\n-                process.kill()\n-        except (ValueError, AttributeError):\n+            if not isinstance(process, threading.Thread):\n+                process.kill()  # type: ignore[union-attr]\n+        except (ValueError, AttributeError):\n             pass  # Process already closed, ignore"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 337,
+    "category": "resource",
+    "severity": "low",
+    "summary": "join() breaks out of the process loop when the deadline expires, skipping terminate() for remaining processes",
+    "detail": "In the new `join()` loop:\n\n```\nfor process_index, process in self.processes.items():\n    if deadline is not None:\n        remaining_time = deadline - time.time()\n        if remaining_time <= 0:\n            break  # exits the for loop, skipping ALL remaining processes\n\n    while process.is_alive() and (deadline is None or deadline > time.time()):\n        time.sleep(0.1)\n\n    if isinstance(process, multiprocessing.Process):\n        process.terminate()\n```\n\nIf the timeout expires while waiting on process 0, processes 1..N never get a chance to be waited on or terminated \u2014 `break` jumps out of the loop entirely. Combined with the isinstance bug above, hung processes that are not visited won't be terminated either. Even though the processes are daemons (so they die on parent exit), the contract of `join(timeout)` is to attempt to clean up all sub-processes within the budget; here only the first process is given attention. A `continue` would let later processes at least have `terminate()` attempted on them; better still, drop the early `break` and rely on the inner while loop's deadline check.",
+    "line_end": 347,
+    "suggested_fix": "         for process_index, process in self.processes.items():\n-            if deadline is not None:\n-                remaining_time = deadline - time.time()\n-                if remaining_time <= 0:\n-                    break\n-\n             while process.is_alive() and (deadline is None or deadline > time.time()):\n                 time.sleep(0.1)\n \n-            if isinstance(process, multiprocessing.Process):\n+            if not isinstance(process, threading.Thread):\n                 process.terminate()"
+  }
+]

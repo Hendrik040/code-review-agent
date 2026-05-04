@@ -1,0 +1,77 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_high
+# pr: ai-code-review-evaluation_sentry-greptile#3
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/3
+# original_upstream_url: https://github.com/getsentry/sentry/pull/94376
+# pr_title: feat(upsampling) - Support upsampled error count with performance optimizations
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 6ad6fe3899f630ccf922ce7ac681147dc7987435
+# n_goldens: 3
+# started: 2026-05-04T05:02:50+00:00
+# finished: 2026-05-04T05:07:22+00:00
+# duration_s: 272.5
+# cost_usd: 3.0830
+# num_turns: 39
+# num_findings: 4
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 277
+# repo: DaytonaRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 39
+# cost (USD, API rate): 3.082989
+# usage: {'input_tokens': 43, 'output_tokens': 12332, 'cache_creation_input_tokens': 38286, 'cache_read_input_tokens': 959721}
+# findings: 4
+# ---
+[
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 92,
+    "category": "logic",
+    "severity": "high",
+    "summary": "transform_query_columns_for_error_upsampling no longer rewrites eps()/epm() to upsampled_eps()/upsampled_epm(), silently returning non-upsampled rates for allowlisted projects",
+    "detail": "The previous implementation transformed all six aggregations: count()->upsampled_count(), eps()->upsampled_eps(), epm()->upsampled_epm() (and their sample_* inverses). The new implementation only transforms count(); any other column is passed through unchanged. As a result, when an allowlisted project runs a chart/timeseries query with eps() or epm() (used widely in dashboards, discover and insights \u2014 see static/app/views/dashboards/data.tsx etc.), the function no longer applies upsampling. The query will return raw sample rates instead of the corrected upsampled rates, producing visibly wrong numbers for users on the allowlist. The PR description says only \"unnecessary null checks\" were removed, so this regression appears unintentional.",
+    "line_end": 98,
+    "suggested_fix": "@@\n-        if column_lower == \"count()\":\n-            # Transform to upsampled count - assumes sample_weight column exists\n-            # for all events in allowlisted projects per our data model requirements\n-            transformed_columns.append(\"upsampled_count() as count\")\n-\n-        else:\n-            transformed_columns.append(column)\n+        function_conversions = {\n+            \"count()\": \"upsampled_count()\",\n+            \"eps()\":   \"upsampled_eps()\",\n+            \"epm()\":   \"upsampled_epm()\",\n+        }\n+        if column_lower in function_conversions:\n+            transformed = function_conversions[column_lower]\n+            transformed_columns.append(f\"{transformed} as {column_lower[:-2]}\")\n+        else:\n+            transformed_columns.append(column)\n"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_events_stats.py",
+    "line": 229,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Removed `Cannot group by timestamp` validation in top-events branch \u2014 invalid requests now reach Snuba unchecked",
+    "detail": "Before the change, the top_events branch raised `ParseError(\"Cannot group by timestamp\")` when the user-supplied field list contained `timestamp`. The diff inlines `self.get_field_list(...)` and drops both the temporary `raw_groupby` variable and the timestamp guard (the ParseError import is also removed). This validation is unrelated to the claimed upsampling caching change and its removal causes top-events queries with `field=timestamp` to be sent to the underlying dataset, where they will either error opaquely or return nonsensical groupings, regressing the user-facing error message and breaking a previous contract.",
+    "line_end": 234,
+    "suggested_fix": "@@\n             if top_events > 0:\n+                raw_groupby = self.get_field_list(organization, request)\n+                if \"timestamp\" in raw_groupby:\n+                    raise ParseError(\"Cannot group by timestamp\")\n                 if upsampling_enabled:\n                     final_columns = transform_query_columns_for_error_upsampling(query_columns)\n@@\n-                        raw_groupby=self.get_field_list(organization, request),\n+                        raw_groupby=raw_groupby,\n@@\n-                    selected_columns=self.get_field_list(organization, request),\n+                    selected_columns=raw_groupby,\n"
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 28,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Cached eligibility ignores allowlist option changes for up to 60s; invalidate_upsampling_cache cannot fix this since the allowlist is global, not per-(org, projects)",
+    "detail": "is_errors_query_for_error_upsampled_projects caches `_are_all_projects_error_upsampled` under key `error_upsampling_eligible:{org_id}:{hash(project_ids)}`, but the allowlist (`issues.client_error_sampling.project_allowlist`) is a global option. When an operator updates the option, every (org, project_ids) combination already cached will keep returning a stale eligibility for up to 60 seconds \u2014 both false-positives (projects removed from allowlist still being upsampled) and false-negatives. The provided `invalidate_upsampling_cache(organization_id, project_ids)` cannot remediate this because it would have to be called for every (org, project-tuple) permutation that has ever been cached; the global option-change hook has no way to enumerate them. As a result, the new \"cache invalidation utility\" is non-functional for the actual configuration-change path it is documented to serve, and toggling the allowlist will produce inconsistent upsampling results across requests/workers for ~1 minute.",
+    "line_end": 41,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 23,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Eligibility cache hit short-circuits without re-checking _should_apply_sample_weight_transform when cached value is False, but stores result under a key independent of `dataset`/`request`",
+    "detail": "The cache stores the boolean output of `_are_all_projects_error_upsampled(project_ids, organization)` only, which is correct. However, the read path is: `if cached_result is not None: return cached_result and _should_apply_sample_weight_transform(dataset, request)`. When `cached_result` is True this works, but when cached_result is False the function returns False without calling `_should_apply_sample_weight_transform` \u2014 that's still the right boolean answer, but note that `_should_apply_sample_weight_transform` may have side effects (e.g. adding query-string flags / metrics) that are now skipped on cache hit but executed on cache miss, making request handling inconsistent depending on cache state. Consider checking whether _should_apply_sample_weight_transform must remain side-effect free, or move the eligibility cache below the dataset/request check so behavior is uniform.",
+    "line_end": 25,
+    "suggested_fix": ""
+  }
+]

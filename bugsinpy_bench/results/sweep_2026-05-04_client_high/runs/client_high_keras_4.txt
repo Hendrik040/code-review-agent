@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: keras#4
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# fixed_commit: 4185cbb50bfcae9cc30b0fc7b67e81d67a50a8ac
+# base_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^
+# head_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# started: 2026-05-04T01:59:24+00:00
+# finished: 2026-05-04T02:00:38+00:00
+# duration_s: 74.2
+# cost_usd: 0.7785
+# num_turns: 12
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 168
+# repo: DaytonaRepo
+# refs: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^..650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# turns: 12
+# cost (USD, API rate): 0.778501
+# usage: {'input_tokens': 16, 'output_tokens': 4632, 'cache_creation_input_tokens': 13422, 'cache_read_input_tokens': 119466}
+# findings: 2
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 62,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "save_model() crashes for any model compiled with a TF optimizer because TFOptimizer.get_config() and TFOptimizer.weights both raise NotImplementedError.",
+    "detail": "The new TFOptimizer class (keras/optimizers.py:586-594) defines `weights` as a property that raises NotImplementedError and `get_config` that raises NotImplementedError. However, save_model in keras/models.py unconditionally calls `model.optimizer.get_config()` (line 62) and accesses `getattr(model.optimizer, 'weights')` (line 71) for any compiled model. As a result, calling `model.save(...)` after `model.compile(optimizer=tf.train.AdamOptimizer(...))` will raise NotImplementedError instead of saving the model. This is a regression for the documented use case the diff is trying to enable (wrapping TF optimizers via keras.optimizers.get). Either save_model should detect TFOptimizer and skip the optimizer config/weights serialization, or TFOptimizer.get_config should return a minimal config and `weights` should return [] so that existing save logic works.",
+    "line_end": 71,
+    "suggested_fix": "@@ keras/optimizers.py\n-    @property\n-    def weights(self):\n-        raise NotImplementedError\n-\n-    def get_config(self):\n-        raise NotImplementedError\n+    @property\n+    def weights(self):\n+        return []\n+\n+    def get_config(self):\n+        raise NotImplementedError(\n+            'TFOptimizer instances cannot be serialized; '\n+            'save the model architecture/weights separately or use a Keras optimizer.')\n"
+  },
+  {
+    "file": "keras/optimizers.py",
+    "line": 593,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "TFOptimizer.from_config is defined as an instance method, shadowing the inherited classmethod and breaking the cls.from_config(...) calling convention.",
+    "detail": "Optimizer.from_config (keras/optimizers.py:108-110) is a @classmethod, and optimizer_from_config calls it as `cls.from_config(config['config'])` (line 31). TFOptimizer redefines `from_config` as a regular instance method `def from_config(self, config)`. When invoked as `TFOptimizer.from_config(saved_config)`, Python binds `saved_config` to `self` and the second positional argument is missing \u2014 producing a confusing TypeError instead of the intended NotImplementedError, and causing the error to surface differently from the comparable `get_config` failure. If the intent is to leave it unimplemented, mark it as @classmethod for consistency with the rest of the optimizer hierarchy.",
+    "line_end": null,
+    "suggested_fix": "@@ keras/optimizers.py\n-    def from_config(self, config):\n-        raise NotImplementedError\n+    @classmethod\n+    def from_config(cls, config):\n+        raise NotImplementedError\n"
+  }
+]

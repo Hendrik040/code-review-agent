@@ -1,0 +1,99 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_agent_high
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-05-04T05:02:29+00:00
+# finished: 2026-05-04T05:07:13+00:00
+# duration_s: 284.1
+# cost_usd: 0.9435
+# num_turns: 21
+# num_findings: 6
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 263
+# repo: DaytonaRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 21
+# cost (USD, harness-reported): 0.943516
+# cost (USD, public Opus 4 rate): 2.830547
+# usage: {'input_tokens': 25, 'cache_creation_input_tokens': 35188, 'cache_read_input_tokens': 633731, 'output_tokens': 16264, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 35188}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 525, 'cache_read_input_tokens': 74870, 'cache_creation_input_tokens': 2412, 'cache_creation': {'ephemeral_5m_input_tokens': 2412, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 6
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 879,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator's negative-offset branch crashes \u2014 Django QuerySets do not support negative slicing.",
+    "detail": "When `enable_advanced_features=True` and `cursor.offset < 0`, the new code does `start_offset = cursor.offset` (negative) and then `results = list(queryset[start_offset:stop])`. Django's QuerySet.__getitem__ explicitly raises `ValueError('Negative indexing is not supported.')` for any negative slice bound, so this code path is guaranteed to 500. Combined with the changes in organization_auditlogs.py (the new `?optimized_pagination=true` query param routes here) and the fact that `has_global_access` defaults to True for every organization member, ANY user with audit-log access can trigger a 500 with a crafted cursor whose offset parses as negative. The doc-comment claim that 'the underlying Django ORM properly handles negative slicing automatically' is false.",
+    "line_end": 882,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 30,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Span-buffer redirect-traversal depth limit silently reduced 10\u00d7 (10000 \u2192 1000), and the warning comment about depth was deleted.",
+    "detail": "The redirect loop bound was changed from `for i = 0, 10000` to `for i = 0, 1000`, and the comment `-- theoretically this limit means that segment trees of depth 10k may not be joined together correctly.` was removed. Span trees with redirect depth between 1001 and 10000 (which previously joined correctly) will now silently fail to join into a single segment, producing fragmented/duplicated segments. The change is unrelated to the stated PR purpose ('Enhanced pagination performance for high-volume deployments') and there is no test or migration justifying the lower bound.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 64,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Silent data loss: spans beyond a hard-coded 1000-per-segment cap are dropped via `zpopmin` with no metric or log.",
+    "detail": "The new tail of the Lua script does `if span_count > 1000 then redis.call('zpopmin', set_key, span_count - 1000) end`. Previously, `SpansBuffer.flush_segments` enforced `max_segment_spans` (default 1001) in Python and emitted `metrics.incr('spans.buffer.flush_segments.segment_span_count_exceeded')` plus `logger.error(...)` when a segment exceeded the limit, allowing operators to see and respond to oversized segments. That observability and the configurable threshold were removed in this PR (buffer.py:443-453 deletion). Now the truncation happens silently inside the Lua script with a hard-coded limit of 1000, and the spans with the lowest `end_timestamp_precise` (the earliest spans of the trace, often the parent/root region) are evicted without trace. This is undetectable, unreported data loss.",
+    "line_end": 66,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 44,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Switching from Redis sets to sorted sets without migration causes WRONGTYPE errors against pre-existing buffered keys during/after deploy.",
+    "detail": "The Lua script changed `scard`/`sunionstore` (Redis sets) to `zcard`/`zunionstore` (sorted sets) for `span_key`, `parent_key`, and `set_key`. Any keys still present in Redis from the previous deploy (`span-buf:s:{...}:...`) are plain sets; calling `zcard`/`zunionstore` against them raises `WRONGTYPE`, which aborts the entire `EVALSHA`. With key TTLs of up to `redis_ttl=3600`s, the consumer will fail every span that hashes to a still-living legacy set key for up to an hour after rollout, and the WRONGTYPE bubbles up as a fatal error from `client.evalsha` \u2014 there is no per-key fallback or unlink-then-retry. A migration step (e.g. unlink-on-WRONGTYPE) or a key-prefix change is needed.",
+    "line_end": 52,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "security",
+    "severity": "medium",
+    "summary": "`enable_advanced` gate is effectively open: `has_global_access` defaults to True for every organization member.",
+    "detail": "The new code gates the OptimizedCursorPaginator behind `request.user.is_superuser or organization_context.member.has_global_access`. The associated comment frames this as 'Enable advanced pagination features for authorized administrators'. However, `OrganizationMember.has_global_access` is `models.BooleanField(default=True)` (src/sentry/models/organizationmember.py:216), so virtually every member of an org satisfies the predicate. Combined with the negative-offset crash above, this means any audit-log-permitted member \u2014 not just admins \u2014 can both opt into the new code path and trigger a 500 via `?optimized_pagination=true&cursor=...`. At minimum the gate is misleadingly described and contributes a needless DoS surface; consider either removing the alternate paginator entirely or requiring an explicit org-owner / superuser check.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/factory.py",
+    "line": 141,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Unconditional `val['end_timestamp_precise']` will KeyError on any span event missing the field.",
+    "detail": "The consumer now does `val = cast(SpanEvent, rapidjson.loads(payload.value))` followed by `end_timestamp_precise=val['end_timestamp_precise']`. `cast` performs no runtime validation \u2014 it is a typing-only annotation. If any inbound message on the spans topic lacks `end_timestamp_precise` (older producers, replay from older topic offsets, malformed payloads), `process_batch` raises KeyError, the strategy crashes, and the consumer enters a poison-pill loop on the partition. Previous code did not access this field at all and so was robust to its absence. Use `val.get('end_timestamp_precise', 0.0)` (or some explicit fallback / dead-letter handling) and/or filter invalid messages.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

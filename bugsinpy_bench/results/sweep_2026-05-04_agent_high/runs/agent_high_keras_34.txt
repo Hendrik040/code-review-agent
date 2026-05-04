@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: keras#34
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# fixed_commit: 4b74fc5418944c9f449eb88ed4b40ada280fa5ca
+# base_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^
+# head_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# started: 2026-05-04T02:39:18+00:00
+# finished: 2026-05-04T02:40:32+00:00
+# duration_s: 73.6
+# cost_usd: 0.4734
+# num_turns: 11
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 178
+# repo: DaytonaRepo
+# refs: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^..ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# turns: 11
+# cost (USD, harness-reported): 0.473353
+# cost (USD, public Opus 4 rate): 1.420059
+# usage: {'input_tokens': 17, 'cache_creation_input_tokens': 22972, 'cache_read_input_tokens': 447586, 'output_tokens': 4236, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 22972}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 260, 'cache_read_input_tokens': 62799, 'cache_creation_input_tokens': 1666, 'cache_creation': {'ephemeral_5m_input_tokens': 1666, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/engine/training.py",
+    "line": 2107,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "fit_generator with workers=0 crashes when a Sequence is passed",
+    "detail": "When workers=0 the new branch sets `output_generator = generator` regardless of whether `generator` is a Python generator or a `keras.utils.Sequence`. The loop then calls `next(output_generator)` at line 2115. `Sequence` (defined at keras/utils/data_utils.py:300) only implements `__getitem__` and `__len__` \u2014 it is iterable via `iter()` but is not itself an iterator, so `next(<Sequence>)` raises `TypeError: '<class>' object is not an iterator` on the first batch. The docstring change advertises `workers=0` as a supported execution mode for Sequences too (and steps_per_epoch can even be inferred from `len(generator)` for Sequences earlier in the function), so this is a broken documented path. The new tests only exercise plain generators, hiding the issue. Fix: when `workers == 0`, if `is_sequence`, build an explicit iterator (e.g. `output_generator = iter(generator)`) \u2014 or, better, materialize via `(generator[i] for i in range(len(generator)))` and call `on_epoch_end` between epochs to mirror OrderedEnqueuer semantics.",
+    "line_end": 2115,
+    "suggested_fix": "             else:\n-                output_generator = generator\n+                if is_sequence:\n+                    output_generator = iter(generator)\n+                else:\n+                    output_generator = generator"
+  },
+  {
+    "file": "keras/engine/training.py",
+    "line": 2277,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "evaluate_generator with workers=0 crashes when a Sequence is passed",
+    "detail": "Same defect as in fit_generator. When workers=0, `output_generator = generator` is assigned without honoring `is_sequence` (set at line 2248). The loop at line 2280 invokes `next(output_generator)`. A `keras.utils.Sequence` lacks `__next__`/`__iter__` (only `__getitem__`/`__len__` per keras/utils/data_utils.py:300-361), so this raises `TypeError: 'X' object is not an iterator` on the first iteration. The docstring change explicitly advertises `workers=0` as a supported mode and steps may be derived from `len(generator)` for Sequences, so this code path is reachable for users following the documented API. The new test only passes a plain generator and so does not catch it.",
+    "line_end": 2280,
+    "suggested_fix": "             else:\n-                output_generator = generator\n+                output_generator = iter(generator) if is_sequence else generator"
+  },
+  {
+    "file": "keras/engine/training.py",
+    "line": 2401,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "predict_generator with workers=0 crashes when a Sequence is passed",
+    "detail": "Same defect as the other two methods. The new `else` branch at line 2400-2401 assigns `output_generator = generator` even when `is_sequence` is True (computed at line 2372). The subsequent `next(output_generator)` at line 2407 raises `TypeError: 'X' object is not an iterator` because `Sequence` only defines `__getitem__`/`__len__`. This path is reachable any time a user calls `predict_generator(my_sequence, workers=0)` \u2014 supported per the new docstring. The test added in this PR uses a plain generator, so the crash is not exercised.",
+    "line_end": 2407,
+    "suggested_fix": "             else:\n-                output_generator = generator\n+                output_generator = iter(generator) if is_sequence else generator"
+  }
+]

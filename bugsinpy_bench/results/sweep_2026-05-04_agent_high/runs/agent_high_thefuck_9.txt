@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: thefuck#9
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: nvbn/thefuck
+# introducing_commit: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# fixed_commit: feb36ede5c518fdc3b6eddf945b2d8b1e2294d15
+# base_ref: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0^
+# head_ref: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# started: 2026-05-04T04:36:16+00:00
+# finished: 2026-05-04T04:38:22+00:00
+# duration_s: 126.1
+# cost_usd: 0.5329
+# num_turns: 12
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 235
+# repo: DaytonaRepo
+# refs: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0^..aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# turns: 12
+# cost (USD, harness-reported): 0.532906
+# cost (USD, public Opus 4 rate): 1.598720
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 16124, 'cache_read_input_tokens': 469183, 'output_tokens': 7898, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16124}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 354, 'cache_read_input_tokens': 56624, 'cache_creation_input_tokens': 1594, 'cache_creation': {'ephemeral_5m_input_tokens': 1594, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 25,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "`is not -1` uses identity comparison on an int literal; semantically incorrect and triggers SyntaxWarning on Python 3.8+",
+    "detail": "Line 25 uses `if upstream_option_index is not -1`. `is`/`is not` compare object identity, not value. This only happens to work in CPython today because small integers (-5..256) are cached, so the literal `-1` shares identity with the assigned `-1`. The language spec does not guarantee this; PyPy / Jython / Cython / future CPython optimizations are free to break it. Python 3.8+ explicitly emits SyntaxWarning (and Python 3.12+ DeprecationWarning) for `is`/`is not` with a literal because it is a known footgun. The correct comparison is `!= -1`. Although the code currently works on CPython, shipping it as-is is a latent correctness bug and noisy at import time.",
+    "line_end": null,
+    "suggested_fix": "@@\n-    if upstream_option_index is not -1:\n+    if upstream_option_index != -1:\n         command.script_parts.pop(upstream_option_index)\n         command.script_parts.pop(upstream_option_index)"
+  },
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 21,
+    "category": "logic",
+    "severity": "low",
+    "summary": "When both `--set-upstream` and `-u` are present, only the `-u` pair is removed; `--set-upstream` and its argument remain and get duplicated in the suggested command",
+    "detail": "The two try/except blocks are sequential and both write to the same `upstream_option_index` variable. If the user's script contains both options (unusual but possible, e.g. an alias that always appends `-u origin`), the first `index('--set-upstream')` succeeds, but then the second `index('-u')` overwrites the index. Only `-u` and the next token are popped; `--set-upstream <arg>` is left in `script_parts` and is concatenated onto the git-suggested command (which already includes `--set-upstream origin <branch>`), producing a malformed command with the option twice. The fix is to remove BOTH (loop until neither is found), or branch on which one was found rather than overwriting. Limited blast radius because the combination is rare, but the comment claims both forms are handled.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 27,
+    "category": "error",
+    "severity": "low",
+    "summary": "Second `pop(upstream_option_index)` raises IndexError if `-u` / `--set-upstream` is the last token in script_parts",
+    "detail": "After the first `pop(upstream_option_index)` removes the option flag, the code unconditionally pops the same index again to remove the option's argument. If the user typed e.g. `git push -u` (or `git push --set-upstream`) with the flag as the final token, the list shrinks below `upstream_option_index` and the second pop raises IndexError, which would propagate out of `get_new_command` and break the rule entirely instead of falling back to the original behavior. This is a narrow case (such a command would not normally produce the matched stderr), but the code makes no bounds check and would crash rather than gracefully degrade. Guard with `if upstream_option_index < len(command.script_parts):` before the second pop.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

@@ -1,0 +1,57 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_high
+# pr: ai-code-review-evaluation_sentry-greptile#5
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/5
+# original_upstream_url: 
+# pr_title: Replays Self-Serve Bulk Delete System
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 49a275847631e231672d01b5dcd66558c069d25b
+# head_sha: ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# n_goldens: 3
+# started: 2026-05-04T05:10:29+00:00
+# finished: 2026-05-04T05:13:17+00:00
+# duration_s: 168.1
+# cost_usd: 13.0445
+# num_turns: 22
+# num_findings: 2
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 283
+# repo: DaytonaRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 22
+# cost (USD, API rate): 13.044457
+# usage: {'input_tokens': 26, 'output_tokens': 7288, 'cache_creation_input_tokens': 259671, 'cache_read_input_tokens': 5085757}
+# findings: 2
+# ---
+[
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 118,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "fetch_error_details mis-pairs error IDs with event data when nodestore results don't preserve input order or are missing",
+    "detail": "`zip(error_ids, events.values())` assumes the dict returned by `nodestore.backend.get_multi(node_ids)` is ordered identically to `error_ids` and contains an entry for every id. Neither holds: (1) `get_multi` merges newly-fetched items with cached items via `items.update(cache_items)`, which yields uncached-then-cached order, not the original `id_list` order, and (2) backends like the Django nodestore (`Node.objects.filter(id__in=...)`) return only the items that exist, with no defined ordering. As a result, when some events are missing or partially cached, each ErrorEvent's `id` field will be paired with the wrong event's title/timestamp/message, causing incorrect timestamps in the chronological merge with breadcrumbs (which then yields error log lines at wrong points relative to user actions) and wrong IDs being stored in the ErrorEvent dicts. Use `events.get(node_id)` keyed by the per-error node_id instead of `zip` over `.values()`.",
+    "line_end": null,
+    "suggested_fix": "@@\n-        node_ids = [Event.generate_node_id(project_id, event_id=id) for id in error_ids]\n-        events = nodestore.backend.get_multi(node_ids)\n-\n-        return [\n-            ErrorEvent(\n-                category=\"error\",\n-                id=event_id,\n-                title=data.get(\"title\", \"\"),\n-                timestamp=data.get(\"timestamp\", 0.0),\n-                message=data.get(\"message\", \"\"),\n-            )\n-            for event_id, data in zip(error_ids, events.values())\n-            if data is not None\n-        ]\n+        node_id_to_error_id = {\n+            Event.generate_node_id(project_id, event_id=eid): eid for eid in error_ids\n+        }\n+        events = nodestore.backend.get_multi(list(node_id_to_error_id.keys()))\n+        return [\n+            ErrorEvent(\n+                category=\"error\",\n+                id=node_id_to_error_id[node_id],\n+                title=data.get(\"title\", \"\"),\n+                timestamp=data.get(\"timestamp\", 0.0),\n+                message=data.get(\"message\", \"\"),\n+            )\n+            for node_id, data in events.items()\n+            if data is not None\n+        ]"
+  },
+  {
+    "file": "static/app/views/dashboards/widgetCard/chart.tsx",
+    "line": 165,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "TableWidgetVisualization is rendered with empty columns and empty tableData, dropping all widget results when feature flag is enabled",
+    "detail": "When the `use-table-widget-visualization` organization feature is enabled, the dashboard widget renders `<TableWidgetVisualization columns={[]} tableData={{data: [], meta: {fields: {}, units: {}}}} />` instead of passing the actual `result.data`, `result.meta`, the widget fields, or any custom field renderer. Any user with this feature enabled will see a permanently empty table widget on dashboards, regardless of the underlying query results. The replaced `StyledSimpleTableChart` was forwarding `data={result.data}` and `metadata={result.meta}` (and many more props) \u2014 those need to be threaded through to the new component as well. The flag is currently not registered server-side so this is dormant, but the component will render empty data the moment it is turned on.",
+    "line_end": null,
+    "suggested_fix": "@@\n-          {organization.features.includes('use-table-widget-visualization') ? (\n-            <TableWidgetVisualization\n-              columns={[]}\n-              tableData={{\n-                data: [],\n-                meta: {\n-                  fields: {},\n-                  units: {},\n-                },\n-              }}\n-            />\n-          ) : (\n+          {organization.features.includes('use-table-widget-visualization') ? (\n+            <TableWidgetVisualization\n+              tableData={{\n+                data: result.data ?? [],\n+                meta: result.meta ?? {fields: {}, units: {}},\n+              }}\n+            />\n+          ) : ("
+  }
+]

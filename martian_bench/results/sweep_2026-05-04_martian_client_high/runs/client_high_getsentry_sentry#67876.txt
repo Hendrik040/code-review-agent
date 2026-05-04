@@ -1,0 +1,47 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-05-04_martian_client_high
+# pr: getsentry_sentry#67876
+# pr_url: https://github.com/getsentry/sentry/pull/67876
+# original_upstream_url: 
+# pr_title: GitHub OAuth Security Enhancement
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: 344aa102e7818606e29426ebe69d5a680d8727c6
+# head_sha: bb75657fc8f13923c1d7983f422290908a1e7310
+# n_goldens: 3
+# started: 2026-05-04T05:07:22+00:00
+# finished: 2026-05-04T05:10:29+00:00
+# duration_s: 186.3
+# cost_usd: 3.5151
+# num_turns: 23
+# num_findings: 1
+# exit_reason: stop_reason_end_turn
+# === END MARTIAN ===
+
+# Client SDK reviewer run 280
+# repo: DaytonaRepo
+# refs: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+# turns: 23
+# cost (USD, API rate): 3.515137
+# usage: {'input_tokens': 27, 'output_tokens': 9760, 'cache_creation_input_tokens': 59973, 'cache_read_input_tokens': 1105492}
+# findings: 1
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "medium",
+    "summary": "GitHubInstallation user-mismatch check raises KeyError when integration.metadata has no \"sender\"",
+    "detail": "The new authenticity check `integration.metadata[\"sender\"][\"login\"]` assumes every existing Integration has a `sender` key in its metadata. However, `build_integration` (line 376-377) only writes `metadata['sender']` when `state.get('sender')` is truthy, and the pipeline state only contains `installation_id` (not `sender`). The `sender` is therefore only populated when the Integration is first created via the GitHub installation webhook (`InstallationEventWebhook` in webhook.py). The codebase already acknowledges this gap elsewhere \u2014 `src/sentry/integrations/github/installation.py:44` explicitly checks `if 'sender' not in integration.metadata` before reading it.\n\nReachable scenarios: (1) An Integration created before the sender-capture code shipped, whose OrganizationIntegration was later removed \u2014 re-installing into a new org reaches this branch (Integration exists, no OrganizationIntegration). (2) The `InstallationEventWebhook` failed to deliver/process while the user-driven `pipeline.next_step()` path created the Integration without `sender` (line 482 fallback). (3) Any DB row where the webhook order was reversed or the metadata was mutated.\n\nIn all of these, line 503 raises `KeyError: 'sender'`, the exception propagates out of the pipeline view, and the user receives a 500 instead of the intended friendly error page. This breaks the install flow and makes the feature fail-closed in an unfriendly way (and could mask the real cause of the problem).",
+    "line_end": null,
+    "suggested_fix": "@@\n-        # Check that the authenticated GitHub user is the same as who installed the app.\n-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n-            return error(request, self.active_organization)\n+        # Check that the authenticated GitHub user is the same as who installed the app.\n+        sender = integration.metadata.get(\"sender\") or {}\n+        if (\n+            pipeline.fetch_state(\"github_authenticated_user\")\n+            != sender.get(\"login\")\n+        ):\n+            return error(request, self.active_organization)"
+  }
+]

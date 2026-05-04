@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: matplotlib#29
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7
+# fixed_commit: fc51b411ba5d0984544ecff97e0a28ea4b6a6d03
+# base_ref: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7^
+# head_ref: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7
+# started: 2026-05-04T03:14:15+00:00
+# finished: 2026-05-04T03:15:42+00:00
+# duration_s: 86.9
+# cost_usd: 0.4328
+# num_turns: 11
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 195
+# repo: DaytonaRepo
+# refs: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7^..01aedbc0454ca2a434cdf2c63230ad73dda58cf7
+# turns: 11
+# cost (USD, harness-reported): 0.432814
+# cost (USD, public Opus 4 rate): 1.298444
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 19034, 'cache_read_input_tokens': 367344, 'output_tokens': 5204, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 19034}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 442, 'cache_read_input_tokens': 59151, 'cache_creation_input_tokens': 1977, 'cache_creation': {'ephemeral_5m_input_tokens': 1977, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "lib/matplotlib/axes/_base.py",
+    "line": 3001,
+    "category": "logic",
+    "severity": "high",
+    "summary": "invert_xaxis/invert_yaxis no longer notify lim-changed callbacks or propagate to shared axes",
+    "detail": "Previously, `invert_xaxis()` (and `invert_yaxis()`) called `self.set_xlim(self.get_xlim()[::-1], auto=None)`. `set_xlim` (lib/matplotlib/axes/_base.py:3235-3244) processes `'xlim_changed'` callbacks, walks `self._shared_x_axes.get_siblings(self)` to keep all shared x-axes in sync, and sets `self.stale = True`. The new implementation routes through `Axis.set_inverted` (lib/matplotlib/axis.py:923-935), which calls `set_view_interval(..., ignore=True)`. The XAxis `set_view_interval` (lib/matplotlib/axis.py:2069-2078) merely assigns `self.axes.viewLim.intervalx = vmin, vmax` \u2014 no callback dispatch, no propagation to siblings, and not even a `self.stale = True` (only the YAxis version sets stale). Result: (1) any user code that connected to the `'xlim_changed'`/`'ylim_changed'` callback is silently no longer notified when `invert_xaxis`/`invert_yaxis` is called; (2) when axes were created with `sharex=` / `sharey=`, calling `invert_xaxis` now inverts only the calling axes instead of all shared siblings; (3) the XAxis case skips the `stale` flag, so a redraw may not be triggered. This is a behavioral regression for a public API that previously had these guarantees via `set_xlim`.",
+    "line_end": 3001,
+    "suggested_fix": "-        self.xaxis.set_inverted(not self.xaxis.get_inverted())\n+        self.set_xlim(self.get_xlim()[::-1], auto=None)\n# (and analogously for invert_yaxis), or have Axis.set_inverted route through\n# the Axes' set_xlim/set_ylim so that callbacks, shared-axes sync, and the\n# stale flag are preserved."
+  },
+  {
+    "file": "lib/matplotlib/axis.py",
+    "line": 935,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "Axis.set_inverted bypasses set_xlim/set_ylim, losing callbacks, shared-axes sync, and scale validation",
+    "detail": "`Axis.set_inverted` writes the interval directly through `set_view_interval(..., ignore=True)`. Compared with the public `Axes.set_xlim` / `set_ylim` paths used elsewhere, this skips: (a) `'xlim_changed'`/`'ylim_changed'` callback dispatch (lib/matplotlib/axes/_base.py:3236), (b) propagation to shared axes via `_shared_x_axes.get_siblings(self)` (3238-3243), (c) `_validate_converted_limits` and `xaxis.limit_range_for_scale` (3199-3229) which guard against e.g. non-positive limits on log scales, and (d) for the x-axis, the `self.stale = True` flag. A user calling `ax.xaxis.set_inverted(True)` therefore gets a different \u2014 and weaker \u2014 set of side-effects than `ax.set_xlim(..., ...)` even though the docstring presents `set_inverted` as a convenience for the same task. This is the underlying cause of the `invert_xaxis`/`invert_yaxis` regression and will also break any direct caller of `set_inverted` that expects standard set_xlim semantics (callback observers, shared subplots, log-scale safety).",
+    "line_end": 935,
+    "suggested_fix": ""
+  }
+]

@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high
+# bug: scrapy#2
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: scrapy/scrapy
+# introducing_commit: c59340150f60209af63677349449746a6c0fdebf
+# fixed_commit: 439a3e59b8e858441f8d97dbc32f398db392330d
+# base_ref: c59340150f60209af63677349449746a6c0fdebf^
+# head_ref: c59340150f60209af63677349449746a6c0fdebf
+# started: 2026-05-04T03:14:15+00:00
+# finished: 2026-05-04T03:15:17+00:00
+# duration_s: 62.7
+# cost_usd: 0.7030
+# num_turns: 9
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 217
+# repo: DaytonaRepo
+# refs: c59340150f60209af63677349449746a6c0fdebf^..c59340150f60209af63677349449746a6c0fdebf
+# turns: 9
+# cost (USD, API rate): 0.702964
+# usage: {'input_tokens': 13, 'output_tokens': 3704, 'cache_creation_input_tokens': 13840, 'cache_read_input_tokens': 110313}
+# findings: 2
+# ---
+[
+  {
+    "file": "scrapy/utils/datatypes.py",
+    "line": 360,
+    "category": "logic",
+    "severity": "low",
+    "summary": "LocalCache.__setitem__ evicts an unrelated entry when updating an existing key in a full cache",
+    "detail": "The eviction loop `while len(self) >= self.limit: self.popitem(last=False)` runs unconditionally before super().__setitem__. When the cache is full (len == limit) and the caller assigns to a key that is already present, super().__setitem__ would only update the existing entry (no growth), but the loop still evicts one oldest entry, dropping the cache below capacity and silently discarding an unrelated value. The contract documented in the docstring (\"Older items expires first\") implies eviction only when the cache must grow. Current callers (scrapy/resolver.py) happen to gate writes with `if name in dnscache` so they don't trigger this, but LocalCache is a generic public utility in scrapy.utils.datatypes and other future callers can hit it. Fix by skipping eviction when the key already exists.",
+    "line_end": 363,
+    "suggested_fix": "     def __setitem__(self, key, value):\n-        while len(self) >= self.limit:\n+        while len(self) >= self.limit and key not in self:\n             self.popitem(last=False)\n         super(LocalCache, self).__setitem__(key, value)"
+  },
+  {
+    "file": "scrapy/utils/datatypes.py",
+    "line": 356,
+    "category": "error",
+    "severity": "low",
+    "summary": "LocalCache with default limit=None breaks on first __setitem__",
+    "detail": "`LocalCache.__init__` declares `limit=None` as default, but `__setitem__` does `while len(self) >= self.limit`. With `limit=None` on Python 2 the comparison `0 >= None` evaluates to True (None compares less than any int), so the loop calls `self.popitem(last=False)` on an empty OrderedDict, which raises `KeyError('dictionary is empty')`. On Python 3 the comparison itself raises `TypeError`. As a result, instantiating `LocalCache()` without an explicit positive integer limit produces an object whose first assignment crashes. Either drop the default, validate the argument, or treat None as \"unlimited\".",
+    "line_end": 361,
+    "suggested_fix": "     def __setitem__(self, key, value):\n-        while len(self) >= self.limit:\n+        while self.limit is not None and len(self) >= self.limit:\n             self.popitem(last=False)\n         super(LocalCache, self).__setitem__(key, value)"
+  }
+]

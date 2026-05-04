@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_high_tail
+# bug: thefuck#23
+# bug_source: blame
+# sdk: client_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100_tail14.json
+# prepared_sha256_16: b97fa8916250ed78
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# fixed_commit: 9a02e821cdc58a4aba2c0acc521fb25cacab87a5
+# base_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^
+# head_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# started: 2026-05-04T04:32:59+00:00
+# finished: 2026-05-04T04:34:12+00:00
+# duration_s: 73.3
+# cost_usd: 0.8394
+# num_turns: 9
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 255
+# repo: DaytonaRepo
+# refs: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^..4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# turns: 9
+# cost (USD, API rate): 0.839431
+# usage: {'input_tokens': 13, 'output_tokens': 4642, 'cache_creation_input_tokens': 17818, 'cache_read_input_tokens': 104666}
+# findings: 2
+# ---
+[
+  {
+    "file": "thefuck/utils.py",
+    "line": 187,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "shelve.open used as a context manager breaks on Python 2.7 / 3.3 (project supports both per setup.py and .travis.yml).",
+    "detail": "`with shelve.open(cache_path) as db:` relies on `shelve.Shelf.__enter__`/`__exit__`, which were only added in Python 3.4. The repo's setup.py guards Python >=2.7 and >=3.3, and .travis.yml runs CI on 2.7, 3.3, and 3.4. On Python 2.7 and 3.3 every call to a `@cache(...)`-decorated function (e.g. `Bash.get_aliases`/`Zsh.get_aliases` in `thefuck/shells.py`) will raise `AttributeError: Shelf instance has no attribute '__exit__'`, breaking alias loading and therefore the whole tool on those interpreters. Either drop the `with` statement and call `db.close()` in a try/finally, or close manually.",
+    "line_end": 193,
+    "suggested_fix": "@@\n-        with shelve.open(cache_path) as db:\n-            if db.get(key, {}).get('etag') == etag:\n-                return db[key]['value']\n-            else:\n-                value = fn(*args, **kwargs)\n-                db[key] = {'etag': etag, 'value': value}\n-                return value\n+        db = shelve.open(cache_path)\n+        try:\n+            if db.get(key, {}).get('etag') == etag:\n+                return db[key]['value']\n+            value = fn(*args, **kwargs)\n+            db[key] = {'etag': etag, 'value': value}\n+            return value\n+        finally:\n+            db.close()\n"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Cache key uses repr(fn).split('at')[0], which collides for functions whose qualified name shares a prefix before the first literal 'at'.",
+    "detail": "`key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])` truncates the function repr at the first occurrence of the substring 'at'. Any function whose qualified name contains 'at' before the ` at 0x...` address (e.g. `category`, `concat`, `flatten`, anything with a class/method qualname containing 'at') will collapse to a prefix that may collide with another function in the same module. Two functions sharing the same prefix before 'at' would silently share a cache entry, returning one's cached value for the other. Current callers (`Bash.get_aliases`, `Zsh.get_aliases`) happen not to collide thanks to the class-name prefix, but this is a latent footgun for any future `@cache`-decorated function. Use `fn.__qualname__` (or `fn.__name__`) instead of slicing the repr.",
+    "line_end": null,
+    "suggested_fix": "-        key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])\n+        key = '{}.{}'.format(fn.__module__, getattr(fn, '__qualname__', fn.__name__))\n"
+  }
+]

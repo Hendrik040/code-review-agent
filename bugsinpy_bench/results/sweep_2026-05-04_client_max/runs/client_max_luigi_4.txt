@@ -1,0 +1,48 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_max
+# bug: luigi#4
+# bug_source: blame
+# sdk: client_sdk
+# effort: max
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: spotify/luigi
+# introducing_commit: 9cbf18822c74790009841c3305c0ae9d77726726
+# fixed_commit: 8501e5dbb8d3040453a89bb0d3562526086d51e5
+# base_ref: 9cbf18822c74790009841c3305c0ae9d77726726^
+# head_ref: 9cbf18822c74790009841c3305c0ae9d77726726
+# started: 2026-05-04T04:51:41+00:00
+# finished: 2026-05-04T04:52:33+00:00
+# duration_s: 51.7
+# cost_usd: 0.4963
+# num_turns: 8
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 273
+# repo: DaytonaRepo
+# refs: 9cbf18822c74790009841c3305c0ae9d77726726^..9cbf18822c74790009841c3305c0ae9d77726726
+# turns: 8
+# cost (USD, API rate): 0.496265
+# usage: {'input_tokens': 12, 'output_tokens': 2961, 'cache_creation_input_tokens': 9383, 'cache_read_input_tokens': 65386}
+# findings: 1
+# ---
+[
+  {
+    "file": "luigi/contrib/redshift.py",
+    "line": 339,
+    "category": "logic",
+    "severity": "high",
+    "summary": "S3CopyToTable.copy() builds the column list assuming each entry is a (name, type) tuple, breaking the documented list-of-strings form of `columns`.",
+    "detail": "The base class `rdbms.CopyToTable` documents `columns` as accepting either a list of column-name strings (e.g. `['id', 'username']`) OR a list of `(name, type)` tuples (see `luigi/contrib/rdbms.py:66-71`). The sibling implementation `PostgresqlTarget.copy` (`luigi/contrib/postgres.py:281-286`) explicitly handles both shapes by checking `isinstance(self.columns[0], six.string_types)`.\n\nThe new code in `S3CopyToTable.copy` does `colnames = ','.join([x[0] for x in self.columns])` unconditionally. When `self.columns` is the documented list-of-strings (e.g. `['id', 'username', 'inserted']`), iterating and taking `x[0]` returns the first character of each string, producing `'i,u,i'` and emitting SQL like `COPY my_table (i,u,i) from '...'`. This will either raise a syntax error in Redshift or, worse, silently target wrong/colliding columns and corrupt the load. Subclasses defining `columns` as plain names \u2014 a documented and supported form \u2014 are now broken by this change.\n\nTrigger: any existing `S3CopyToTable` subclass whose `columns` attribute is a list of strings rather than tuples.",
+    "line_end": null,
+    "suggested_fix": "@@\n         logger.info(\"Inserting file: %s\", f)\n         colnames = ''\n-        if len(self.columns) > 0:\n-            colnames = \",\".join([x[0] for x in self.columns])\n-            colnames = '({})'.format(colnames)\n+        if len(self.columns) > 0:\n+            if isinstance(self.columns[0], six.string_types):\n+                column_names = self.columns\n+            elif len(self.columns[0]) == 2:\n+                column_names = [c[0] for c in self.columns]\n+            else:\n+                raise Exception('columns must consist of column strings or '\n+                                '(column string, type string) tuples '\n+                                '(was %r ...)' % (self.columns[0],))\n+            colnames = '({})'.format(','.join(column_names))\n"
+  }
+]

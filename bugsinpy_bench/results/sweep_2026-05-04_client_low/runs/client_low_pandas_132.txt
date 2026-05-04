@@ -1,0 +1,58 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_client_low
+# bug: pandas#132
+# bug_source: blame
+# sdk: client_sdk
+# effort: low
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# fixed_commit: bd8f07fb29d2ac819f4c8e8e1b8e6d40f8b0f40c
+# base_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5^
+# head_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# started: 2026-05-04T01:28:15+00:00
+# finished: 2026-05-04T01:30:07+00:00
+# duration_s: 112.6
+# cost_usd: 1.7697
+# num_turns: 14
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: stop_reason_end_turn
+# === END BENCH ===
+
+# Client SDK reviewer run 112
+# repo: DaytonaRepo
+# refs: 2d0d58c04114b634072e9425824b34cda3aeaef5^..2d0d58c04114b634072e9425824b34cda3aeaef5
+# turns: 14
+# cost (USD, API rate): 1.769651
+# usage: {'input_tokens': 18, 'output_tokens': 6079, 'cache_creation_input_tokens': 36037, 'cache_read_input_tokens': 425175}
+# findings: 2
+# ---
+[
+  {
+    "file": "pandas/core/nanops.py",
+    "line": 385,
+    "category": "logic",
+    "severity": "high",
+    "summary": "nanvar/nanstd raise TypeError on timedelta64 inputs because (avg - values) ** 2 is not supported",
+    "detail": "The decorator on nanvar was changed from @disallow('M8','m8') to @disallow('M8'), so timedelta64 ('m8') arrays now flow into the new two-pass algorithm. Inside, `values.sum(axis=axis, dtype=np.float64)` actually returns a timedelta64 scalar (numpy ignores the dtype kwarg for timedelta64 reductions), so `avg` is a timedelta64, `(avg - values)` is timedelta64, and `(avg - values) ** 2` raises `TypeError: ufunc 'square' not supported for the input types`. This breaks Series.std()/Series.var() for timedelta dtypes \u2014 exactly the path the diff intends to support (the test in pandas/tseries/tests/test_timedeltas.py was updated to remove 'var' from the invalid-ops list, expecting td.var() to succeed, but it actually crashes). Reproduction with numpy alone:\n\n  v = np.array([1,2,3], dtype='timedelta64[ns]')\n  avg = v.sum(dtype=np.float64) / 3   # still timedelta64\n  ((avg - v) ** 2)                    # TypeError\n\nFix: view timedelta64 inputs as int64/float64 before the arithmetic (e.g. `if is_timedelta64_dtype(values): values = values.view('i8').astype('f8')`), similar to how the old `_nanvar` was effectively guarded.",
+    "line_end": 385,
+    "suggested_fix": "@@\n     dtype = values.dtype\n     mask = isnull(values)\n     if is_any_int_dtype(values):\n         values = values.astype('f8')\n         values[mask] = np.nan\n+    elif is_timedelta64_dtype(values):\n+        values = values.view('i8').astype('f8')\n+        values[mask] = np.nan\n"
+  },
+  {
+    "file": "pandas/core/nanops.py",
+    "line": 399,
+    "category": "other",
+    "severity": "low",
+    "summary": "nansem computes nanvar twice; the first call's result is immediately overwritten",
+    "detail": "In nansem, `var = nanvar(values, axis, skipna, ddof=ddof)` is called on line 399, but `var` is reassigned by an identical call on line 405 (after the redundant int-to-float coercion that nanvar already performs internally). The first call is dead code and roughly doubles the cost of nansem. Only one of the two calls should remain.",
+    "line_end": 405,
+    "suggested_fix": "@@\n def nansem(values, axis=None, skipna=True, ddof=1):\n-    var = nanvar(values, axis, skipna, ddof=ddof)\n-\n     mask = isnull(values)\n     if not is_float_dtype(values.dtype):\n         values = values.astype('f8')\n     count, _ = _get_counts_nanvar(mask, axis, ddof, values.dtype)\n     var = nanvar(values, axis, skipna, ddof=ddof)\n"
+  }
+]

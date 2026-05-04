@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-05-04_agent_high
+# bug: keras#28
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-4-7
+# branch: bench/bugsinpy
+# harness_git_rev: a21503a53019479e964520cc5fb379738178bb3d
+# prepared_path: bugsinpy_bench/dataset/prepared_100.json
+# prepared_sha256_16: e3b1503c8982c29f
+# upstream_repo: keras-team/keras
+# introducing_commit: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# fixed_commit: 5422fdd38baad36730cb6aeb946e17eeae6a551c
+# base_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631^
+# head_ref: 7a1b9005c220afb9271d20a73e168cf18d0cd631
+# started: 2026-05-04T02:35:32+00:00
+# finished: 2026-05-04T02:37:39+00:00
+# duration_s: 126.8
+# cost_usd: 0.4705
+# num_turns: 5
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 176
+# repo: DaytonaRepo
+# refs: 7a1b9005c220afb9271d20a73e168cf18d0cd631^..7a1b9005c220afb9271d20a73e168cf18d0cd631
+# turns: 5
+# cost (USD, harness-reported): 0.470535
+# cost (USD, public Opus 4 rate): 1.411605
+# usage: {'input_tokens': 9, 'cache_creation_input_tokens': 20392, 'cache_read_input_tokens': 264730, 'output_tokens': 8427, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20392}, 'inference_geo': '', 'iterations': [{'input_tokens': 1, 'output_tokens': 317, 'cache_read_input_tokens': 60913, 'cache_creation_input_tokens': 1573, 'cache_creation': {'ephemeral_5m_input_tokens': 1573, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 302,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "_empty_batch uses length // sampling_rate, but __getitem__ produces ceil(length / sampling_rate) sample indices, causing a shape/broadcast error whenever length is not a multiple of sampling_rate.",
+    "detail": "_empty_batch allocates samples with second axis size `self.length // self.sampling_rate`, but in __getitem__ the per-row indices are built as `range(row - length, row, sampling_rate)`, whose length is `ceil(length / sampling_rate)`. The two values agree only when sampling_rate evenly divides length (the case exercised by every test, e.g. length=10, sampling_rate=2 -> 5 == 5). For any other configuration they diverge: with length=10, sampling_rate=3 the indices list has 4 elements while samples has axis 1 of size 3; with length=6, sampling_rate=4 it is 2 vs 1. The very first call to `samples[j] = self.data[indices]` then raises a ValueError due to the mismatched shape, so the generator is unusable for those (perfectly legal) parameter combinations. The fix is to use the same expression in both places, e.g. ceil division.",
+    "line_end": 302,
+    "suggested_fix": "@@\n-        samples_shape = [num_rows, self.length // self.sampling_rate]\n+        samples_shape = [num_rows,\n+                         (self.length + self.sampling_rate - 1) // self.sampling_rate]\n         samples_shape.extend(self.data.shape[1:])\n"
+  },
+  {
+    "file": "keras/preprocessing/sequence.py",
+    "line": 290,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Default end_index = len(data) - 1 silently drops the last data point because end_index is treated as an exclusive upper bound everywhere it is used.",
+    "detail": "When the caller does not supply end_index, __init__ sets `self.end_index = len(data) - 1`. Both consumers of end_index treat it as exclusive: `np.random.randint(start_index, end_index, ...)` (high is exclusive) and `np.arange(i, min(..., end_index), stride)` (stop is exclusive). As a result the largest row index that can ever be selected is `len(data) - 2`, and the last data/target row is never used. With `length=10` and `len(data)=50` the test happens to cover the right number of batches (20), but target index 49 is silently unreachable. The intended default is almost certainly `len(data)` (or, if a one-step-ahead reservation is intended, this should be documented and reflected consistently). Mostly a low-severity usability bug since callers can override end_index.",
+    "line_end": 291,
+    "suggested_fix": "@@\n-        if end_index is None:\n-            end_index = len(data) - 1\n+        if end_index is None:\n+            end_index = len(data)\n"
+  }
+]
