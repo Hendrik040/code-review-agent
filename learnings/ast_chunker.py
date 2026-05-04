@@ -162,14 +162,21 @@ def _fallback_window(
 
 
 def chunks_for_diff(repo_path: Path, changed: dict[str, list[int]]) -> list[Chunk]:
-    """Map {file: [changed_line_numbers]} → deduped enclosing AST units.
+    """Given a map of {file_path: [changed_line_numbers]}, return the
+    deduplicated set of enclosing AST units that contain any changed line.
 
-    Per-line semantics mirror chunk_for_anchor: function/method enclosing
-    the line wins; otherwise module-scope fallback. Missing files and
-    ast-grep failures are skipped silently (caller logs upstream).
+    Function/method changes dedup per (file, function_span). Module-scope
+    changes (lines outside any function) dedup per file: ONE fallback
+    window per file covering all module-scope-changed lines. Without
+    this, a file with N module-scope changes produces N near-duplicate
+    chunks (each a sliding ±50 window centered on a different line),
+    which the (file, line_start, line_end) key fails to coalesce.
     """
     out: list[Chunk] = []
     seen: set[tuple[str, int, int]] = set()
+    # First pass: collect module-scope-changed lines per file so we can
+    # emit one window per file in the second pass.
+    module_scope_lines: dict[str, list[int]] = {}
     for file_path, lines in changed.items():
         full_path = repo_path / file_path
         if not full_path.exists():
@@ -181,7 +188,10 @@ def chunks_for_diff(repo_path: Path, changed: dict[str, list[int]]) -> list[Chun
             continue
         funcs = [n for n in nodes if n.kind == "function"]
         for line in lines:
-            enclosing = [n for n in funcs if n.line_start <= line <= n.line_end]
+            enclosing = [
+                n for n in funcs
+                if n.line_start <= line <= n.line_end
+            ]
             if enclosing:
                 n = min(enclosing, key=lambda x: x.line_end - x.line_start)
                 key = (file_path, n.line_start, n.line_end)
@@ -191,10 +201,17 @@ def chunks_for_diff(repo_path: Path, changed: dict[str, list[int]]) -> list[Chun
                 kind = "method" if n.parent_class_line_start is not None else "function"
                 out.append(Chunk(text=n.text, kind=kind, line_start=n.line_start, line_end=n.line_end))
             else:
-                c = _fallback_window(full_path, line, line, kind="module-scope")
-                key = (file_path, c.line_start, c.line_end)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(c)
+                module_scope_lines.setdefault(file_path, []).append(line)
+    # Second pass: one module-scope chunk per file (covering all module-
+    # scope-changed lines in that file).
+    for file_path, ms_lines in module_scope_lines.items():
+        full_path = repo_path / file_path
+        c = _fallback_window(
+            full_path, min(ms_lines), max(ms_lines), kind="module-scope",
+        )
+        key = (file_path, c.line_start, c.line_end)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
     return out

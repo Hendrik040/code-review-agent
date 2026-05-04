@@ -123,7 +123,7 @@ def build_user_prompt_with_learnings(
         if cfg.filter_enabled and hits:
             ant = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
             hits = applicability_filter(
-                hits, anthropic_client=ant, diff_summary=diff_text[:2000],
+                hits, anthropic_client=ant, diff_summary=diff_text,
                 keep_max=cfg.top_k,
             )
         block = format_for_prompt(hits[: cfg.top_k])

@@ -110,8 +110,45 @@ def applicability_filter(
     return [h for h, v in zip(hits, verdicts) if v in ("yes", "maybe")][:keep_max]
 
 
+def _slice_diff_for_file(diff_text: str, file_path: str) -> str:
+    """Extract just the hunks for ``file_path`` from a unified diff.
+
+    Returns the substring from `diff --git a/<file>` (or `+++ b/<file>`)
+    through the start of the next file's diff (or end of input). Empty
+    string if the file isn't in the diff.
+
+    Why: applicability_filter's Haiku call needs the diff context for
+    the SPECIFIC file the past learning is anchored to. Passing the
+    whole diff would either be wasteful (8+ KB per call × N hits) or
+    dishonestly truncated (the previous diff_summary[:2000] cap dropped
+    critical hunks past the cutoff and made Haiku say "no" on real
+    matches).
+    """
+    marker = f"diff --git a/{file_path} "
+    start = diff_text.find(marker)
+    if start == -1:
+        # Fall back to looking for the +++ b/ marker (some diffs lack
+        # the diff --git header, e.g. plain `diff -u` output).
+        marker = f"+++ b/{file_path}\n"
+        start = diff_text.find(marker)
+        if start == -1:
+            return ""
+    # Find the next file's diff --git block (or EOF).
+    end = diff_text.find("\ndiff --git ", start + 1)
+    return diff_text[start:end if end != -1 else len(diff_text)]
+
+
 def _judge_applicability(client: Any, model: str, diff_summary: str, hit: Hit) -> str:
     p = hit.payload
+    file_path = p.get("file_path", "")
+    # Use only the hunks for THIS hit's file. Keeps the prompt small
+    # and removes the "Haiku says no because the relevant lines were
+    # past the truncation cap" failure mode.
+    file_diff = _slice_diff_for_file(diff_summary, file_path) if file_path else ""
+    if not file_diff:
+        # No matching file in the diff → can't judge applicability;
+        # default to "maybe" so the hit isn't dropped silently.
+        return "maybe"
     prompt = (
         "Is the past learning below applicable to the diff hunk below?\n"
         "Answer EXACTLY one word: yes, no, or maybe.\n\n"
@@ -119,7 +156,7 @@ def _judge_applicability(client: Any, model: str, diff_summary: str, hit: Hit) -
         f"PAST CODE ANCHOR ({p.get('file_path','')}:"
         f"{p.get('line_start','')}-{p.get('line_end','')}):\n"
         f"{p.get('code_chunk_text','')}\n\n"
-        f"NEW DIFF SUMMARY:\n{diff_summary}\n\n"
+        f"NEW DIFF FOR {file_path}:\n{file_diff}\n\n"
         "Answer:"
     )
     msg = client.messages.create(

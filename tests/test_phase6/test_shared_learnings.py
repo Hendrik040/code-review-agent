@@ -189,17 +189,22 @@ def test_applicability_filter_bails_to_threshold_on_haiku_exception():
     and un-judged hits."""
     from shared.learnings import applicability_filter
 
+    diff = (
+        "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+        "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+        "diff --git a/c.py b/c.py\n+++ b/c.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+    )
     hits = [
-        Hit(score=0.9, payload={"learning_text": "a"}, point_id="1"),
-        Hit(score=0.85, payload={"learning_text": "b"}, point_id="2"),
-        Hit(score=0.8, payload={"learning_text": "c"}, point_id="3"),
+        Hit(score=0.9, payload={"learning_text": "a", "file_path": "a.py"}, point_id="1"),
+        Hit(score=0.85, payload={"learning_text": "b", "file_path": "b.py"}, point_id="2"),
+        Hit(score=0.8, payload={"learning_text": "c", "file_path": "c.py"}, point_id="3"),
     ]
     broken_client = MagicMock()
     broken_client.messages.create.side_effect = Exception("haiku unreachable")
     out = applicability_filter(
         hits,
         anthropic_client=broken_client,
-        diff_summary="some diff",
+        diff_summary=diff,
         keep_max=5,
     )
     # All 3 hits passed through unfiltered.
@@ -210,10 +215,18 @@ def test_applicability_filter_keeps_yes_and_maybe_drops_no():
     """Happy path: Haiku verdicts route the hits."""
     from shared.learnings import applicability_filter
 
+    # Phase 6.1.1: each hit's payload must carry a file_path that
+    # appears in the diff, otherwise _judge_applicability short-circuits
+    # to "maybe" without calling Haiku (see test below).
+    diff = (
+        "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+        "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+        "diff --git a/c.py b/c.py\n+++ b/c.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+    )
     hits = [
-        Hit(score=0.9, payload={"learning_text": "a"}, point_id="1"),
-        Hit(score=0.85, payload={"learning_text": "b"}, point_id="2"),
-        Hit(score=0.8, payload={"learning_text": "c"}, point_id="3"),
+        Hit(score=0.9, payload={"learning_text": "a", "file_path": "a.py"}, point_id="1"),
+        Hit(score=0.85, payload={"learning_text": "b", "file_path": "b.py"}, point_id="2"),
+        Hit(score=0.8, payload={"learning_text": "c", "file_path": "c.py"}, point_id="3"),
     ]
     client = MagicMock()
     # Three calls, three verdicts: yes, no, maybe.
@@ -222,7 +235,7 @@ def test_applicability_filter_keeps_yes_and_maybe_drops_no():
     out = applicability_filter(
         hits,
         anthropic_client=client,
-        diff_summary="d",
+        diff_summary=diff,
         keep_max=5,
     )
     assert [h.point_id for h in out] == ["1", "3"]
@@ -255,8 +268,16 @@ def test_applicability_filter_respects_keep_max():
     """keep_max caps the kept set even when more hits would qualify."""
     from shared.learnings import applicability_filter
 
+    diff = "".join(
+        f"diff --git a/f{i}.py b/f{i}.py\n+++ b/f{i}.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+        for i in range(8)
+    )
     hits = [
-        Hit(score=0.9 - i * 0.01, payload={"learning_text": f"l{i}"}, point_id=str(i))
+        Hit(
+            score=0.9 - i * 0.01,
+            payload={"learning_text": f"l{i}", "file_path": f"f{i}.py"},
+            point_id=str(i),
+        )
         for i in range(8)
     ]
     client = MagicMock()
@@ -266,8 +287,90 @@ def test_applicability_filter_respects_keep_max():
     out = applicability_filter(
         hits,
         anthropic_client=client,
-        diff_summary="d",
+        diff_summary=diff,
         keep_max=3,
     )
     assert len(out) == 3
     assert [h.point_id for h in out] == ["0", "1", "2"]
+
+
+def test_slice_diff_for_file_extracts_single_file_block():
+    """Multi-file diff → just the requested file's hunks."""
+    from shared.learnings import _slice_diff_for_file
+    diff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " ctx\n"
+        "+new_foo\n"
+        "diff --git a/bar.py b/bar.py\n"
+        "--- a/bar.py\n"
+        "+++ b/bar.py\n"
+        "@@ -1 +1,2 @@\n"
+        " ctx\n"
+        "+new_bar\n"
+    )
+    foo_slice = _slice_diff_for_file(diff, "foo.py")
+    assert "new_foo" in foo_slice
+    assert "new_bar" not in foo_slice
+    bar_slice = _slice_diff_for_file(diff, "bar.py")
+    assert "new_bar" in bar_slice
+    assert "new_foo" not in bar_slice
+
+
+def test_slice_diff_for_file_returns_empty_for_unknown_file():
+    from shared.learnings import _slice_diff_for_file
+    diff = "diff --git a/foo.py b/foo.py\n+++ b/foo.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+    assert _slice_diff_for_file(diff, "nope.py") == ""
+
+
+def test_judge_applicability_uses_only_relevant_file_diff():
+    """Regression for the PR #43 demo bug: previously the WHOLE diff
+    (truncated to 2000 chars) was passed; now per-hit file slice keeps
+    Haiku focused. This test pins that the prompt sent to Haiku contains
+    ONLY the hit's file section."""
+    from unittest.mock import MagicMock
+    from shared.learnings import _judge_applicability
+    h = Hit(
+        score=0.9,
+        payload=_payload("L").__dict__ | {"file_path": "backend/app.py"},
+        point_id="x",
+    )
+    diff = (
+        "diff --git a/backend/app.py b/backend/app.py\n"
+        "+++ b/backend/app.py\n"
+        "@@ -1 +1,2 @@\n"
+        " ctx\n"
+        "+CORS_LINE_HERE\n"
+        "diff --git a/backend/sql.py b/backend/sql.py\n"
+        "+++ b/backend/sql.py\n"
+        "@@ -1 +1,2 @@\n"
+        " ctx\n"
+        "+SQL_INJECTION_LINE\n"
+    )
+    client = MagicMock()
+    msg = MagicMock(); msg.content = [MagicMock(text="yes")]
+    client.messages.create.return_value = msg
+    _judge_applicability(client, "claude-haiku-4-5-20251001", diff, h)
+    sent = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "CORS_LINE_HERE" in sent
+    assert "SQL_INJECTION_LINE" not in sent  # the OTHER file's content stays out
+
+
+def test_judge_applicability_returns_maybe_when_file_not_in_diff():
+    """If the past learning's file isn't in the diff at all, default to
+    'maybe' rather than dropping the hit (we can't judge, but kept-with-
+    uncertainty is safer than silently lost)."""
+    from unittest.mock import MagicMock
+    from shared.learnings import _judge_applicability
+    h = Hit(
+        score=0.9,
+        payload=_payload("L").__dict__ | {"file_path": "some/other.py"},
+        point_id="x",
+    )
+    diff = "diff --git a/foo.py b/foo.py\n+++ b/foo.py\n@@ -1 +1,2 @@\n ctx\n+x\n"
+    client = MagicMock()
+    verdict = _judge_applicability(client, "model", diff, h)
+    assert verdict == "maybe"
+    client.messages.create.assert_not_called()  # don't burn the call

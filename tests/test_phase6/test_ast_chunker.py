@@ -106,3 +106,42 @@ def test_chunks_for_diff_handles_module_scope_changes():
     # so chunks_for_diff calls _fallback_window(kind="module-scope").
     # Assert exact kind so a regression to default ("fallback_window") fails.
     assert chunks[0].kind == "module-scope"
+
+
+def test_chunks_for_diff_collapses_module_scope_to_one_chunk_per_file(tmp_path):
+    """Regression for PR-#43 demo bug: many module-scope-changed lines
+    in one file MUST produce ONE chunk, not N near-duplicate ones."""
+    src = tmp_path / "many_module_lines.py"
+    src.write_text(
+        "CONST_A = 1\n"          # line 1
+        "CONST_B = 2\n"          # line 2
+        "CONST_C = 3\n"          # line 3
+        "CONST_D = 4\n"          # line 4
+        "CONST_E = 5\n"          # line 5
+        "def f():\n"             # line 6
+        "    return 0\n"         # line 7
+    )
+    # 5 module-scope changes — historically produced 5 chunks.
+    chunks = chunks_for_diff(tmp_path, {"many_module_lines.py": [1, 2, 3, 4, 5]})
+    module_scope = [c for c in chunks if c.kind == "module-scope"]
+    assert len(module_scope) == 1, (
+        f"expected 1 module-scope chunk, got {len(module_scope)}: "
+        f"{[(c.line_start, c.line_end) for c in module_scope]}"
+    )
+    # The single chunk's window must cover all changed lines.
+    c = module_scope[0]
+    assert c.line_start <= 1 and c.line_end >= 5
+
+
+def test_chunks_for_diff_module_scope_window_covers_all_changes(tmp_path):
+    """When module-scope changes span far apart (e.g. line 5 and line
+    100), the single window's bounds must encompass both."""
+    # Build a tall file: 200 lines, all module-scope.
+    src = tmp_path / "tall.py"
+    src.write_text("\n".join(f"CONST_{i} = {i}" for i in range(200)) + "\n")
+    chunks = chunks_for_diff(tmp_path, {"tall.py": [5, 100]})
+    module_scope = [c for c in chunks if c.kind == "module-scope"]
+    assert len(module_scope) == 1
+    c = module_scope[0]
+    # Window = (max(1, 5-50), min(200, 100+50)) = (1, 150)
+    assert c.line_start == 1 and c.line_end == 150
