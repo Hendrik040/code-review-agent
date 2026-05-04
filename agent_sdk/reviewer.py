@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -392,6 +393,40 @@ async def _run_async(
         return _wrap_text(_write_file_impl(repo, args["path"], args["content"]))
 
     @tool(
+        "search_learnings",
+        "Search past maintainer corrections by free-text query. Use when "
+        "the auto-injected <past_learnings> didn't surface something you "
+        "suspect was previously taught. Returns top-5.",
+        {"query": str, "k": int},
+    )
+    async def _search_learnings(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from learnings.config import load as load_cfg
+            from learnings.qdrant_store import QdrantStore
+            from learnings.voyage_client import VoyageClient
+            from shared.learnings import search_tool_handler
+            from shared.learnings_prompt import infer_repo_slug
+
+            cfg = load_cfg()
+            slug = infer_repo_slug(repo)
+            if not slug:
+                return _wrap_text("<results/>")
+            xml = search_tool_handler(
+                query=str(args.get("query", "")),
+                repo=slug,
+                store=QdrantStore(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key),
+                embedder=VoyageClient(api_key=cfg.voyage_api_key),
+                k=int(args.get("k", 5)),
+            )
+            return _wrap_text(xml)
+        except Exception as e:
+            # Sanitize: only the exception class name leaks to the model
+            # and trace files (Voyage/Qdrant errors can embed credentials
+            # in URLs). Full repr goes to debug log only. Spec §8.2.
+            logging.warning("agent_sdk search_learnings failed: %r", e)
+            return _wrap_text(f"<results error={type(e).__name__!r}/>")
+
+    @tool(
         SUBMIT_FINDINGS_TOOL_NAME,
         SUBMIT_FINDINGS_TOOL_DESCRIPTION,
         SUBMIT_FINDINGS_INPUT_SCHEMA,
@@ -436,15 +471,17 @@ async def _run_async(
             _grep,
             _ast_search,
             _write_file,
+            _search_learnings,
             _submit_findings,
         ],
     )
 
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        repo_path="<sandbox repo root>",
-        base_ref=base_ref,
-        head_ref=head_ref,
+    from shared.learnings_prompt import (
+        build_user_prompt_with_learnings,
+        infer_repo_slug,
     )
+    repo_slug = infer_repo_slug(repo)
+    user_prompt = build_user_prompt_with_learnings(repo, base_ref, head_ref, repo_slug)
 
     options = ClaudeAgentOptions(
         model=MODEL,
@@ -462,6 +499,7 @@ async def _run_async(
         #   ast_search            → mcp__reviewer__ast_search
         #   write_file            → mcp__reviewer__write_file
         #   build_review_context  → mcp__reviewer__build_review_context
+        #   search_learnings      → mcp__reviewer__search_learnings
         #   submit_findings       → mcp__reviewer__submit_findings
         allowed_tools=[
             "mcp__reviewer__bash",
@@ -470,6 +508,7 @@ async def _run_async(
             "mcp__reviewer__ast_search",
             "mcp__reviewer__write_file",
             "mcp__reviewer__build_review_context",
+            "mcp__reviewer__search_learnings",
             "mcp__reviewer__submit_findings",
         ],
         # CR caught the harness auto-injecting `ToolSearch` — a tool
