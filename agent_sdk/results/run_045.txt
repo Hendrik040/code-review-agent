@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 045
+# repo: LocalRepo
+# refs: c22fde3c0c3169e6c3b18a1c78916feac46193c6..59145d42341de75b0e95a7d0dac76c4643386027
+# turns: 16
+# cost (USD, harness-reported): 1.287545
+# cost (USD, public Opus 4 rate): 3.862634
+# usage: {'input_tokens': 24, 'cache_creation_input_tokens': 87859, 'cache_read_input_tokens': 657112, 'output_tokens': 16390, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 87859}, 'inference_geo': '', 'iterations': [{'input_tokens': 6, 'output_tokens': 495, 'cache_read_input_tokens': 84717, 'cache_creation_input_tokens': 3142, 'cache_creation': {'ephemeral_5m_input_tokens': 3142, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "backend/utils.py",
+    "line": 204,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Replace substring-based dangerous-keyword check with whole-word matching to stop blocking schema columns.",
+    "detail": "`_validate_sql_query` searches for forbidden keywords as bare substrings inside the upper-cased query, so the column names `created_at` and `last_updated` (both listed in the system prompt's schema and in the items table DDL) trigger the `CREATE` and `UPDATE` rules and any query referencing them is rejected with 'forbidden keyword: CREATE/UPDATE'. The model is encouraged to use these columns by the schema dump in the system prompt, so natural questions like \"show my most recent items\" will fail because the model produces e.g. `SELECT * FROM items WHERE user_id = ? ORDER BY created_at DESC`, which the validator turns into `CREATED_AT` and rejects (verified by simulation). Switch to whole-word/identifier-aware matching (e.g. `\\b(CREATE|UPDATE|...)\\b` regex or a SQL tokenizer) so column names whose text happens to contain a keyword are no longer blocked.",
+    "line_end": 205,
+    "suggested_fix": "-    for keyword in dangerous_keywords:\n-        if keyword in normalized_query:\n-            return False, f\"Query contains forbidden keyword: {keyword}\"\n+    import re\n+    for keyword in dangerous_keywords:\n+        # Match keyword as a whole token, not as a substring of identifiers\n+        if re.search(rf\"(?<![A-Z0-9_]){re.escape(keyword)}(?![A-Z0-9_])\", normalized_query):\n+            return False, f\"Query contains forbidden keyword: {keyword}\""
+  },
+  {
+    "file": "backend/utils.py",
+    "line": 236,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Drop the username sanitization gate or align the allowed character set with what registration actually stores.",
+    "detail": "`_sanitize_username` strips every character outside `[a-zA-Z0-9_\\-.]` and the caller rejects the request whenever the sanitized form differs from the input, so any account whose username contains `@`, spaces, apostrophes, or other punctuation is permanently locked out of chat with 'Invalid username format'. Registration (`create_user` in `backend/databases/sql.py:95`) imposes no such constraint and the schema only marks `username TEXT UNIQUE`, so email-style usernames are perfectly valid and present in production data; in addition the sanitization is unnecessary because the new system prompt no longer interpolates `username` and the username is only ever bound through `cursor.execute(..., (sanitized_username,))`. Either remove the equality check (the parameterized binding already prevents SQL injection) or enforce the same character whitelist at registration so existing accounts cannot be silently locked out.",
+    "line_end": null,
+    "suggested_fix": "-        sanitized_username = _sanitize_username(username)\n-        if not sanitized_username or sanitized_username != username:\n-            return \"Invalid username format. Please use only alphanumeric characters, underscores, hyphens, and dots.\"\n+        if not username:\n+            return \"Invalid username.\"\n+        sanitized_username = username  # bound via parameterized query below"
+  },
+  {
+    "file": "backend/utils.py",
+    "line": 335,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Bind one parameter per `?` placeholder instead of always passing a single-tuple of the username.",
+    "detail": "When the generated SQL contains a `?`, the code blindly executes `cursor.execute(sql_query, (sanitized_username,))`, assuming the model only ever uses one placeholder. If the model parameterizes anything else as well (for example `SELECT * FROM items WHERE user_id = ? AND name LIKE ?`, which the system prompt's instruction to \"use parameterized queries\" actively encourages), SQLite raises `sqlite3.ProgrammingError: Incorrect number of bindings supplied. The current statement uses 2, and there are 1 supplied.` and the user always sees the generic error fallback. Count the `?` placeholders and supply `sanitized_username` for the user_id slot only (e.g. by requiring the model to emit a named placeholder, or by inspecting the query and padding with empty strings/regenerating), instead of executing with a fixed-length tuple.",
+    "line_end": 337,
+    "suggested_fix": "-                    if '?' in sql_query:\n-                        # Query already has placeholder - use parameterized execution\n-                        cursor.execute(sql_query, (sanitized_username,))\n+                    placeholder_count = sql_query.count('?')\n+                    if placeholder_count == 1:\n+                        cursor.execute(sql_query, (sanitized_username,))\n+                    elif placeholder_count > 1:\n+                        return \"I cannot execute that query for security reasons: only the user_id may be parameterized. Please rephrase your question.\""
+  }
+]
