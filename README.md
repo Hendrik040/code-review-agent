@@ -6,6 +6,16 @@ of agentic patterns. Includes a CodeRabbit-style **Learnings** vector
 store: tag the bot on a PR with a correction and it remembers the
 lesson for future reviews of the same codebase.
 
+## Talk slides
+
+Slides from the talk **How to build an effective agent harness for code
+review with Claude** (...and which SDK to reach for when you do):
+[`docs/talks/effective-agent-harness.html`](docs/talks/effective-agent-harness.html).
+It's a single self-contained file: download it and open it in any browser
+([view it online](https://htmlpreview.github.io/?https://github.com/Hendrik040/code-review-agent/blob/main/docs/talks/effective-agent-harness.html)).
+The benchmark numbers behind the Client SDK vs Agent SDK slides are in
+[`docs/headtohead.md`](docs/headtohead.md).
+
 ## Quick start
 
 Review a real GitHub PR end-to-end with the Agent SDK at maximum effort:
