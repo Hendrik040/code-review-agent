@@ -1,5 +1,8 @@
 # code-review-agent
 
+> **📄 Talk slides (PDF): [How to build an effective agent harness for code review](docs/talks/effective-agent-harness.pdf)**
+> 19 slides, opens right here on GitHub. Interactive version and benchmarks in [Talk slides](#talk-slides) below.
+
 An agentic code-review harness built **twice** — once on the Anthropic
 Client SDK, once on the Claude Agent SDK — for head-to-head comparisons
 of agentic patterns. Includes a CodeRabbit-style **Learnings** vector
@@ -10,6 +13,7 @@ lesson for future reviews of the same codebase.
 
 Slides from the talk **How to build an effective agent harness for code
 review with Claude** (...and which SDK to reach for when you do):
+[`docs/talks/effective-agent-harness.pdf`](docs/talks/effective-agent-harness.pdf) (PDF, views on GitHub) or
 [`docs/talks/effective-agent-harness.html`](docs/talks/effective-agent-harness.html).
 It's a single self-contained file: download it and open it in any browser
 ([view it online](https://htmlpreview.github.io/?https://github.com/Hendrik040/code-review-agent/blob/main/docs/talks/effective-agent-harness.html)).
