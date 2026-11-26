@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 425
+# repo: LocalRepo
+# refs: 4c01c0c4d77348416fff70e00ed6c25955c33ef6^..4c01c0c4d77348416fff70e00ed6c25955c33ef6
+# turns: 6
+# cost (USD, harness-reported): 0.008222
+# cost (USD, public Opus 4 rate): 1.359531
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 18468, 'cache_read_input_tokens': 254504, 'output_tokens': 5647, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 18468, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 461, 'cache_read_input_tokens': 49342, 'cache_creation_input_tokens': 1623, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 1623}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/callbacks.py",
+    "line": 637,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "ReduceLROnPlateau never resets `wait` after lowering the LR, so with cooldown=0 the LR is cut on every subsequent non-improving epoch instead of once per `patience` epochs.",
+    "detail": "In on_epoch_end, after a reduction (lines 630-636) `wait` is not reset to 0, and line 637 then increments it. With cooldown=0, cooldown_counter stays 0, so on the next non-improving epoch `self.wait >= self.patience` is still true and the LR is reduced again immediately. Trigger: patience=1 (or any patience), cooldown=0, validation loss plateaus for a few epochs. After the first cut at epoch N, the LR is cut again at N+1, N+2, ... until min_lr, far faster than the documented 'no improvement for patience epochs' behavior. The added test only exercises cooldown=5, which masks this because the cooldown branch resets wait to 0 each epoch.",
+    "line_end": null,
+    "suggested_fix": "--- a/keras/callbacks.py\n+++ b/keras/callbacks.py\n@@ -634,6 +634,7 @@\n                         if self.verbose > 0:\n                             print('\\nEpoch %05d: reducing learning rate to %s.' % (epoch, new_lr))\n                         self.cooldown_counter = self.cooldown\n+                        self.wait = 0\n                 self.wait += 1"
+  },
+  {
+    "file": "keras/callbacks.py",
+    "line": 687,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "CSVLogger reused across two fit() calls writes to a closed file handle, because self.writer and self.keys are never reset in on_train_begin.",
+    "detail": "on_train_begin (lines 666-670) opens a new self.csv_file, but on_epoch_end only creates the DictWriter when `self.writer` is falsy. After the first fit(), on_train_end closes csv_file, yet self.writer still holds the DictWriter bound to the old closed file and self.keys is stale. On the second fit() using the same callback instance, line 687 `self.writer.writerow(...)` writes to the closed handle and raises ValueError('I/O operation on closed file'), and the header is never rewritten into the new file. Trigger: any user who reuses a CSVLogger object for multiple training runs (e.g. fit, then fine-tune with fit again).",
+    "line_end": null,
+    "suggested_fix": "--- a/keras/callbacks.py\n+++ b/keras/callbacks.py\n@@ -666,6 +666,8 @@\n     def on_train_begin(self, logs={}):\n+        self.writer = None\n+        self.keys = None\n         if self.append:\n             self.csv_file = open(self.filename, 'a')"
+  },
+  {
+    "file": "keras/callbacks.py",
+    "line": 11,
+    "category": "other",
+    "severity": "low",
+    "summary": "`from collections import Iterable` fails on Python 3.10+, making keras.callbacks unimportable on modern interpreters.",
+    "detail": "The ABCs were moved out of the top-level collections namespace in Python 3.3 and the aliases were removed in Python 3.10. Importing this module on 3.10+ raises ImportError, breaking every import of keras.callbacks (and anything that imports it), not just the new CSVLogger. The fix is to import from collections.abc when available. Impact is limited to environments on newer Python, so severity is low for this codebase's era.",
+    "line_end": null,
+    "suggested_fix": "--- a/keras/callbacks.py\n+++ b/keras/callbacks.py\n@@ -8,7 +8,11 @@\n import warnings\n \n-from collections import deque, OrderedDict, Iterable\n+from collections import deque, OrderedDict\n+try:\n+    from collections.abc import Iterable\n+except ImportError:\n+    from collections import Iterable"
+  }
+]

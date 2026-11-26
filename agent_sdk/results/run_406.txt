@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 406
+# repo: LocalRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 8
+# cost (USD, harness-reported): 0.126028
+# cost (USD, public Opus 4 rate): 1.443275
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 23005, 'cache_read_input_tokens': 324423, 'output_tokens': 3550, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 23005, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 423, 'cache_read_input_tokens': 54312, 'cache_creation_input_tokens': 1190, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 1190}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "sanic/app.py",
+    "line": 217,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "The `route`/`websocket` decorators now return `(routes, handler)` instead of the handler, which breaks every caller that uses the decorated result.",
+    "detail": "`Sanic.route.response` and `Sanic.websocket.response` now end with `return routes, handler`. Only `Blueprint.register` was updated for this. For `@app.route('/')` or `@app.get('/')`, the decorated name is now a tuple, so any code that calls or imports the handler directly fails. `add_websocket_route` (app.py:560) returns `self.websocket(...)(handler)`, which is now a tuple, although its docstring says it returns the decorated object. The shorthand decorators `get`, `post` and the rest return `self.route(...)`, so they return the decorator as before, but the object they produce is a tuple. The router stores the real handler, so routing still works. Public API behavior has changed, though.",
+    "line_end": null,
+    "suggested_fix": "Keep the public decorators returning `handler`. Have Blueprint obtain the routes another way, for example a separate internal method that returns `(routes, handler)`, or have the blueprint look up route names from the router."
+  },
+  {
+    "file": "sanic/blueprints.py",
+    "line": 146,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Registering a blueprint route with a list of hosts crashes with AttributeError, because `route.name` is called on None.",
+    "detail": "`Router._add` returns None when `host` is a non-string iterable. In that branch it calls `self.add(...)` for each host and then runs a bare `return`. The new `Router.add` appends that return value to `routes`, so `routes` becomes `[None]`, plus further None entries from the strict_slashes handling. `Blueprint.register` then runs `[route.name for route in routes]` and raises `AttributeError: 'NoneType' object has no attribute 'name'`. Blueprints with `host=[...]` worked before this change and now fail at registration. Even if the crash is avoided, a host-list route would get no named middleware, because the per-host routes created in the recursion are never returned.",
+    "line_end": null,
+    "suggested_fix": "Make `_add` return the list of routes created in the host-list branch. Have `Router.add` extend its result with that list, and filter out None values."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 940,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The router lookup now runs before request middleware, so global request middleware no longer runs for 404 and 405 requests.",
+    "detail": "`self.router.get(request)` was moved ahead of `_run_request_middleware`. When no route matches, `get` raises NotFound or MethodNotSupported, and the exception goes straight to the error handler without running any request middleware. Before the change, `@app.middleware('request')` ran for every request, including unmatched ones. Middleware used for logging, auth, CORS or request IDs is now skipped on those requests. Response middleware still runs, with `name=None`, so request and response middleware are no longer paired.",
+    "line_end": null,
+    "suggested_fix": "Catch the router exception, run the app-level request middleware with `request_name=None`, and then re-raise. Alternatively, run the global middleware first and resolve the named middleware afterwards."
+  }
+]

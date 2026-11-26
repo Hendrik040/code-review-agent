@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 436
+# repo: LocalRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 10
+# cost (USD, harness-reported): 0.011660
+# cost (USD, public Opus 4 rate): 2.001795
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 29679, 'cache_read_input_tokens': 283390, 'output_tokens': 9148, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 29679, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 418, 'cache_read_input_tokens': 60180, 'cache_creation_input_tokens': 1996, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 1996}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "sanic/router.py",
+    "line": 180,
+    "category": "error",
+    "severity": "high",
+    "summary": "router.add collects None from _add when host is a list, so blueprint registration crashes with AttributeError.",
+    "detail": "For a list/iterable host, _add() recurses via self.add(...) per host and then `return`s None (sanic/router.py:210-212). router.add() now does `routes.append(self._add(...))` (router.py:148, 180, 183), so for a list host it returns a list containing None (or None entries). Blueprint.register then does `route_names = [route.name for route in routes]` (sanic/blueprints.py:146), which raises AttributeError on None. Any blueprint registered with a list of hosts will fail at app.blueprint() time. Previously router.add returned nothing and this path worked.",
+    "line_end": 185,
+    "suggested_fix": "In _add, for the iterable-host branch, collect and return the routes from the recursive calls, e.g. `return [self.add(uri, methods, handler, host_, name) for host_ in host]` flattened, or have router.add skip None entries and extend routes from the recursive add() results."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 937,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "router.get() now runs before request middleware, so request middleware no longer runs for 404/405 requests.",
+    "detail": "Previously _run_request_middleware ran before router.get(), so app-level and group request middleware (e.g. auth, CORS, rate limiting) executed for every request, including unknown paths. Now router.get() (app.py:940) raises NotFound/MethodNotSupported before any request middleware executes, so those responses bypass middleware entirely. The test change in tests/test_blueprint_group.py:86 (GET -> PUT on the auth-protected route) hides this: the original GET expected a 401 from group auth middleware on an unmatched method, and now it would return 405 with no auth check. Clients can probe unmatched paths without middleware-enforced behavior.",
+    "line_end": null,
+    "suggested_fix": "Keep request middleware ahead of routing for app-level middleware (run self.request_middleware first, then resolve the router and run named middleware), or explicitly document and test the new behavior rather than editing the test expectation."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 217,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "app.route/app.websocket decorators now return a (routes, handler) tuple, so decorated names are bound to a tuple.",
+    "detail": "The inner decorator now returns `routes, handler` (app.py:217, 527) instead of `handler`. Since @app.route, @app.get/post/..., and @app.websocket all return this value, `@app.route('/x') async def view(...)` binds `view` to a tuple, and `app.route('/x')(fn)(request)` or any code that calls the function after decoration breaks. Shorthand decorators (app.py:222+) inherit the change. This is a public API break not reflected in the callers' updated tests; the docstrings were updated but the behavior change is user-visible.",
+    "line_end": null,
+    "suggested_fix": "Keep the public decorator returning the handler, and expose routes through a separate internal method (e.g. have Blueprint.register call an internal _route/_websocket helper that returns (routes, handler))."
+  }
+]

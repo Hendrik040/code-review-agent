@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 440
+# repo: LocalRepo
+# refs: af2bfe7c582c588db7f2a148d46e1cf588938165^..af2bfe7c582c588db7f2a148d46e1cf588938165
+# turns: 3
+# cost (USD, harness-reported): 0.003477
+# cost (USD, public Opus 4 rate): 0.500952
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 5385, 'cache_read_input_tokens': 103038, 'output_tokens': 2463, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 5385, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 362, 'cache_read_input_tokens': 35895, 'cache_creation_input_tokens': 1987, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 1987}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/pip_unknown_command.py",
+    "line": 14,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "get_new_command replaces the first textual occurrence of the broken subcommand in the whole script, so a broken subcommand that is a substring of 'pip' corrupts the command.",
+    "detail": "The rule does `command.script.replace(broken_cmd, new_cmd, 1)`. The script includes the 'pip' prefix, so when broken_cmd is a substring of 'pip' (e.g. 'p', 'i', 'ip', 'pi'), the first occurrence is inside 'pip', not the subcommand. Example: script 'pip ip' with stderr 'ERROR: unknown command \"ip\" - maybe you meant \"install\"' yields 'pinstall ip' instead of 'pip install'. The match() gate does not prevent this since it only checks substrings of stderr. The fix is to replace only the subcommand token, e.g. by splitting the script or using a regex anchored on the word boundary after 'pip'.",
+    "line_end": null,
+    "suggested_fix": "-    return command.script.replace(broken_cmd, new_cmd, 1)\n+    parts = command.script.split(' ', 2)\n+    if len(parts) > 1 and parts[1] == broken_cmd:\n+        parts[1] = new_cmd\n+    return ' '.join(parts)"
+  },
+  {
+    "file": "thefuck/rules/pip_unknown_command.py",
+    "line": 12,
+    "category": "error",
+    "severity": "low",
+    "summary": "get_new_command raises IndexError when the stderr matches match() but not the [a-z]+ regex (e.g. command names with digits or hyphens).",
+    "detail": "match() only checks for the substrings 'unknown command' and 'maybe you meant', but get_new_command requires `ERROR: unknown command \"([a-z]+)\"` and `maybe you meant \"([a-z]+)\"` to match. If pip reports a name containing non-lowercase-letter characters (or a different quoting/format), re.findall returns [] and `[0]` raises IndexError, which the rule framework does not handle gracefully. Either make match() use the same regex or have get_new_command return the script unchanged on no match.",
+    "line_end": null,
+    "suggested_fix": "-def match(command, settings):\n-    return ('pip' in command.script and\n-            'unknown command' in command.stderr and\n-            'maybe you meant' in command.stderr)\n+def match(command, settings):\n+    return ('pip' in command.script and\n+            bool(re.search(r'ERROR: unknown command \\\"([a-z]+)\\\"', command.stderr)) and\n+            bool(re.search(r'maybe you meant \\\"([a-z]+)\\\"', command.stderr)))"
+  }
+]
