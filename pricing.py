@@ -1,15 +1,27 @@
-"""Anthropic API pricing for Claude Opus 4.x (USD per million tokens).
+"""Anthropic API pricing for Claude Opus 4.7 (USD per million tokens).
 
-Numbers are from Anthropic's published pricing for Claude Opus 4. They line up
-with the harness's own `total_cost_usd` field on ResultMessage (verified
-empirically: a $1.099 run at the published rates matches the harness output).
+These are the rates the reviewers' model, `claude-opus-4-7`, is billed at:
+$5 input / $25 output, cache writes at 1.25x input (5 min) and 2x input
+(1 h), cache reads at 0.1x input.
+
+They reproduce the harness's own `total_cost_usd` (ResultMessage) from the
+stored usage dict: agent_sdk/results/run_044.txt has 8 input, 13,835
+output, 179,482 cache-read and 77,307 5-minute cache-write tokens, which
+is $0.918825 at these rates and $0.918825 harness-reported.
+
+Until this was corrected the constants were the Opus 4 / 4.1 rates
+($15 / $75 / $18.75 / $30 / $1.50), exactly 3x too high for Opus 4.7. Any
+`# cost (USD, API rate)` or `public Opus 4 rate` line in a results/ file
+written before the fix is therefore 3x the real cost; the `# usage:` line
+next to it is correct, and scripts/headtohead.py and
+scripts/reeval_suite.py recompute cost from it.
 """
 
-INPUT = 15.00
-OUTPUT = 75.00
-CACHE_WRITE_5M = 18.75
-CACHE_WRITE_1H = 30.00
-CACHE_READ = 1.50
+INPUT = 5.00
+OUTPUT = 25.00
+CACHE_WRITE_5M = 6.25
+CACHE_WRITE_1H = 10.00
+CACHE_READ = 0.50
 
 
 def cost_usd(usage: dict) -> float:

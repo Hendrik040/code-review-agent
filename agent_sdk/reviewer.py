@@ -621,7 +621,7 @@ async def _run_async(
         f"# refs: {base_ref}..{head_ref}\n"
         f"# turns: {num_turns}\n"
         f"# cost (USD, harness-reported): {actual_cost:.6f}\n"
-        f"# cost (USD, public Opus 4 rate): {api_rate_cost:.6f}\n"
+        f"# cost (USD, Opus 4.7 API rate from usage): {api_rate_cost:.6f}\n"
         f"# usage: {total_usage}\n"
         f"# findings: {len(captured_findings)}\n"
         f"# exit_reason: {exit_reason}\n"

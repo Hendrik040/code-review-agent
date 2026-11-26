@@ -1,3 +1,5 @@
+<!-- Recorded cost kept as-is (run file no longer holds this run, so its usage can't be re-costed): contract_mismatch/run_027: file holds a sentry_80528 run. A figure recorded before the pricing.py rate correction is 3x the claude-opus-4-7 rate. -->
+
 # Client SDK reviewer suite run 003
 
 Line tolerance: +/- 10.  SDK: client.

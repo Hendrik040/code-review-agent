@@ -9,6 +9,11 @@ got a fresh run while others didn't). This script extracts the canonical
 matcher (`scripts/run_suite.py:_expected_match`), and writes a single
 side-by-side markdown table.
 
+Costs are put on one basis: the Agent SDK column is the harness-reported
+`total_cost_usd`; the Client SDK column is recomputed from each run's
+stored `# usage:` dict with `pricing.cost_usd`, never read from the
+run's own cost line (see `run_cost`).
+
 Usage:
     uv run python scripts/headtohead.py
     uv run python scripts/headtohead.py --line-tolerance 5
@@ -18,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -25,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pricing  # noqa: E402
 from scripts.run_suite import _expected_match  # noqa: E402
 from shared.findings import Finding  # noqa: E402
 from shared.fixtures import ALL_FIXTURES  # noqa: E402
@@ -61,7 +68,48 @@ def _latest_run_for(sdk: str, fixture_name: str) -> Path | None:
     return candidates[-1][1]
 
 
-def _parse_run(path: Path) -> dict | None:
+def stored_usage(path: Path) -> dict | None:
+    """Return the usage dict from a run_NNN.txt header, or None.
+
+    The header line is `# usage: {...}` (reviewer runs) or
+    `# total usage: {...}` (Phase 0 offload runs); the value is a Python
+    dict repr, so `ast.literal_eval` reads it back.
+    """
+    head = path.read_text().partition("# ---")[0]
+    for line in head.splitlines():
+        m = re.match(r"# (?:total )?usage:\s*(\{.*\})\s*$", line)
+        if not m:
+            continue
+        try:
+            usage = ast.literal_eval(m.group(1))
+        except (ValueError, SyntaxError):
+            return None
+        return usage if isinstance(usage, dict) else None
+    return None
+
+
+def run_cost(sdk: str, path: Path) -> float | None:
+    """Cost of one stored run, on the same basis for both SDKs.
+
+    Agent SDK: the harness-reported `total_cost_usd` in the header — what
+    the run was billed. Client SDK: there is no harness number, so the
+    cost is recomputed from the stored usage dict with `pricing.cost_usd`.
+    The cost line in a Client SDK header is NOT trusted: files written
+    before pricing.py was corrected carry a figure 3x too high.
+    """
+    head = path.read_text().partition("# ---")[0]
+    if sdk == "agent":
+        for line in head.splitlines():
+            if "cost (USD, harness-reported)" in line:
+                try:
+                    return float(line.split(":", 1)[1].strip())
+                except ValueError:
+                    break
+    usage = stored_usage(path)
+    return pricing.cost_usd(usage) if usage else None
+
+
+def _parse_run(path: Path, sdk: str) -> dict | None:
     """Pull turns / cost / findings out of a run_NNN.txt."""
     text = path.read_text()
     head, _, tail = text.partition("# ---")
@@ -73,13 +121,7 @@ def _parse_run(path: Path) -> dict | None:
         return None
 
     turns = _hdr("# turns:")
-    # Cost line names differ between SDKs:
-    # Client SDK: "# cost (USD, API rate):"
-    # Agent  SDK: "# cost (USD, harness-reported):"
-    cost_str = None
-    for line in head.splitlines():
-        if line.startswith("# cost ") and cost_str is None:
-            cost_str = line.split(":", 1)[1].strip()
+    cost = run_cost(sdk, path)
     findings: list[Finding] = []
     if tail.strip():
         try:
@@ -91,7 +133,7 @@ def _parse_run(path: Path) -> dict | None:
     return {
         "run_id": int(re.match(r"run_(\d+)", path.stem).group(1)),
         "num_turns": int(turns) if turns and turns.isdigit() else 0,
-        "cost_usd": float(cost_str) if cost_str else 0.0,
+        "cost_usd": cost if cost is not None else 0.0,
         "findings": findings,
     }
 
@@ -109,7 +151,7 @@ def _row_for(fixture_name: str, sdk: str, line_tolerance: int) -> dict:
             "file_hit": False,
             "line_hit": False,
         }
-    parsed = _parse_run(path)
+    parsed = _parse_run(path, sdk)
     file_hit, line_hit = _expected_match(
         parsed["findings"], fixture.expected, line_tolerance
     )
@@ -134,6 +176,10 @@ def _markdown(line_tolerance: int) -> str:
         "",
         f"Latest run per fixture, current category-aware matcher, "
         f"line tolerance ±{line_tolerance}. Hit format: file_hit / line_hit.",
+        "",
+        "Cost basis: both columns are USD at the `claude-opus-4-7` API rate. "
+        "Agent SDK cost is the harness-reported `total_cost_usd`; Client SDK "
+        "cost is recomputed from each run's stored usage with `pricing.py`.",
         "",
         "| fixture | client turns | client cost | client F/L | agent turns | agent cost | agent F/L |",
         "|---|---:|---:|:---:|---:|---:|:---:|",

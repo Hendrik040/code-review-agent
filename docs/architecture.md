@@ -79,7 +79,7 @@ Returned dict:
 |---|---|---|
 | `findings` | `list[Finding]` | parsed from the model's `submit_findings` tool calls |
 | `cost_usd` | `float` | actual billed cost (Max OAuth or API key, whichever) |
-| `api_rate_cost_usd` | `float` | what it would cost at standard public Opus 4 rates |
+| `api_rate_cost_usd` | `float` | cost recomputed from usage at the `claude-opus-4-7` API rate (`pricing.py`) |
 | `num_turns` | `int` | tool-loop iterations |
 | `total_usage` | `dict` | input/output/cache_w/cache_r token totals |
 | `tool_result_chars` | `int` | total chars across tool_results the model saw |

@@ -91,7 +91,7 @@ v1/
 ├── compare.py                     Phase 0 orchestrator (offload mode only).
 │                                  `--task review` lands in Phase 3.1 — the
 │                                  literal Client-vs-Agent comparison harness.
-├── pricing.py                     Cost calculator (Opus 4 rates)
+├── pricing.py                     Cost calculator (Opus 4.7 rates)
 ├── docs/
 │   ├── PLAN.md                    this file
 │   ├── architecture.md            operational reference
@@ -307,6 +307,32 @@ PHASE 9 — Linters in sandbox + subagent FP validation                ⏳
 ```
 
 ## Empirical evidence to date (the comparison-pitch gold)
+
+> **Correction, 2026-11-26 — every Client SDK dollar figure in this
+> section is 3× too high.** Until that date `pricing.py` held the Opus 4
+> / 4.1 rates ($15 / $75 per MTok) while both reviewers run
+> `claude-opus-4-7` ($5 / $25). Client SDK cost is computed with
+> `pricing.py`; Agent SDK cost is the harness-reported `total_cost_usd`,
+> which was always at the real rate (it reproduces from stored usage at
+> $5 / $25 to the microdollar on 37 of 38 stored runs). So each
+> Client-vs-Agent cost comparison below sets a 3×-inflated number against
+> a real one.
+>
+> Recomputed from the stored usage in `client_sdk/results/run_NNN.txt`:
+>
+> | Sweep | Client SDK (as published → corrected) | Agent SDK | Agent vs Client (as published → corrected) |
+> |---|---|---|---|
+> | `high` | $9.09 → **$3.03** | $5.96 | −34% → **+97%** |
+> | `xhigh` | $17.93 → **$5.98** | $9.76 | −45.5% → **+63.4%** |
+>
+> Not affected: turn counts, hit counts, any Agent SDK dollar figure, and
+> ratios between two Client SDK numbers (caching 3.1×, `xhigh` vs `high`
+> +97%, `sentry_67876` 3.4×).
+>
+> **The tables and conclusions below have not been revised** and still
+> show the figures as originally published. `docs/headtohead.md` and the
+> `client_sdk/results/suite_*.md` files are regenerated at the corrected
+> rate.
 
 ### Phase 1 caching ablation (single fixture, sentry_80168)
 
