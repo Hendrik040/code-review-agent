@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from html import escape
 from typing import Any, Protocol
 
+from learnings import jev_judge
 from learnings.ast_chunker import Chunk
 from learnings.qdrant_store import Hit, QdrantStore, collection_for
 
@@ -100,6 +101,9 @@ def applicability_filter(
     """
     if not hits:
         return []
+    ranked = _jev_ranked(diff_summary, hits)
+    if ranked is not None:
+        return ranked[:keep_max]
     try:
         verdicts = [
             _judge_applicability(anthropic_client, model, diff_summary, h)
@@ -108,6 +112,36 @@ def applicability_filter(
     except Exception:
         return hits[:keep_max]
     return [h for h, v in zip(hits, verdicts) if v in ("yes", "maybe")][:keep_max]
+
+
+def _jev_ranked(diff_summary: str, hits: list[Hit]) -> list[Hit] | None:
+    """Phase 7 — Jev classifies every hit, then the survivors are
+    re-sorted by P(applies) so the keep_max cut keeps the most applicable
+    learnings rather than the nearest vectors. Hits whose file isn't in
+    the diff can't be judged; they keep their vector order, after the
+    judged ones.
+
+    None means "use Haiku": Jev is off, or it failed on any hit. All or
+    nothing for the same reason as the Haiku path — one judge per
+    filter pass, never a mix of judged and unjudged hits.
+    """
+    if not jev_judge.enabled():
+        return None
+    try:
+        verdicts = jev_judge.judge_hits([
+            (h.payload, _slice_diff_for_file(diff_summary, h.payload.get("file_path", "")))
+            for h in hits
+        ])
+    except Exception as e:  # noqa: BLE001 — boundary; hand back to Haiku
+        log.warning("learnings: Jev judge failed (%s); using Haiku", type(e).__name__)
+        return None
+    for h, v in zip(hits, verdicts):
+        # Probabilities in the log are what thresholds get tuned from.
+        log.info("learnings jev: id=%s vector=%.3f route=%s %s", h.point_id, h.score,
+                 v.route, {k: round(p, 2) for k, p in v.answers.items()})
+    kept = [(h, v) for h, v in zip(hits, verdicts) if v.route != "exclude"]
+    kept.sort(key=lambda hv: -hv[1].answers.get("applies", -1.0))  # stable
+    return [h for h, _ in kept]
 
 
 def _slice_diff_for_file(diff_text: str, file_path: str) -> str:

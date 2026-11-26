@@ -51,6 +51,17 @@ class Extractor:
             return None
         return Mention(call_word=m.group(1), text=text)
 
+    def mention_paragraph(self, body: str) -> str:
+        """The paragraph that names the handle, handle removed, whitespace
+        collapsed. Used when the judge can't write a lesson itself (Jev):
+        the maintainer's own words are the lesson."""
+        for para in re.split(r"\n\s*\n", body):
+            if self._handle_lower_cached in para.lower():
+                text = re.sub(re.escape(self._handle_lower_cached), "", para,
+                              flags=re.IGNORECASE)
+                return " ".join(text.split()).strip(" ,:-")
+        return ""
+
     def classify_via_llm(
         self, body: str, *,
         anthropic_client: Any,
