@@ -91,7 +91,10 @@ def _extract_mention(
         return None
     if jev_judge.enabled():
         try:
-            if not jev_judge.is_learning(body):
+            verdict = jev_judge.judge_mention(body)
+            log.info("capture jev: route=%s %s", verdict.route,
+                     {k: round(p, 2) for k, p in verdict.answers.items()})
+            if verdict.route != "store":
                 return None
             # Jev decides but can't write: store the maintainer's own
             # paragraph. "(jev)" marks these like "(llm)" marks Haiku's.

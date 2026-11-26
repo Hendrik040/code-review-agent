@@ -38,17 +38,22 @@ def ask(
         return c.system_one(state=state, questions=questions)
 
 
-def yes_probability(
+def nouls(
     state: Any,
-    instructions: str,
+    questions: dict[str, dict[str, Any]],
     *,
-    yes: str | None = None,
-    no: str | None = None,
     client: Any = None,
-) -> float:
-    """Ask one yes/no question; return P(yes) in [0, 1]."""
+) -> dict[str, float]:
+    """Ask several yes/no questions about one state in ONE request;
+    return P(yes) per question name. Questions are answered in parallel,
+    so a second question about the same state costs almost nothing."""
+    resp = ask(state, questions, client=client)
+    return {name: float(resp.nouls[name].noul) for name in questions}
+
+
+def noul(instructions: str, *, yes: str | None = None, no: str | None = None) -> dict[str, Any]:
+    """A yes/no question. `yes` / `no` say what counts as each answer."""
     question: dict[str, Any] = {"type": "noul", "instructions": instructions}
     if yes or no:
         question["criteria"] = {"true": yes, "false": no}
-    resp = ask(state, {"q": question}, client=client)
-    return float(resp.nouls["q"].noul)
+    return question
