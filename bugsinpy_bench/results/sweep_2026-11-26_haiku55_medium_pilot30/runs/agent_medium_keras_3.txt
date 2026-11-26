@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-26_haiku55_medium_pilot30
+# bug: keras#3
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot
+# harness_git_rev: 8ec32c292defba9f00f9dd9cf54a49e57422291c
+# prepared_path: bugsinpy_bench/dataset/prepared_pilot30.json
+# prepared_sha256_16: dba763c9d9f4c2fe
+# upstream_repo: keras-team/keras
+# introducing_commit: e27b8b9343da4558b98570d6d45599bd0e365723
+# fixed_commit: c13d2723d01212d09dfdda39b0ad439803ec9230
+# base_ref: e27b8b9343da4558b98570d6d45599bd0e365723^
+# head_ref: e27b8b9343da4558b98570d6d45599bd0e365723
+# started: 2026-11-26T23:35:26+00:00
+# finished: 2026-11-26T23:36:06+00:00
+# duration_s: 40.1
+# cost_usd: 0.0101
+# num_turns: 7
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 422
+# repo: LocalRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 7
+# cost (USD, harness-reported): 0.010132
+# cost (USD, public Opus 4 rate): 1.664523
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 20075, 'cache_read_input_tokens': 305372, 'output_tokens': 8053, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 20075, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 419, 'cache_read_input_tokens': 51155, 'cache_creation_input_tokens': 1417, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 1417}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 1411,
+    "category": "logic",
+    "severity": "high",
+    "summary": "clone_model mutates the source model's node.arguments dict in place, leaking a cloned-graph mask tensor into the original model.",
+    "detail": "In _clone_functional_model, `kwargs = node.arguments` aliases the reference model's dict (no copy). Then `kwargs['mask'] = computed_mask` (and the list variant at ~line 1426) writes into the ORIGINAL model's node.arguments. Effects: (1) the original model's node now carries a 'mask' kwarg holding a tensor from the cloned graph; (2) on a second clone_model call, `if 'mask' not in kwargs` is False so the stale tensor from the first clone is reused instead of the newly computed mask, wiring the new model to the old graph; (3) Container.get_config / serialization paths (models.py / topology.py ~2312-2315 check node.arguments for JSON) will now see a non-serializable tensor in the original model. Triggering scenario: clone a functional model containing a layer whose call() accepts `mask` (e.g. a masked/recurrent layer), then clone again or serialize the original.",
+    "line_end": 1415,
+    "suggested_fix": "-                    kwargs = node.arguments\n+                    kwargs = dict(node.arguments)"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1376,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Input-layer mapping in the tensor-provided branch maps the wrong layer, so original InputLayers are re-cloned instead of reused.",
+    "detail": "In the `else` branch, `original_input_layer = x._keras_history[0]` is read AFTER `Input(tensor=x, ...)` has run. Input() (topology.py:1339) overwrites x._keras_history to point to the newly created InputLayer, so the mapping becomes new_layer -> new_layer (a self-map) and the reference model's actual input layer (`model.input_layers[i]`) is never added to layer_map. The depth loop then clones that original InputLayer via from_config and invokes it on the mapped tensor, creating a spurious node and overwriting tensor_map for model.inputs. The intended mapping is `layer_map[model.input_layers[i]] = input_tensor._keras_history[0]`. Also the `for original_input_layer, cloned_input_layer in zip(model.input_layers, input_layers)` block after the placeholder loop iterates an always-empty list and is dead code. Not executed here (keras not installed in sandbox), so impact is inferred from code reading.",
+    "line_end": 1385,
+    "suggested_fix": "-                original_input_layer = x._keras_history[0]\n+                original_input_layer = model.input_layers[i]"
+  },
+  {
+    "file": "keras/engine/topology.py",
+    "line": 1794,
+    "category": "other",
+    "severity": "low",
+    "summary": "RuntimeError is constructed with two positional args, so the 'Layer names' list is rendered as a raw tuple in the message.",
+    "detail": "The added `'Layer names: ', all_names` passes a comma-separated second argument to RuntimeError instead of concatenating it. The exception message becomes a tuple repr like ('The name \"x\" is used 2 times ... Layer names: ', ['x', 'x']) rather than a readable string. Behavior is otherwise unaffected, but the error text is malformed for users.",
+    "line_end": 1794,
+    "suggested_fix": "-                                                 'Layer names: ', all_names)\n+                                                 'Layer names: ' + str(all_names))"
+  }
+]

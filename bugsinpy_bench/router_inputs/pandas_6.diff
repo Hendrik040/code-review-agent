@@ -1,0 +1,92 @@
+diff --git a/pandas/_libs/index.pyx b/pandas/_libs/index.pyx
+index 7424c4d..979dad6 100644
+--- a/pandas/_libs/index.pyx
++++ b/pandas/_libs/index.pyx
+@@ -1,4 +1,5 @@
+ from datetime import datetime, timedelta, date
++import warnings
+ 
+ import cython
+ 
+diff --git a/pandas/_libs/index_class_helper.pxi.in b/pandas/_libs/index_class_helper.pxi.in
+index 3c9a096..4db048e 100644
+--- a/pandas/_libs/index_class_helper.pxi.in
++++ b/pandas/_libs/index_class_helper.pxi.in
+@@ -60,7 +60,16 @@ cdef class {{name}}Engine(IndexEngine):
+ 
+         # A view is needed for some subclasses, such as PeriodEngine:
+         values = self._get_index_values().view('{{dtype}}')
+-        indexer = values == val
++        try:
++            with warnings.catch_warnings():
++                # e.g. if values is float64 and `val` is a str, suppress warning
++                warnings.filterwarnings("ignore", category=FutureWarning)
++                indexer = values == val
++        except TypeError:
++            # if the equality above returns a bool, cython will raise TypeError
++            #  when trying to cast it to ndarray
++            raise KeyError(val)
++
+         found = np.where(indexer)[0]
+         count = len(found)
+ 
+diff --git a/pandas/core/groupby/generic.py b/pandas/core/groupby/generic.py
+index 6c95b52..c0436e9 100644
+--- a/pandas/core/groupby/generic.py
++++ b/pandas/core/groupby/generic.py
+@@ -349,7 +349,7 @@ class NDFrameGroupBy(GroupBy):
+             output_keys = sorted(output)
+             try:
+                 output_keys.sort()
+-            except Exception:  # pragma: no cover
++            except TypeError:
+                 pass
+ 
+             if isinstance(labels, MultiIndex):
+diff --git a/pandas/core/groupby/groupby.py b/pandas/core/groupby/groupby.py
+index 6deef16..55def02 100644
+--- a/pandas/core/groupby/groupby.py
++++ b/pandas/core/groupby/groupby.py
+@@ -727,8 +727,7 @@ b  2""",
+         with option_context("mode.chained_assignment", None):
+             try:
+                 result = self._python_apply_general(f)
+-            except Exception:
+-
++            except TypeError:
+                 # gh-20949
+                 # try again, with .apply acting as a filtering
+                 # operation, by excluding the grouping column
+diff --git a/pandas/core/groupby/grouper.py b/pandas/core/groupby/grouper.py
+index 3162317..d079a1c 100644
+--- a/pandas/core/groupby/grouper.py
++++ b/pandas/core/groupby/grouper.py
+@@ -592,9 +592,11 @@ def _get_grouper(
+ 
+     # if the grouper is obj[name]
+     def is_in_obj(gpr):
++        if not hasattr(gpr, "name"):
++            return False
+         try:
+-            return id(gpr) == id(obj[gpr.name])
+-        except Exception:
++            return gpr is obj[gpr.name]
++        except (KeyError, IndexError):
+             return False
+ 
+     for i, (gpr, level) in enumerate(zip(keys, levels)):
+diff --git a/pandas/core/groupby/ops.py b/pandas/core/groupby/ops.py
+index 7afb0a2..6263973 100644
+--- a/pandas/core/groupby/ops.py
++++ b/pandas/core/groupby/ops.py
+@@ -212,8 +212,8 @@ class BaseGrouper:
+                 # This Exception is also raised if `f` triggers an exception
+                 # but it is preferable to raise the exception in Python.
+                 pass
+-            except Exception:
+-                # raise this error to the caller
++            except TypeError:
++                # occurs if we have any EAs
+                 pass
+ 
+         for key, (i, group) in zip(group_keys, splitter):

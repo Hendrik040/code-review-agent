@@ -1,0 +1,31 @@
+{
+  "what_changed": "tornado/http1connection.py: The start line is now parsed into a structured response or request object once in the header-reading path, before being passed to the delegate and used for keep-alive decisions. The keep-alive check and the client status-code lookup now read attributes from that parsed object instead of doing string operations or re-parsing.\ntornado/httpserver.py: The request-line parsing in _ServerRequestAdapter.headers_received was removed; the method, path, and version are now read from attributes of the start_line object instead of splitting a raw string.\ntornado/httputil.py: Adds a new module-level function parse_request_start_line that splits an HTTP 1.x request line into a RequestStartLine namedtuple of method, path, and version, raising HTTPMessageException on malformed input. The function is inserted after the RequestStartLine definition and before ResponseStartLine.\ntornado/simple_httpclient.py: The client's headers_received now reads code and reason directly from a first_line object instead of parsing a string, and reassembles the start line for header_callback from its fields rather than appending a newline to a raw string.\ntornado/websocket.py: The headers_received method of WebSocketClientConnection now reads the status code directly from start_line.code instead of first parsing start_line with httputil.parse_response_start_line.",
+  "behavior_before_after": [
+    "start line passed to delegate.headers_received → raw string before, parsed httputil response/request start line object after",
+    "client status code lookup → re-parsed from raw start line string via parse_response_start_line before, read from already-parsed start_line.code after",
+    "keep-alive HTTP/1.1 detection → checks whether raw start line string ends with 'HTTP/1.1' before, compares start_line.version equals 'HTTP/1.1' after",
+    "keep-alive fallback method check → checks whether raw start line string starts with 'HEAD ' or 'GET ' before, checks start_line.method in ('HEAD', 'GET') after",
+    "request line split into method, uri, version by splitting on spaces and validated for HTTP/ prefix in the adapter → method, path, and version taken directly from start_line.method, start_line.path, start_line.version without local validation in the adapter",
+    "request line parsing via parse_request_start_line did not exist → a function is available that returns RequestStartLine(method, path, version) for a space-separated request line such as 'GET /foo HTTP/1.1'",
+    "first_line is parsed via httputil.parse_response_start_line(first_line) to obtain version, code, reason → first_line.code and first_line.reason are read as attributes with no parsing call",
+    "header_callback receives first_line + '\\r\\n' (raw string) → header_callback receives '%s %s %s\\r\\n' formatted from the first_line fields",
+    "status code check in headers_received: code parsed via httputil.parse_response_start_line(start_line).code → code read from start_line.code directly"
+  ],
+  "interfaces_touched": [
+    "delegate.headers_received now receives a parsed start line object (response or request) instead of a raw string",
+    "_can_keep_alive receives a parsed start line object instead of a raw string",
+    "_ServerRequestAdapter.headers_received now expects start_line to expose .method, .path, and .version attributes rather than a string",
+    "new function httputil.parse_request_start_line(line) returning RequestStartLine",
+    "_HTTPConnection.headers_received(first_line, headers): first_line is now expected to be a start-line object with code, reason (and fields used in formatting) attributes rather than a string",
+    "WebSocketClientConnection.headers_received: start_line is now expected to already expose a .code attribute instead of being a raw start line string parsed inside the method"
+  ],
+  "data_touched": [
+    "HTTPServerRequest is constructed with method, uri, and version sourced from start_line attributes"
+  ],
+  "error_handling_changes": [
+    "httputil.HTTPMessageException('Malformed HTTP request line') no longer raised in headers_received",
+    "httputil.HTTPMessageException('Malformed HTTP version in HTTP Request-Line') no longer raised in headers_received",
+    "parse_request_start_line raises HTTPMessageException with message 'Malformed HTTP request line' when the line does not split into exactly three space-separated parts",
+    "parse_request_start_line raises HTTPMessageException with message 'Malformed HTTP version in HTTP Request-Line: <version>' when the version token does not start with 'HTTP/'"
+  ]
+}

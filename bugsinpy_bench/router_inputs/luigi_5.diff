@@ -1,0 +1,359 @@
+diff --git a/luigi/task.py b/luigi/task.py
+index 2c4e688..e478602 100644
+--- a/luigi/task.py
++++ b/luigi/task.py
+@@ -261,7 +261,7 @@ class Task(object):
+ 
+         return cls(**kwargs)
+ 
+-    def clone(self, **kwargs):
++    def clone(self, cls=None, **kwargs):
+         ''' Creates a new instance from an existing instance where some of the args have changed.
+ 
+         There's at least two scenarios where this is useful (see test/clone_test.py)
+@@ -271,12 +271,15 @@ class Task(object):
+         k = self.param_kwargs.copy()
+         k.update(kwargs.items())
+ 
+-        # remove global params
+-        for param_name, param_class in self.get_params():
+-            if param_class.is_global:
+-                k.pop(param_name)
++        if cls is None:
++            cls = self.__class__
++        
++        new_k = {}
++        for param_name, param_class in cls.get_nonglobal_params():
++            if param_name in k:
++                new_k[param_name] = k[param_name]
+ 
+-        return self.__class__(**k)
++        return cls(**new_k)
+ 
+     def __hash__(self):
+         return self.__hash
+diff --git a/luigi/util.py b/luigi/util.py
+index 3f62a42..e6985a3 100644
+--- a/luigi/util.py
++++ b/luigi/util.py
+@@ -12,7 +12,9 @@
+ # License for the specific language governing permissions and limitations under
+ # the License.
+ 
++import warnings
+ import task
++import functools
+ 
+ def common_params(task_instance, task_cls):
+     """Grab all the values in task_instance that are found in task_cls"""
+@@ -26,8 +28,32 @@ def common_params(task_instance, task_cls):
+     vals = dict(task_instance.get_param_values(common_param_vals, [], common_kwargs))
+     return vals
+ 
++
++def _cleanup_wrapper(P, Q):
++    # In order to make the behavior of a wrapper class nicer, we set the name of the
++    # new class to the wrapped class, and copy over the docstring and module as well.
++    # This make it possible to picke the wrapped class etc.
++
++    for attr in functools.WRAPPER_ASSIGNMENTS:
++        # copy ['__doc__', '__name__', '__module__'] from Q to P
++        setattr(P, attr, getattr(Q, attr))
++
++
+ class inherits(object):
+-    """docstring for inherits"""
++    ''' Usage:
++    class AnotherTask(luigi.Task):
++        n = luigi.IntParameter()
++        # ...
++
++    @inherits(AnotherTask):
++    class MyTask(luigi.Task):
++        def requires(self):
++           return self.clone_parent()
++
++        def run(self):
++           print self.n # this will be defined
++           # ...
++    '''
+     def __init__(self, task_to_inherit):
+         super(inherits, self).__init__()
+         self.task_to_inherit = task_to_inherit
+@@ -38,7 +64,101 @@ class inherits(object):
+             if not hasattr(task_that_inherits, param_name):
+                 setattr(task_that_inherits, param_name, param_obj)
+ 
+-        return task_that_inherits
++        # Modify task_that_inherits by subclassing it and adding methods
++        class Wrapped(task_that_inherits):
++            def clone_parent(_self, **args):
++                return _self.clone(cls=self.task_to_inherit, **args)
++
++        _cleanup_wrapper(Wrapped, task_that_inherits)
++
++        return Wrapped
++
++
++class requires(object):
++    ''' Same as @inherits, but also auto-defines the requires method
++    '''
++    def __init__(self, task_to_require):
++        super(requires, self).__init__()
++        self.inherit_decorator = inherits(task_to_require)
++
++    def __call__(self, task_that_requires):
++        task_that_requires = self.inherit_decorator(task_that_requires)
++        
++        # Modify task_that_requres by subclassing it and adding methods
++        class Wrapped(task_that_requires):
++            def requires(_self):
++                return _self.clone_parent()
++
++        _cleanup_wrapper(Wrapped, task_that_requires)
++
++        return Wrapped
++
++
++class copies(object):
++    ''' Auto-copies a task
++
++    Usage:
++    @copies(MyTask):
++    class CopyOfMyTask(luigi.Task):
++        def output(self):
++           return LocalTarget(self.date.strftime('/var/xyz/report-%Y-%m-%d'))
++    '''
++    def __init__(self, task_to_copy):
++        super(copies, self).__init__()
++        self.requires_decorator = requires(task_to_copy)
++    
++    def __call__(self, task_that_copies):
++        task_that_copies = self.requires_decorator(task_that_copies)
++
++        # Modify task_that_copies by subclassing it and adding methods
++        class Wrapped(task_that_copies):
++            def run(_self):
++                i, o = _self.input(), _self.output()
++                f = o.open('w')  # TODO: assert that i, o are Target objects and not complex datastructures
++                for line in i.open('r'):
++                    f.write(line)
++                f.close()
++
++        _cleanup_wrapper(Wrapped, task_that_copies)
++
++        return Wrapped
++
++def delegates(task_that_delegates):
++    ''' Lets a task call methods on subtask(s).
++
++    The way this works is that the subtask is run as a part of the task, but the task itself doesn't have
++    to care about the requirements of the subtasks. The subtask doesn't exist from the scheduler's point
++    of view, and its dependencies are instead required by the main task.
++
++    Example:
++    class PowersOfN(luigi.Task):
++        n = luigi.IntParameter()
++        def f(self, x): return x ** self.n
++
++    @delegates
++    class T(luigi.Task):
++        def subtasks(self): return PowersOfN(5)
++        def run(self): print self.subtasks().f(42)
++    '''
++    class Wrapped(task_that_delegates):
++        def subtasks(self):
++            # This method can (optionally) define a couple of delegate tasks that
++            # will be accessible as interfaces, meaning that the task can access
++            # those tasks and run methods defined on them, etc
++            return []  # default impl
++
++        def deps(self):
++            # Overrides method in base class
++            return task.flatten(self.requires()) + task.flatten([t.deps() for t in task.flatten(self.subtasks())])
++        
++        def run(self):
++            for t in task.flatten(self.subtasks()):
++                t.run()
++            task_that_delegates.run(self)
++
++    _cleanup_wrapper(Wrapped, task_that_delegates)
++        
++    return Wrapped
+ 
+ 
+ def Derived(parent_cls):
+@@ -77,6 +197,8 @@ def Derived(parent_cls):
+             self.parent_obj = parent_cls(**parent_param_values)
+             super(DerivedCls, self).__init__(*args, **kwargs)
+ 
++    warnings.warn('Derived is deprecated, please use the @inherits decorator instead', DeprecationWarning)
++
+     # Copy parent's params to child
+     for param_name, param_obj in parent_cls.get_params():
+         setattr(DerivedCls, param_name, param_obj)
+@@ -103,6 +225,8 @@ def Copy(parent_cls):
+             for line in i.open('r'):
+                 f.write(line)
+             f.close()
++
++    warnings.warn('Copy is deprecated, please use the @copies decorator instead', DeprecationWarning)
+     return CopyCls
+ 
+ 
+@@ -113,6 +237,10 @@ class CompositionTask(task.Task):
+     # X can not access Y. To solve this, you can let X own a reference to an Y and have it
+     # run it as a part of its own run method.
+ 
++    def __init__(self, *args, **kwargs):
++        warnings.warn('CompositionTask is deprecated, please use the @delegates decorator instead', DeprecationWarning)
++        super(CompositionTask, self).__init__(*args, **kwargs)
++
+     def subtasks(self):
+         # This method can (optionally) define a couple of delegate tasks that
+         # will be accessible as interfaces, meaning that the task can access
+diff --git a/test/copy_test.py b/test/copy_test.py
+index 3c2cbbd..b6df91d 100644
+--- a/test/copy_test.py
++++ b/test/copy_test.py
+@@ -18,6 +18,9 @@ import unittest
+ import datetime
+ from luigi.util import Copy
+ 
++# TODO: this is deprecated, replaced by luigi.util.copies decorator instead
++# See unit tests in decorator_test.py
++
+ File = MockFile
+ 
+ class A(luigi.Task):
+diff --git a/test/decorator_test.py b/test/decorator_test.py
+index 330466c..9e094c4 100644
+--- a/test/decorator_test.py
++++ b/test/decorator_test.py
+@@ -2,9 +2,11 @@ import unittest
+ import luigi
+ import luigi.notifications
+ import datetime
++import pickle
+ from luigi.parameter import MissingParameterException
+ luigi.notifications.DEBUG = True
+-from luigi.util import inherits, common_params
++from luigi.util import inherits, common_params, requires, copies, delegates
++from luigi.mock import MockFile
+ 
+ class A(luigi.Task):
+     param1 = luigi.Parameter("class A-specific default")
+@@ -177,6 +179,113 @@ class RequiresTest(unittest.TestCase):
+         self.assertRaises(AssertionError, self.k_wrongparamsorder.requires)
+ 
+ 
++class X(luigi.Task):
++    n = luigi.IntParameter(default=42)
++
++@inherits(X)
++class Y(luigi.Task):
++    def requires(self):
++        return self.clone_parent()
++
++@requires(X)
++class Y2(luigi.Task):
++    pass
++
++@inherits(X)
++class Z(luigi.Task):
++    n = None
++    def requires(self):
++        return self.clone_parent()
++
++@requires(X)
++class Y3(luigi.Task):
++    n = luigi.IntParameter(default=43)
++
++class CloneParentTest(unittest.TestCase):
++    def test_clone_parent(self):
++        y = Y()
++        x = X()
++        self.assertEqual(y.requires(), x)
++        self.assertEqual(y.n, 42)
++
++        z = Z()
++        self.assertEqual(z.requires(), x)
++
++    def test_requires(self):
++        y2 = Y2()
++        x = X()
++        self.assertEqual(y2.requires(), x)
++        self.assertEqual(y2.n, 42)
++
++    def test_requires_override_default(self):
++        y3 = Y3()
++        x = X()
++        self.assertNotEqual(y3.requires(), x)
++        self.assertEqual(y3.n, 43)
++        self.assertEqual(y3.requires().n, 43)
++
++    def test_names(self):
++        # Just make sure the decorators retain the original class names
++        x = X()
++        self.assertEqual(str(x), 'X(n=42)')
++        self.assertEqual(x.__class__.__name__, 'X')
++
++
++class P(luigi.Task):
++    date = luigi.DateParameter()
++
++    def output(self):
++        return MockFile(self.date.strftime('/tmp/data-%Y-%m-%d.txt'))
++
++    def run(self):
++        f = self.output().open('w')
++        print >>f, 'hello, world'
++        f.close()
++
++
++@copies(P)
++class PCopy(luigi.Task):
++    def output(self):
++        return MockFile(self.date.strftime('/tmp/copy-data-%Y-%m-%d.txt'))
++
++class CopyTest(unittest.TestCase):
++    def test_copy(self):
++        luigi.build([PCopy(date=datetime.date(2012, 1, 1))], local_scheduler=True)
++        self.assertEqual(MockFile._file_contents['/tmp/data-2012-01-01.txt'], 'hello, world\n')
++        self.assertEqual(MockFile._file_contents['/tmp/copy-data-2012-01-01.txt'], 'hello, world\n')
++
++
++class PickleTest(unittest.TestCase):
++    def test_pickle(self):
++        # similar to CopyTest.test_copy
++        p = PCopy(date=datetime.date(2013, 1, 1))
++        p_pickled = pickle.dumps(p)
++        p = pickle.loads(p_pickled)
++
++        luigi.build([p], local_scheduler=True)
++        self.assertEqual(MockFile._file_contents['/tmp/data-2013-01-01.txt'], 'hello, world\n')
++        self.assertEqual(MockFile._file_contents['/tmp/copy-data-2013-01-01.txt'], 'hello, world\n')
++
++
++class Subtask(luigi.Task):
++    k = luigi.IntParameter()
++
++    def f(self, x):
++        return x ** self.k
++
++@delegates
++class SubtaskDelegator(luigi.Task):
++    def subtasks(self):
++        return [F(1), F(2)]
++
++    def run(self):
++        for t in self.subtasks():
++            t.f(42)
++
++
++class SubtaskTest(unittest.TestCase):
++    def test_multiple_workers(self):
++        luigi.build([SubtaskDelegator()], local_scheduler=True)
+ 
+ 
+ if __name__ == '__main__':
