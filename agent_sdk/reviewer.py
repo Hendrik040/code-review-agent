@@ -319,6 +319,8 @@ async def _run_async(
     *,
     run_id: int | None,
     use_oauth: bool,
+    model: str,
+    effort: str,
 ) -> dict[str, Any]:
     if run_id is None:
         run_id = _next_run_id()
@@ -499,7 +501,7 @@ async def _run_async(
     user_prompt = build_user_prompt_with_learnings(repo, base_ref, head_ref, repo_slug)
 
     options = ClaudeAgentOptions(
-        model=MODEL,
+        model=model,
         system_prompt=SYSTEM_PROMPT_AGENT_SDK,
         mcp_servers={"reviewer": server},
         # Phase 4 — every tool the agent can call is now an MCP proxy
@@ -534,7 +536,7 @@ async def _run_async(
         disallowed_tools=["ToolSearch"],
         permission_mode="bypassPermissions",
         max_turns=MAX_TURNS,
-        effort=EFFORT,
+        effort=effort,
         # `cwd` is intentionally left unset. With harness Read/Bash/
         # Grep disallowed, there's nothing on the harness side that
         # would honor it — every IO lives behind our MCP proxies and
@@ -564,6 +566,7 @@ async def _run_async(
     log(f"refs: {base_ref}..{head_ref}")
     log(f"started: {datetime.now(timezone.utc).isoformat()}")
     log(f"use_oauth: {use_oauth}")
+    log(f"model: {model}  effort: {effort}")
     log("")
     log(f"--- system prompt ({len(SYSTEM_PROMPT_AGENT_SDK)} chars) ---")
     log(SYSTEM_PROMPT_AGENT_SDK)
@@ -611,17 +614,21 @@ async def _run_async(
     else:
         exit_reason = "unknown"
 
-    api_rate_cost = pricing.cost_usd(total_usage) if total_usage else 0.0
-    actual_cost = cost_usd if cost_usd is not None else api_rate_cost
+    # Phase 7 — price at the model that actually ran. None means the
+    # model has no row in pricing.RATES; the harness number still stands.
+    api_rate_cost = pricing.cost_usd(total_usage, model) if total_usage else 0.0
+    actual_cost = cost_usd if cost_usd is not None else (api_rate_cost or 0.0)
+    api_rate_text = "n/a" if api_rate_cost is None else f"{api_rate_cost:.6f}"
 
     RESULTS_DIR.mkdir(exist_ok=True)
     result_path.write_text(
         f"# Agent SDK reviewer run {run_id:03d}\n"
         f"# repo: {type(repo).__name__}\n"
         f"# refs: {base_ref}..{head_ref}\n"
+        f"# model: {model}  effort: {effort}\n"
         f"# turns: {num_turns}\n"
         f"# cost (USD, harness-reported): {actual_cost:.6f}\n"
-        f"# cost (USD, public Opus 4 rate): {api_rate_cost:.6f}\n"
+        f"# cost (USD, public API rate for {model}): {api_rate_text}\n"
         f"# usage: {total_usage}\n"
         f"# findings: {len(captured_findings)}\n"
         f"# exit_reason: {exit_reason}\n"
@@ -641,6 +648,8 @@ async def _run_async(
         "trace_path": str(trace_path),
         "result_path": str(result_path),
         "run_id": run_id,
+        "model": model,
+        "effort": effort,
     }
 
 
@@ -651,8 +660,14 @@ def run(
     *,
     run_id: int | None = None,
     use_oauth: bool = False,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Synchronous wrapper matching `client_sdk.reviewer.run` signature.
+
+    Phase 7: `model` / `effort` override the MODEL / EFFORT constants
+    for this run only — that is how a routing decision
+    (shared/routing.py) reaches the harness. Omitted, nothing changes.
 
     Phase 4: `repo` is a `sandbox.repo.Repo`. The suite runner and
     `compare.py` (Phase 3.1) both expect this sync entry point;
@@ -666,5 +681,7 @@ def run(
             head_ref=head_ref,
             run_id=run_id,
             use_oauth=use_oauth,
+            model=model or MODEL,
+            effort=effort or EFFORT,
         )
     )

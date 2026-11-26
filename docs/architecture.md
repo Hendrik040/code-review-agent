@@ -25,6 +25,7 @@ v1/
 │   │                                read_file_section / ast_search / grep /
 │   │                                write_file + their tool schemas
 │   │                                (used by both SDKs)
+│   ├── routing.py                   Phase 7: per-PR model + effort tier via Jev
 │   └── memory/                      reflective rules (Phase 6)
 │       └── REVIEW_RULES.md
 ├── client_sdk/
@@ -122,6 +123,7 @@ Anthropic, Manus, and the Claude-diary post) lands somewhere concrete:
 | Evolve context | LM / Claude-diary | Phase 6: filesystem diary at `shared/memory/diary/YYYY-MM-DD-run-NNN.md`. `reflect` command updates `REVIEW_RULES.md`. Manual approval gate. |
 | Recitation | Manus | Phase 2.3: long Agent SDK runs rewrite a `plan.md` every N tool calls to combat drift. |
 | Preserve error traces | Manus | We never prune failed tool calls from message history. Both SDKs. |
+| Route before the loop | Phase 7 | `shared/routing.py`: one Jev (TypeSafe System One) call before the agent starts picks a `(model, effort)` tier for the whole review. Never mid-loop: caches are per model, and a review is one prompt plus tool calls. Fail-open to the reviewer's own `MODEL`/`EFFORT`. Agent SDK path only (`scripts/github/review_pr.py`, `scripts/run_suite.py --route`). |
 | Just-in-time retrieval | Anthropic | Agent gets file *paths* in ODIS context, not file contents. Reads on demand. |
 | Goldilocks system prompt | Anthropic | `shared/prompts.py` < 500 tokens, XML-tagged, identical between SDKs. |
 

@@ -161,20 +161,46 @@ def _run_with_timeout(
 # --------------------------------------------------------------------------- #
 
 
+def _routed_runner(
+    runner: Callable[..., dict[str, Any]], materialized: Any
+) -> tuple[Callable[..., dict[str, Any]], str]:
+    """Ask the router for this fixture's tier and bind it into `runner`."""
+    from functools import partial
+
+    from agent_sdk import reviewer
+    from shared import routing
+
+    decision = routing.route(
+        materialized.repo, materialized.base_ref, materialized.head_ref,
+        default=routing.Tier("deep", reviewer.MODEL, reviewer.EFFORT),
+    )
+    print(f"  route: {decision.describe()}", flush=True)
+    tier = decision.tier
+    label = f"{tier.name} ({decision.source})"
+    return partial(runner, model=tier.model, effort=tier.effort), label
+
+
 def _run_one(
     fx: Fixture,
     runner: Callable[..., dict[str, Any]],
     line_tolerance: int,
     fixture_timeout: int,
+    route: bool = False,
 ) -> dict[str, Any]:
     print(f"\n=== {fx.name} ===", flush=True)
     started = time.time()
     error: str | None = None
+    tier_name = "-"
 
     try:
         with materialize(fx) as materialized:
+            run = runner
+            if route:
+                # Phase 7 — same decision review_pr.py makes, so a routed
+                # sweep measures what routing costs and what it misses.
+                run, tier_name = _routed_runner(runner, materialized)
             result = _run_with_timeout(
-                runner,
+                run,
                 materialized.repo,
                 materialized.base_ref,
                 materialized.head_ref,
@@ -195,6 +221,7 @@ def _run_one(
             "line_hit": line_hit,
             "exit_reason": result.get("exit_reason", "unknown"),
             "latency_s": elapsed,
+            "tier": tier_name,
         }
     except _FixtureTimeout:
         elapsed = time.time() - started
@@ -258,10 +285,15 @@ def _markdown_table(
     suite_started: float,
     completed: bool,
 ) -> str:
+    # Phase 7 — the tier column appears only on routed sweeps, so an
+    # unrouted suite file is byte-for-byte what it was before routing.
+    routed = any(r.get("tier", "-") != "-" for r in rows)
     header = (
         f"| fixture | turns | cost (USD) | findings | expected | "
-        f"file hit | line +/-{line_tolerance} | exit | latency (s) | run_id |\n"
-        f"|---|---:|---:|---:|---:|:---:|:---:|---|---:|---:|\n"
+        f"file hit | line +/-{line_tolerance} | exit | latency (s) | run_id |"
+        f"{' tier |' if routed else ''}\n"
+        f"|---|---:|---:|---:|---:|:---:|:---:|---|---:|---:|"
+        f"{'---|' if routed else ''}\n"
     )
     body = "\n".join(
         f"| {r['fixture']} | {r['num_turns']} | "
@@ -271,6 +303,7 @@ def _markdown_table(
         f"{'Y' if r['line_hit'] else 'N'} | "
         f"{r['exit_reason']} | {r['latency_s']:.1f} | "
         f"{('run_' + str(r['run_id']).zfill(3)) if r['run_id'] is not None else '-'} |"
+        f"{(' ' + r.get('tier', '-') + ' |') if routed else ''}"
         for r in rows
     )
     total_cost = sum(r["cost_usd"] for r in rows)
@@ -331,7 +364,15 @@ def main() -> None:
             f"(default: {DEFAULT_FIXTURE_TIMEOUT})."
         ),
     )
+    ap.add_argument(
+        "--route",
+        action="store_true",
+        help="Agent SDK only: pick each fixture's model + effort with the "
+             "Jev router (shared/routing.py) instead of the fixed default.",
+    )
     args = ap.parse_args()
+    if args.route and args.sdk != "agent":
+        sys.exit("--route needs --sdk agent (the Client SDK reviewer is not routed)")
 
     runner, results_dir = _resolve_sdk(args.sdk)
 
@@ -361,7 +402,8 @@ def main() -> None:
     cumulative_cost = 0.0
 
     for fx in selected:
-        row = _run_one(fx, runner, args.line_tolerance, args.fixture_timeout)
+        row = _run_one(fx, runner, args.line_tolerance, args.fixture_timeout,
+                       route=args.route)
         rows.append(row)
         cumulative_cost += row["cost_usd"]
 

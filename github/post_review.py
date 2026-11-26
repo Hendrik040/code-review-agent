@@ -29,6 +29,9 @@ class RunMeta:
     timestamp_utc: str
     num_turns: int
     cost_usd: float
+    # Phase 7 — set when the run's model is known (routed runs differ
+    # per PR). Empty keeps the pre-routing header.
+    model: str = ""
 
 
 @dataclass(frozen=True)

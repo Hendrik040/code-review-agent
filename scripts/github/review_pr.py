@@ -35,6 +35,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from agent_sdk import reviewer
 from github import pr_fetch, repo_setup, trace_extract, post_review
 from github.post_review import RunMeta
+from shared import routing
 
 
 def _exit(code: int, msg: str) -> None:
@@ -98,6 +99,9 @@ def main() -> None:
     p.add_argument("pr_url", help="https://github.com/<owner>/<repo>/pull/<n>")
     p.add_argument("--dry-run", action="store_true",
                    help="Run everything except the GH POST; print the would-be payload.")
+    p.add_argument("--tier", choices=["auto", *routing.TIER_NAMES], default="auto",
+                   help="Reviewer tier. auto (default) asks Jev per PR and "
+                        "falls back to deep; a named tier skips the Jev call.")
     args = p.parse_args()
 
     pr = _preflight(args.pr_url)
@@ -110,12 +114,26 @@ def main() -> None:
     print(f"[2/4] Cloning {pr.owner}/{pr.repo} into a tempdir "
           f"(this may take a minute) ...")
     with repo_setup.setup_pr_repo(pr) as repo:
-        print("[3/4] Running Agent SDK reviewer (effort=xhigh) ...")
+        # Phase 7 — choose model + effort for this PR before the agent
+        # starts. `deep` is the reviewer's own MODEL/EFFORT, so a run
+        # without a Jev key behaves exactly as it did before routing.
+        deep = routing.Tier("deep", reviewer.MODEL, reviewer.EFFORT)
+        if args.tier == "auto":
+            decision = routing.route(repo.repo, repo.base_ref, repo.head_ref,
+                                     default=deep, title=pr.title)
+        else:
+            tier = routing.load_tiers(deep)[routing.TIER_NAMES.index(args.tier)]
+            decision = routing.Decision(tier, "default", "--tier flag")
+        tier = decision.tier
+        print(f"      route: {decision.describe()}")
+        print(f"[3/4] Running Agent SDK reviewer "
+              f"({tier.model}, effort={tier.effort}) ...")
         # reviewer.run expects a Phase-4 Repo (LocalRepo/DaytonaRepo),
         # not a Path. setup_pr_repo wraps the cloned tempdir in a
         # LocalRepo and exposes it as repo.repo.
         try:
-            result = reviewer.run(repo.repo, repo.base_ref, repo.head_ref)
+            result = reviewer.run(repo.repo, repo.base_ref, repo.head_ref,
+                                  model=tier.model, effort=tier.effort)
         except Exception as e:
             _exit(1, f"ERROR: reviewer raised: {e!r}")
 
@@ -128,10 +146,11 @@ def main() -> None:
         run_meta = RunMeta(
             run_id=result["run_id"],
             sdk="agent",
-            effort="xhigh",
+            effort=result["effort"],
             timestamp_utc=_now_iso(),
             num_turns=result["num_turns"],
             cost_usd=result["cost_usd"],
+            model=result["model"],
         )
         # Reviewer hit MAX_TURNS without calling submit_findings -- the
         # findings list will likely be empty/partial; surface a warning

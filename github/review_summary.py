@@ -46,8 +46,10 @@ def _format_timestamp(iso: str) -> str:
 
 def _render_run_header(meta: "_RunMetaLike") -> str:
     sdk_label = "Agent SDK" if meta.sdk == "agent" else "Client SDK"
+    model = getattr(meta, "model", "")
+    model_part = f"{model} · " if model else ""
     return (
-        f"**Run #{meta.run_id:03d}** · {sdk_label} · "
+        f"**Run #{meta.run_id:03d}** · {sdk_label} · {model_part}"
         f"effort={meta.effort} · {_format_timestamp(meta.timestamp_utc)} · "
         f"{meta.num_turns} turns · ${meta.cost_usd:.2f}"
     )
