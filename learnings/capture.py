@@ -18,6 +18,7 @@ from typing import Any
 
 from github.pr_fetch import Comment, PullRequest, fetch_review_comment
 
+from learnings import jev_judge
 from learnings.ast_chunker import chunk_for_anchor
 from learnings.config import load as load_config
 from learnings.extractor import Extractor, Mention
@@ -80,14 +81,25 @@ def _extract_mention(
     *, anthropic_client: Any | None,
 ) -> Mention | None:
     """Regex first (free, fast). If no match AND the configured handle
-    appears anywhere in the body AND we have an anthropic client, try
-    Haiku as a fallback classifier (Phase 6.1)."""
+    appears anywhere in the body, ask a classifier: Jev when a TypeSafe
+    key is set (Phase 7), else Haiku when we have an anthropic client
+    (Phase 6.1). A Jev failure falls through to Haiku."""
     m = extractor.parse(body)
     if m is not None:
         return m
-    if anthropic_client is None:
-        return None
     if extractor._handle_lower() not in body.lower():
+        return None
+    if jev_judge.enabled():
+        try:
+            if not jev_judge.is_learning(body):
+                return None
+            # Jev decides but can't write: store the maintainer's own
+            # paragraph. "(jev)" marks these like "(llm)" marks Haiku's.
+            text = extractor.mention_paragraph(body)
+            return Mention(call_word="(jev)", text=text) if text else None
+        except Exception as e:  # noqa: BLE001 — boundary; hand back to Haiku
+            log.warning("capture: Jev judge failed (%s); using Haiku", type(e).__name__)
+    if anthropic_client is None:
         return None
     return extractor.classify_via_llm(body, anthropic_client=anthropic_client)
 

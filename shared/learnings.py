@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from html import escape
 from typing import Any, Protocol
 
+from learnings import jev_judge
 from learnings.ast_chunker import Chunk
 from learnings.qdrant_store import Hit, QdrantStore, collection_for
 
@@ -100,14 +101,38 @@ def applicability_filter(
     """
     if not hits:
         return []
+    verdicts = _jev_verdicts(diff_summary, hits)
+    if verdicts is None:
+        try:
+            verdicts = [
+                _judge_applicability(anthropic_client, model, diff_summary, h)
+                for h in hits
+            ]
+        except Exception:
+            return hits[:keep_max]
+    return [h for h, v in zip(hits, verdicts) if v in ("yes", "maybe")][:keep_max]
+
+
+def _jev_verdicts(diff_summary: str, hits: list[Hit]) -> list[str] | None:
+    """Phase 7 — Jev judges every hit when TYPESAFE_API_KEY is set.
+
+    None means "use Haiku": Jev is off, or it failed on any hit. All or
+    nothing for the same reason as the Haiku path — one judge per
+    filter pass, never a mix of judged and unjudged hits.
+    """
+    if not jev_judge.enabled():
+        return None
     try:
-        verdicts = [
-            _judge_applicability(anthropic_client, model, diff_summary, h)
+        return [
+            jev_judge.applicability(
+                h.payload,
+                _slice_diff_for_file(diff_summary, h.payload.get("file_path", "")),
+            )
             for h in hits
         ]
-    except Exception:
-        return hits[:keep_max]
-    return [h for h, v in zip(hits, verdicts) if v in ("yes", "maybe")][:keep_max]
+    except Exception as e:  # noqa: BLE001 — boundary; hand back to Haiku
+        log.warning("learnings: Jev judge failed (%s); using Haiku", type(e).__name__)
+        return None
 
 
 def _slice_diff_for_file(diff_text: str, file_path: str) -> str:

@@ -26,6 +26,7 @@ v1/
 │   │                                write_file + their tool schemas
 │   │                                (used by both SDKs)
 │   ├── routing.py                   Phase 7: per-PR model + effort tier via Jev
+│   ├── jev.py                       Phase 7: the one place that calls Jev
 │   └── memory/                      reflective rules (Phase 6)
 │       └── REVIEW_RULES.md
 ├── client_sdk/
@@ -124,6 +125,7 @@ Anthropic, Manus, and the Claude-diary post) lands somewhere concrete:
 | Recitation | Manus | Phase 2.3: long Agent SDK runs rewrite a `plan.md` every N tool calls to combat drift. |
 | Preserve error traces | Manus | We never prune failed tool calls from message history. Both SDKs. |
 | Route before the loop | Phase 7 | `shared/routing.py`: one Jev (TypeSafe System One) call before the agent starts picks a `(model, effort)` tier for the whole review. Never mid-loop: caches are per model, and a review is one prompt plus tool calls. Fail-open to the reviewer's own `MODEL`/`EFFORT`. Agent SDK path only (`scripts/github/review_pr.py`, `scripts/run_suite.py --route`). |
+| Classifier for classifications | Phase 7 | `learnings/jev_judge.py`: the Learnings layer's two yes/no decisions (is this past learning applicable to the diff; is this @mention a learning) go to Jev, which returns a probability, when `TYPESAFE_API_KEY` is set. Haiku stays as the fallback and as the `LEARNINGS_JUDGE=haiku` option. |
 | Just-in-time retrieval | Anthropic | Agent gets file *paths* in ODIS context, not file contents. Reads on demand. |
 | Goldilocks system prompt | Anthropic | `shared/prompts.py` < 500 tokens, XML-tagged, identical between SDKs. |
 

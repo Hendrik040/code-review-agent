@@ -158,6 +158,15 @@ via a Haiku-classifier fallback. If the comment is a reply to one of
 the bot's own review comments, the parent's text is captured as
 `bug_context` for richer retrieval signal.
 
+With `TYPESAFE_API_KEY` set, Jev replaces Haiku for the two yes/no
+decisions in this layer: whether a retrieved learning applies to the
+new diff, and whether a free-form @mention is a learning at all. Haiku
+remains the fallback if a Jev call fails, and `LEARNINGS_JUDGE=haiku`
+switches Jev off here. One difference: Haiku condensed a free-form
+mention into a lesson, while Jev cannot write text, so a Jev-accepted
+mention is stored as the maintainer's own paragraph with the handle
+removed.
+
 The `scripts/demo.py` launcher spawns the capture daemon and the
 reviewer together for a single-command end-to-end demo:
 

@@ -24,6 +24,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from shared import jev
+
 log = logging.getLogger("routing")
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -154,17 +156,6 @@ def build_state(
     return "\n".join(p for p in parts if p)
 
 
-def _ask_jev(state: str, client: Any, timeout: float) -> Any:
-    if client is not None:
-        return client.system_one(state=state, questions=QUESTIONS)
-    # Imported here so a missing SDK is a fallback, not an import error.
-    from typesafe_sdk import RetryPolicy, TypeSafeClient
-
-    # One retry: a slow router must not hold up the review it is routing.
-    with TypeSafeClient(timeout=timeout, retry=RetryPolicy(max_retries=1)) as c:
-        return c.system_one(state=state, questions=QUESTIONS)
-
-
 def route(
     repo: Any,
     base_ref: str,
@@ -176,7 +167,7 @@ def route(
 ) -> Decision:
     """Pick the reviewer tier for this diff. Never raises."""
     load_dotenv(override=True)
-    if client is None and not os.environ.get("TYPESAFE_API_KEY", "").strip():
+    if client is None and not jev.has_key():
         return Decision(default, "default", "TYPESAFE_API_KEY not set")
     try:
         tiers = load_tiers(default)
@@ -184,7 +175,7 @@ def route(
         max_chars = int(os.environ.get("ROUTER_MAX_DIFF_CHARS", DEFAULT_MAX_DIFF_CHARS))
         timeout = float(os.environ.get("ROUTER_TIMEOUT", DEFAULT_TIMEOUT_S))
         state = build_state(repo, base_ref, head_ref, title, max_chars)
-        resp = _ask_jev(state, client, timeout)
+        resp = jev.ask(state, QUESTIONS, timeout=timeout, client=client)
         raw = resp.scores["depth"].probabilities
         probs = tuple(float(raw.get(i, 0.0)) for i in range(len(TIER_NAMES)))
         # A distribution that doesn't cover our three levels means Jev
