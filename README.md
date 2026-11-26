@@ -16,6 +16,11 @@ It's a single self-contained file: download it and open it in any browser
 The benchmark numbers behind the Client SDK vs Agent SDK slides are in
 [`docs/headtohead.md`](docs/headtohead.md).
 
+> **Looking for the version without Jev?** The harness as it was before
+> any Jev integration (every decision made by a Claude model) is kept on
+> the [`pure-llm`](https://github.com/Hendrik040/code-review-agent/tree/pure-llm)
+> branch. On `main`, Jev is used only when `TYPESAFE_API_KEY` is set.
+
 ## Quick start
 
 Review a real GitHub PR end-to-end with the Agent SDK at maximum effort:
