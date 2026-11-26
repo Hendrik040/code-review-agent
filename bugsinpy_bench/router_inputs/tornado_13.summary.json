@@ -1,0 +1,43 @@
+{
+  "label": "tornado#13",
+  "files": [
+    "tornado/http1connection.py",
+    "tornado/httpserver.py",
+    "tornado/httputil.py",
+    "tornado/simple_httpclient.py",
+    "tornado/websocket.py"
+  ],
+  "what_changed": "tornado/http1connection.py: The start line is now parsed once into a structured object via httputil.parse_request_start_line or parse_response_start_line before headers_received is called, and _can_keep_alive and the client code path read fields from that object instead of re-parsing or string-matching the raw start line. \ntornado/httpserver.py: The _ServerRequestAdapter.headers_received method no longer parses the request line by splitting a string and validating the version prefix; it now reads method, path, and version from start_line attributes when constructing HTTPServerRequest. The remote_ip and protocol resolution logic is unchanged.\ntornado/httputil.py: Adds a new module-level function parse_request_start_line(line) in tornado/httputil.py that splits an HTTP/1.x request line into a RequestStartLine namedtuple. It raises HTTPMessageException for malformed lines or versions that do not start with HTTP/.\ntornado/simple_httpclient.py: The headers_received method now reads code and reason directly from the first_line object instead of parsing a raw start line string, and reassembles the start line from its parts when invoking header_callback. The version field is no longer extracted.\ntornado/websocket.py: WebSocketClientConnection.headers_received no longer calls httputil.parse_response_start_line and instead reads the status code directly from start_line.code. The 101 status check is otherwise unchanged.",
+  "behavior_before_after": [
+    "delegate.headers_received receives the raw start_line string → receives the parsed request or response start line object",
+    "_can_keep_alive checks start_line.endswith(\"HTTP/1.1\") → checks start_line.version == \"HTTP/1.1\"",
+    "_can_keep_alive checks start_line.startswith((\"HEAD \", \"GET \")) → checks start_line.method in (\"HEAD\", \"GET\")",
+    "client status code obtained by calling httputil.parse_response_start_line inside the client branch → obtained from the already-parsed start_line.code",
+    "request line parsing: start_line string split on spaces into method, uri, version with HTTPMessageException on malformed line → start_line.method, start_line.path, start_line.version attributes are used directly",
+    "No parse_request_start_line function existed → parse_request_start_line(line) returns RequestStartLine(method, path, version) for a space-separated request line",
+    "first_line parsed via httputil.parse_response_start_line into version, code, reason → first_line.code and first_line.reason read directly as attributes",
+    "header_callback receives first_line + '\\r\\n' (raw string) → header_callback receives '%s %s %s\\r\\n' formatted from first_line tuple fields",
+    "Status code obtained via httputil.parse_response_start_line(start_line).code → Status code read from start_line.code attribute"
+  ],
+  "interfaces_touched": [
+    "HTTP1Connection._read_message: start_line passed to delegate.headers_received is now a parsed start line object",
+    "HTTP1Connection._can_keep_alive: start_line argument is now a parsed object with version and method attributes",
+    "_ServerRequestAdapter.headers_received(start_line, headers): start_line is now accessed via .method, .path, .version attributes instead of being split as a string",
+    "httputil.HTTPServerRequest constructor call: uri argument now sourced from start_line.path",
+    "New function tornado.httputil.parse_request_start_line(line)",
+    "_HTTPConnection.headers_received now expects first_line to be an object with code, reason, and tuple-style version/code/reason fields rather than a string",
+    "WebSocketClientConnection.headers_received: start_line argument is now accessed as an object with a .code attribute instead of being passed to httputil.parse_response_start_line"
+  ],
+  "data_touched": [
+    "start_line local variable in _read_message changed from raw string to parsed object",
+    "HTTPServerRequest fields method, uri, and version now populated from start_line attributes rather than from locally split string values",
+    "self.code set from first_line.code instead of parsed code",
+    "self.reason set from first_line.reason instead of parsed reason"
+  ],
+  "error_handling_changes": [
+    "HTTPMessageException(\"Malformed HTTP request line\") no longer raised when start_line split yields the wrong number of parts",
+    "HTTPMessageException(\"Malformed HTTP version in HTTP Request-Line\") no longer raised when version lacks HTTP/ prefix",
+    "Lines not splitting into exactly three space-separated parts raise HTTPMessageException(\"Malformed HTTP request line\")",
+    "Versions not starting with HTTP/ raise HTTPMessageException with a malformed HTTP version message"
+  ]
+}

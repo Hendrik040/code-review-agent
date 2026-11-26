@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-26_haiku55_medium_pilot30
+# bug: keras#3
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot
+# harness_git_rev: 8ec32c292defba9f00f9dd9cf54a49e57422291c
+# prepared_path: bugsinpy_bench/dataset/prepared_pilot30.json
+# prepared_sha256_16: dba763c9d9f4c2fe
+# upstream_repo: keras-team/keras
+# introducing_commit: e27b8b9343da4558b98570d6d45599bd0e365723
+# fixed_commit: c13d2723d01212d09dfdda39b0ad439803ec9230
+# base_ref: e27b8b9343da4558b98570d6d45599bd0e365723^
+# head_ref: e27b8b9343da4558b98570d6d45599bd0e365723
+# started: 2026-11-26T23:42:38+00:00
+# finished: 2026-11-26T23:43:16+00:00
+# duration_s: 38.5
+# cost_usd: 0.0076
+# num_turns: 4
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 424
+# repo: LocalRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 4
+# cost (USD, harness-reported): 0.007554
+# cost (USD, public Opus 4 rate): 1.133163
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 18294, 'cache_read_input_tokens': 161667, 'output_tokens': 7300, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 18294}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 482, 'cache_read_input_tokens': 50445, 'cache_creation_input_tokens': 1039, 'cache_creation': {'ephemeral_5m_input_tokens': 1039, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 1413,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Cloning mutates the reference model's node.arguments dict, leaking a 'mask' tensor from one clone into later clones and into the original model.",
+    "detail": "At keras/models.py:1408-1415, `kwargs = node.arguments` aliases the reference node's own dict instead of copying it. When `has_arg(layer.call, 'mask')` and 'mask' is not already present, `kwargs['mask'] = computed_mask` writes into the original model's node.arguments permanently. Triggering scenario: a mask-aware layer (e.g. an RNN) called with extra kwargs such as initial_state, so node.arguments is non-empty. The first clone stores its own mask tensor (from clone #1's graph) in the original node's arguments. A second call to clone_model then sees 'mask' already in kwargs and skips setting the correct mask, so it reuses a tensor from a different graph (wrong result or graph-disconnected error). The original model's later calls are also affected because node.arguments now carries the stale mask. The same aliasing applies in the multi-input branch (~line 1426-1428).",
+    "line_end": 1415,
+    "suggested_fix": "-                    kwargs = node.arguments\n+                    kwargs = dict(node.arguments)"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1362,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Input-layer remapping is broken: the original input layer is never mapped to its replacement, and the placeholder-branch zip iterates over an always-empty list.",
+    "detail": "In the non-None input_tensors branch, `x._keras_history[0]` (line 1362) is read after `Input(tensor=x)` (line 1358) has already set x's history to the new wrapper InputLayer. So `original_input_layer` is the new wrapper itself and the mapping becomes wrapper->wrapper. The reference model's original InputLayer is never added to layer_map. Likewise, in the placeholder branch (lines 1337-1349), `input_layers` is always [] so the zip at line 1348 is dead code. Consequence: when the node loop reaches the original InputLayer nodes (line 1382), they are re-cloned via from_config and invoked with empty inputs (lines 1395-1420), instead of being skipped as intended. Tests pass only because that call happens to produce no outputs. The intended mapping (model._input_layers[i] -> new wrapper) is missing.",
+    "line_end": 1364,
+    "suggested_fix": "-                  original_input_layer = x._keras_history[0]\n+                  original_input_layer = model.input_layers[i]"
+  }
+]

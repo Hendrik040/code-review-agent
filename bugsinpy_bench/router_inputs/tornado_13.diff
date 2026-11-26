@@ -1,0 +1,136 @@
+diff --git a/tornado/http1connection.py b/tornado/http1connection.py
+index 3fb5827..2ae402e 100644
+--- a/tornado/http1connection.py
++++ b/tornado/http1connection.py
+@@ -84,6 +84,10 @@ class HTTP1Connection(object):
+             header_data = yield self.stream.read_until_regex(b"\r?\n\r?\n")
+             self._finish_future = Future()
+             start_line, headers = self._parse_headers(header_data)
++            if is_client:
++                start_line = httputil.parse_response_start_line(start_line)
++            else:
++                start_line = httputil.parse_request_start_line(start_line)
+             self._disconnect_on_finish = not self._can_keep_alive(
+                 start_line, headers)
+             ret = delegate.headers_received(start_line, headers)
+@@ -94,7 +98,7 @@ class HTTP1Connection(object):
+             if is_client:
+                 if method == 'HEAD':
+                     skip_body = True
+-                code = httputil.parse_response_start_line(start_line).code
++                code = start_line.code
+                 if code == 304:
+                     skip_body = True
+                 if code >= 100 and code < 200:
+@@ -198,10 +202,10 @@ class HTTP1Connection(object):
+         connection_header = headers.get("Connection")
+         if connection_header is not None:
+             connection_header = connection_header.lower()
+-        if start_line.endswith("HTTP/1.1"):
++        if start_line.version == "HTTP/1.1":
+             return connection_header != "close"
+         elif ("Content-Length" in headers
+-              or start_line.startswith(("HEAD ", "GET "))):
++              or start_line.method in ("HEAD", "GET")):
+             return connection_header == "keep-alive"
+         return False
+ 
+diff --git a/tornado/httpserver.py b/tornado/httpserver.py
+index db24d5e..9aa5bdd 100644
+--- a/tornado/httpserver.py
++++ b/tornado/httpserver.py
+@@ -163,13 +163,6 @@ class _ServerRequestAdapter(httputil.HTTPMessageDelegate):
+         self.connection = connection
+ 
+     def headers_received(self, start_line, headers):
+-        try:
+-            method, uri, version = start_line.split(" ")
+-        except ValueError:
+-            raise httputil.HTTPMessageException("Malformed HTTP request line")
+-        if not version.startswith("HTTP/"):
+-            raise httputil.HTTPMessageException(
+-                "Malformed HTTP version in HTTP Request-Line")
+         # HTTPRequest wants an IP, not a full socket address
+         if self.connection.address_family in (socket.AF_INET, socket.AF_INET6):
+             remote_ip = self.connection.address[0]
+@@ -194,7 +187,8 @@ class _ServerRequestAdapter(httputil.HTTPMessageDelegate):
+                 protocol = proto_header
+ 
+         self.request = httputil.HTTPServerRequest(
+-            connection=self.connection, method=method, uri=uri, version=version,
++            connection=self.connection, method=start_line.method,
++            uri=start_line.path, version=start_line.version,
+             headers=headers, remote_ip=remote_ip, protocol=protocol)
+ 
+     def data_received(self, chunk):
+diff --git a/tornado/httputil.py b/tornado/httputil.py
+index a64a3ce..c816166 100644
+--- a/tornado/httputil.py
++++ b/tornado/httputil.py
+@@ -645,6 +645,24 @@ RequestStartLine = collections.namedtuple(
+     'RequestStartLine', ['method', 'path', 'version'])
+ 
+ 
++def parse_request_start_line(line):
++    """Returns a (method, path, version) tuple for an HTTP 1.x request line.
++
++    The response is a `collections.namedtuple`.
++
++    >>> parse_request_start_line("GET /foo HTTP/1.1")
++    RequestStartLine(method='GET', path='/foo', version='HTTP/1.1')
++    """
++    try:
++        method, path, version = line.split(" ")
++    except ValueError:
++        raise HTTPMessageException("Malformed HTTP request line")
++    if not version.startswith("HTTP/"):
++        raise HTTPMessageException(
++            "Malformed HTTP version in HTTP Request-Line: %r" % version)
++    return RequestStartLine(method, path, version)
++
++
+ ResponseStartLine = collections.namedtuple(
+     'ResponseStartLine', ['version', 'code', 'reason'])
+ 
+diff --git a/tornado/simple_httpclient.py b/tornado/simple_httpclient.py
+index 4564c37..d6925a3 100644
+--- a/tornado/simple_httpclient.py
++++ b/tornado/simple_httpclient.py
+@@ -382,9 +382,8 @@ class _HTTPConnection(httputil.HTTPMessageDelegate):
+ 
+     def headers_received(self, first_line, headers):
+         self.headers = headers
+-        version, code, reason = httputil.parse_response_start_line(first_line)
+-        self.code = code
+-        self.reason = reason
++        self.code = first_line.code
++        self.reason = first_line.reason
+ 
+         if "Content-Length" in self.headers:
+             if "," in self.headers["Content-Length"]:
+@@ -401,8 +400,8 @@ class _HTTPConnection(httputil.HTTPMessageDelegate):
+             content_length = None
+ 
+         if self.request.header_callback is not None:
+-            # re-attach the newline we split on earlier
+-            self.request.header_callback(first_line + '\r\n')
++            # Reassemble the start line.
++            self.request.header_callback('%s %s %s\r\n' % first_line)
+             for k, v in self.headers.get_all():
+                 self.request.header_callback("%s: %s\r\n" % (k, v))
+             self.request.header_callback('\r\n')
+diff --git a/tornado/websocket.py b/tornado/websocket.py
+index 5e3bcd7..7fdd2f8 100644
+--- a/tornado/websocket.py
++++ b/tornado/websocket.py
+@@ -861,9 +861,7 @@ class WebSocketClientConnection(simple_httpclient._HTTPConnection):
+                     "Non-websocket response"))
+ 
+     def headers_received(self, start_line, headers):
+-        code = httputil.parse_response_start_line(start_line).code
+-
+-        if code != 101:
++        if start_line.code != 101:
+             return super(WebSocketClientConnection, self).headers_received(
+                 start_line, headers)
+ 

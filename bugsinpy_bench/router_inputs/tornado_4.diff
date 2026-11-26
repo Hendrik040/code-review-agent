@@ -1,0 +1,87 @@
+diff --git a/tornado/httputil.py b/tornado/httputil.py
+index 04a0977..3e7337d 100644
+--- a/tornado/httputil.py
++++ b/tornado/httputil.py
+@@ -255,6 +255,8 @@ def _parse_request_range(range_header):
+     (6, None)
+     >>> _parse_request_range("bytes=-6")
+     (-6, None)
++    >>> _parse_request_range("bytes=-0")
++    (None, 0)
+     >>> _parse_request_range("bytes=")
+     (None, None)
+     >>> _parse_request_range("foo=42")
+@@ -278,8 +280,9 @@ def _parse_request_range(range_header):
+         return None
+     if end is not None:
+         if start is None:
+-            start = -end
+-            end = None
++            if end != 0:
++                start = -end
++                end = None
+         else:
+             end += 1
+     return (start, end)
+diff --git a/tornado/test/web_test.py b/tornado/test/web_test.py
+index 5f459a8..942a891 100644
+--- a/tornado/test/web_test.py
++++ b/tornado/test/web_test.py
+@@ -919,8 +919,22 @@ class StaticFileTest(WebTestCase):
+     def test_static_invalid_range(self):
+         response = self.fetch('/static/robots.txt', headers={
+             'Range': 'asdf'})
++        self.assertEqual(response.code, 200)
++
++    def test_static_unsatisfiable_range_zero_suffix(self):
++        response = self.fetch('/static/robots.txt', headers={
++            'Range': 'bytes=-0'})
++        self.assertEqual(response.headers.get("Content-Range"),
++                         "bytes */26")
+         self.assertEqual(response.code, 416)
+ 
++    def test_static_unsatisfiable_range_invalid_start(self):
++        response = self.fetch('/static/robots.txt', headers={
++            'Range': 'bytes=26'})
++        self.assertEqual(response.code, 416)
++        self.assertEqual(response.headers.get("Content-Range"),
++                         "bytes */26")
++
+     def test_static_head(self):
+         response = self.fetch('/static/robots.txt', method='HEAD')
+         self.assertEqual(response.code, 200)
+diff --git a/tornado/web.py b/tornado/web.py
+index a924312..eade230 100644
+--- a/tornado/web.py
++++ b/tornado/web.py
+@@ -1810,19 +1810,22 @@ class StaticFileHandler(RequestHandler):
+         request_range = None
+         range_header = self.request.headers.get("Range")
+         if range_header:
++            # As per RFC 2616 14.16, if an invalid Range header is specified,
++            # the request will be treated as if the header didn't exist.
+             request_range = httputil._parse_request_range(range_header)
+-            if not request_range:
+-                self.set_status(416)  # Range Not Satisfiable
+-                self.set_header("Content-Type", "text/plain")
+-                self.write("The provided Range header is not valid: %r\n"
+-                           "Note: multiple ranges are not supported."
+-                           % range_header)
+-                return
+ 
+         if request_range:
+             start, end = request_range
+             size = self.get_content_size()
+-            if start < 0:
++            if (start is not None and start >= size) or end == 0:
++                # As per RFC 2616 14.35.1, a range is not satisfiable only: if
++                # the first requested byte is equal to or greater than the
++                # content, or when a suffix with length 0 is specified
++                self.set_status(416)  # Range Not Satisfiable
++                self.set_header("Content-Type", "text/plain")
++                self.set_header("Content-Range", "bytes */%s" %(size, ))
++                return
++            if start is not None and start < 0:
+                 start += size
+             # Note: only return HTTP 206 if less than the entire range has been
+             # requested. Not only is this semantically correct, but Chrome

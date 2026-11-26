@@ -84,7 +84,7 @@ from shared.findings import (  # noqa: E402
 )
 from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 
-MODEL = "claude-opus-4-7"
+MODEL = os.environ.get("REVIEW_MODEL", "claude-opus-4-7")
 MAX_TURNS = 100  # parity with client_sdk/reviewer.py
 # Per-call output budget — informational on the Agent SDK side.
 # ClaudeAgentOptions does not expose a per-call max_tokens equivalent
