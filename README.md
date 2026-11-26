@@ -109,8 +109,10 @@ uv run python scripts/run_suite.py --sdk agent --route           # measure it
 ```
 
 The tier defaults and `ROUTER_RISK` are starting points, not tuned
-values. Run the suite with and without `--route` and compare total cost
-and line-hit before trusting them. To keep one model and route only
+values. Jev routes all seven planted-bug fixtures to `deep`, so
+`run_suite.py --route` confirms routing doesn't under-serve hard PRs
+but can't show a saving; for that, compare `--tier auto` against
+`--tier deep` on a sample of your own merged PRs. To keep one model and route only
 effort, point all three `ROUTER_TIER_*` variables at that model (see
 `.env.example`). The Client SDK reviewer is not routed.
 
