@@ -1,7 +1,7 @@
 # Pilot: Haiku 5.5 and Sonnet 5.5 on 30 BugsInPy bugs
 
 Run on 2026-11-26 on a local machine. Reviews, judging and summaries all ran the same day.
-Branch: `bench/model-tiers-pilot`.
+Branch: `bench/model-tiers-pilot-local`. A separate run of the same plan pushed its own results to `bench/model-tiers-pilot` while these sweeps ran (its traces reuse run numbers 385-446); the two are independent samples.
 
 ## Setup
 
