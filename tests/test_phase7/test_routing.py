@@ -221,3 +221,18 @@ def test_review_header_names_the_model_only_when_known():
     assert "Agent SDK · effort=high" in _render_run_header(RunMeta(**base))
     routed = _render_run_header(RunMeta(**base, model="claude-sonnet-5-5"))
     assert "Agent SDK · claude-sonnet-5-5 · effort=high" in routed
+
+
+def test_fallback_uses_the_configured_deep_tier(monkeypatch):
+    """A benchmark arm with deep=Opus 5.5 must not fall back to Opus 4.7."""
+    monkeypatch.setenv("ROUTER_TIER_DEEP", "claude-opus-5-5:high")
+    no_key = routing.route(FakeRepo(), "b", "h", default=DEEP)
+    assert (no_key.tier.model, no_key.tier.effort) == ("claude-opus-5-5", "high")
+    assert no_key.source == "default"
+    failed, _ = _route((1.0, 0.0, 0.0), error=TimeoutError())
+    assert failed.tier.model == "claude-opus-5-5"
+
+
+def test_a_bad_deep_override_falls_back_to_the_callers_default(monkeypatch):
+    monkeypatch.setenv("ROUTER_TIER_DEEP", "claude-opus-5-5:turbo")
+    assert routing.route(FakeRepo(), "b", "h", default=DEEP).tier == DEEP

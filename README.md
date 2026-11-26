@@ -102,6 +102,16 @@ diff probably touches auth, payments, migrations or concurrency. No
 key, a timeout or any Jev error also means `deep`, so routing can only
 lower the cost of a review, never block one.
 
+To compare setups on the fixtures, run one sweep per arm and compare
+`suite_NNN.md` cost and line-hit (`--tier` runs a fixed tier with no
+Jev call; `ROUTER_TIER_DEEP` sets what "deep" means):
+
+```bash
+uv run python scripts/run_suite.py --sdk agent --tier deep                  # old setup
+ROUTER_TIER_DEEP=claude-opus-5-5:high uv run python scripts/run_suite.py --sdk agent --tier deep
+uv run python scripts/run_suite.py --sdk agent --route                      # Jev routing
+```
+
 ```bash
 uv run python scripts/github/review_pr.py <pr_url>               # --tier auto
 uv run python scripts/github/review_pr.py <pr_url> --tier deep   # skip Jev

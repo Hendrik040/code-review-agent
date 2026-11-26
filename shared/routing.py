@@ -156,6 +156,15 @@ def build_state(
     return "\n".join(p for p in parts if p)
 
 
+def _fallback(default: Tier, reason: str) -> Decision:
+    """The deep tier as configured (ROUTER_TIER_DEEP), else the caller's
+    default, so a deep=Opus 5.5 arm never silently runs Opus 4.7."""
+    try:
+        return Decision(load_tiers(default)[-1], "default", reason)
+    except ValueError:
+        return Decision(default, "default", reason)
+
+
 def route(
     repo: Any,
     base_ref: str,
@@ -168,7 +177,7 @@ def route(
     """Pick the reviewer tier for this diff. Never raises."""
     load_dotenv(override=True)
     if client is None and not jev.has_key():
-        return Decision(default, "default", "TYPESAFE_API_KEY not set")
+        return _fallback(default, "TYPESAFE_API_KEY not set")
     try:
         tiers = load_tiers(default)
         risk = float(os.environ.get("ROUTER_RISK", DEFAULT_RISK))
@@ -188,4 +197,4 @@ def route(
     except Exception as e:  # noqa: BLE001 — boundary; routing is fail-open
         # Class name only: SDK errors can carry request URLs and bodies.
         log.warning("routing: using default tier (%s)", type(e).__name__)
-        return Decision(default, "default", f"Jev unavailable ({type(e).__name__})")
+        return _fallback(default, f"Jev unavailable ({type(e).__name__})")

@@ -162,18 +162,25 @@ def _run_with_timeout(
 
 
 def _routed_runner(
-    runner: Callable[..., dict[str, Any]], materialized: Any
+    runner: Callable[..., dict[str, Any]], materialized: Any, which: str = "auto"
 ) -> tuple[Callable[..., dict[str, Any]], str]:
-    """Ask the router for this fixture's tier and bind it into `runner`."""
+    """Bind a tier into `runner`: "auto" asks Jev, a tier name uses that
+    tier as configured (ROUTER_TIER_*) with no Jev call, so a benchmark
+    can run each arm (e.g. deep = Opus 5.5) on the same fixtures."""
     from functools import partial
 
     from agent_sdk import reviewer
     from shared import routing
 
-    decision = routing.route(
-        materialized.repo, materialized.base_ref, materialized.head_ref,
-        default=routing.Tier("deep", reviewer.MODEL, reviewer.EFFORT),
-    )
+    deep = routing.Tier("deep", reviewer.MODEL, reviewer.EFFORT)
+    if which == "auto":
+        decision = routing.route(
+            materialized.repo, materialized.base_ref, materialized.head_ref,
+            default=deep,
+        )
+    else:
+        tier = routing.load_tiers(deep)[routing.TIER_NAMES.index(which)]
+        decision = routing.Decision(tier, "fixed", "--tier flag")
     print(f"  route: {decision.describe()}", flush=True)
     tier = decision.tier
     label = f"{tier.name} ({decision.source})"
@@ -185,7 +192,7 @@ def _run_one(
     runner: Callable[..., dict[str, Any]],
     line_tolerance: int,
     fixture_timeout: int,
-    route: bool = False,
+    route: str | None = None,
 ) -> dict[str, Any]:
     print(f"\n=== {fx.name} ===", flush=True)
     started = time.time()
@@ -198,7 +205,7 @@ def _run_one(
             if route:
                 # Phase 7 — same decision review_pr.py makes, so a routed
                 # sweep measures what routing costs and what it misses.
-                run, tier_name = _routed_runner(runner, materialized)
+                run, tier_name = _routed_runner(runner, materialized, route)
             result = _run_with_timeout(
                 run,
                 materialized.repo,
@@ -370,9 +377,17 @@ def main() -> None:
         help="Agent SDK only: pick each fixture's model + effort with the "
              "Jev router (shared/routing.py) instead of the fixed default.",
     )
+    ap.add_argument(
+        "--tier",
+        choices=["light", "standard", "deep"],
+        help="Agent SDK only: run every fixture at one tier (model:effort "
+             "from ROUTER_TIER_*), no Jev call. For benchmark arms.",
+    )
     args = ap.parse_args()
-    if args.route and args.sdk != "agent":
-        sys.exit("--route needs --sdk agent (the Client SDK reviewer is not routed)")
+    if (args.route or args.tier) and args.sdk != "agent":
+        sys.exit("--route/--tier need --sdk agent (the Client SDK reviewer is not routed)")
+    if args.route and args.tier:
+        sys.exit("pick one of --route (ask Jev) or --tier (fixed tier)")
 
     runner, results_dir = _resolve_sdk(args.sdk)
 
@@ -403,7 +418,7 @@ def main() -> None:
 
     for fx in selected:
         row = _run_one(fx, runner, args.line_tolerance, args.fixture_timeout,
-                       route=args.route)
+                       route="auto" if args.route else args.tier)
         rows.append(row)
         cumulative_cost += row["cost_usd"]
 
