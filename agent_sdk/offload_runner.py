@@ -276,7 +276,7 @@ async def run(url: str, use_oauth: bool = False, run_id: int | None = None) -> d
         f"# next-turn input_tokens: {next_tokens}\n"
         f"# turns: {num_turns}\n"
         f"# actual cost (USD, harness-reported): {actual_str}\n"
-        f"# API-rate cost (USD, public Opus 4 prices): {api_str}\n"
+        f"# API-rate cost (USD, Opus 4.7 API rate from usage): {api_str}\n"
         f"# total usage: {total_usage}\n"
         f"# ---\n{text or '(no tool_result captured)'}"
     )
