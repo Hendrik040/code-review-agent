@@ -1,0 +1,553 @@
+=== Agent SDK reviewer run 316 ===
+repo: DaytonaRepo
+refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+started: 2026-05-04T06:23:24.278222+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (434 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-opus-4-7
+│ cwd  : /Users/hendrikkrack/Desktop/code-review-agent-bench
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=5 cache_w=5558 cache_r=42094 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^", "head_ref"
+│ : "a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_01NHrL7mXtqJcyWq5Gj2Z66L
+│ chars: 29,862
+│
+│ preview:
+│   <unknown>:17: SyntaxWarning: "\%" is an invalid escape sequence. Such sequ
+│ ences will not work in the future. Did you mean "\\%"? A raw string is also 
+│ an option.
+│   <unknown>:179: SyntaxWarning: "\d" is an invalid escape sequence. Such seq
+│ uences will not work in the future. Did you mean "\\d"? A raw string is also
+│  an option.
+│   <unknown>:347: SyntaxWarning: "\*" is an invalid escape sequence. Such seq
+│ uences will not work in the future. Did you mean "\\*"? A raw string is also
+│  an option.
+│   <unknown>:361: SyntaxWarning: "\*" is an invalid escape sequence. Such seq
+│ uences will not work in the future. Did y
+│   … (+29,262 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=10864 cache_r=47652 out=38
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Looking at the diff, this PR moves task lifecycle methods (`re_enable`, `s
+│ et_status`, `prune`) from `Task` to `SimpleTaskState`, and introduces a `_st
+│ atus_tasks` defaultdict that indexes tasks by status. Let me verify a few su
+│ spicious cases before submitting.
+│   
+│   Key concerns to verify:
+│   - `_status_tasks[task.status].pop(task.id)` in `set_status` could KeyError
+│  if a task isn't in `_status_tasks` for its current status (e.g., status was
+│  directly mutated, or task wasn't registered).
+│   - `re_enable(task, config)` now goes through `set_status(task, FAILED, con
+│ fig)` which calls `add_failure` — behavior change vs. original.
+│   - `_rank` switched from `get_active_tasks()` to `get_pending_tasks()` — na
+│ rrower scan changes ranking semantics for FAILED/DISABLED tasks.
+│   
+│   Let me check for direct `task.status = ` assignments to assess whether `_s
+│ tatus_tasks` could fall out of sync.
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "task\\.status = |\\.status = (PENDING|RUNNING|DONE|FAIL
+│ ED|DISABLED|SUSPENDED)", "path_glob": "luigi/scheduler.py"}
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "def add_task|def __init__", "path_glob": "luigi/schedul
+│ er.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01Xxk4ZrvfhMkuNajRCJLtFm
+│ chars: 55
+│
+│ preview:
+│   luigi/scheduler.py:295:        task.status = new_status
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01RAZWypUj7EK3YpZMU13oiW
+│ chars: 502
+│
+│ preview:
+│   luigi/scheduler.py:85:    def __init__(self, window):
+│   luigi/scheduler.py:112:    def __init__(self, id, status, deps, resources=
+│ {}, priority=0, family='', params={},
+│   luigi/scheduler.py:151:    def __init__(self, id, last_active=None):
+│   luigi/scheduler.py:183:    def __init__(self, state_path):
+│   luigi/scheduler.py:369:    def __init__(self, retry_delay=900.0, remove_de
+│ lay=600.0, worker_disconnect_delay=60.0,
+│   luigi/scheduler.py:443:    def add_task(self, worker, task_id, status=PEND
+│ ING, runnable=True,
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=14934 cache_r=58516 out=40
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "luigi/scheduler.py", "start_line": 110, "end_line": 147}
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "luigi/scheduler.py", "start_line": 440, "end_line": 510}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01NpUiLazCUipMPeLFGGYVBk
+│ chars: 1,755
+│
+│ preview:
+│    110  
+│    111  class Task(object):
+│    112      def __init__(self, id, status, deps, resources={}, priority=0, f
+│ amily='', params={},
+│    113                   disable_failures=None, disable_window=None):
+│    114          self.id = id
+│    115          self.stakeholders = set()  # workers ids that are somehow re
+│ lated to this task (i.e. don't prune while any of these workers are still ac
+│ tive)
+│    116          self.workers = set()  # workers ids that can perform task - 
+│ task is 'BROKEN' if none of these workers are active
+│    117          if deps is None:
+│    118              self.deps = set()
+│    119          else:
+│   … (+1,155 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01FU8qaV9D6LTRGpSFcyZZ18
+│ chars: 3,389
+│
+│ preview:
+│    440              if t is not None and prio > t.priority:
+│    441                  self._update_priority(t, prio, worker)
+│    442  
+│    443      def add_task(self, worker, task_id, status=PENDING, runnable=Tru
+│ e,
+│    444                   deps=None, new_deps=None, expl=None, resources=None
+│ ,
+│    445                   priority=0, family='', params={}):
+│    446          """
+│    447          * Add task identified by task_id if it doesn't exist
+│    448          * If deps is not None, update dependency list
+│    449          * Update status of task
+│   … (+2,789 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=2072 cache_r=73450 out=38
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Found a key call in `add_task` line 491 where dependency tasks are created
+│  with `status=UNKNOWN`. Let me verify whether UNKNOWN is a valid status that
+│  gets tracked, and look at the `_make_task` helper.
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "^(PENDING|RUNNING|DONE|FAILED|DISABLED|SUSPENDED|UNKNOW
+│ N) =", "path_glob": "luigi/scheduler.py"}
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "_make_task|UNKNOWN", "path_glob": "luigi/scheduler.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01X5gLjLRfbkwfaMxwreS4Vd
+│ chars: 85
+│
+│ preview:
+│   No matches for pattern '^(PENDING|RUNNING|DONE|FAILED|DISABLED|SUSPENDED|U
+│ NKNOWN) ='.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01B2mMdivMeGEFyQh97g668S
+│ chars: 545
+│
+│ preview:
+│   luigi/scheduler.py:27:from task_status import PENDING, FAILED, DONE, RUNNI
+│ NG, SUSPENDED, UNKNOWN, DISABLED
+│   luigi/scheduler.py:397:        self._make_task = functools.partial(
+│   luigi/scheduler.py:455:        task = self._state.get_task(task_id, setdef
+│ ault=self._make_task(
+│   luigi/scheduler.py:491:            t = self._state.get_task(dep, setdefaul
+│ t=self._make_task(id=dep, status=UNKNOWN, deps=None, priority=priority))
+│   luigi/scheduler.py:698:                    'status': UNKNOWN,
+│   luigi/scheduler.py:700:                    'start_time': UNKNOWN,
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1190 cache_r=75522 out=45
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "luigi/scheduler.py", "start_line": 390, "end_line": 425}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01MvVjQ9bLP1gdCPLTbRVWBz
+│ chars: 1,389
+│
+│ preview:
+│    390          )
+│    391  
+│    392          self._task_history = task_history or history.NopHistory()
+│    393          self._state = SimpleTaskState(state_path)
+│    394  
+│    395          self._task_history = task_history or history.NopHistory()
+│    396          self._resources = resources
+│    397          self._make_task = functools.partial(
+│    398              Task, disable_failures=disable_failures,
+│    399              disable_window=disable_window)
+│   … (+789 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1190 cache_r=75522 out=45
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "luigi/scheduler.py", "start_line": 240, "end_line": 340}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01JDHg8rE5HkfvF2Qt7R6M8v
+│ chars: 5,037
+│
+│ preview:
+│    240          if setdefault:
+│    241              task = self._tasks.setdefault(task_id, setdefault)
+│    242              self._status_tasks[task.status][task.id] = task
+│    243              return task
+│    244          else:
+│    245              return self._tasks.get(task_id, default)
+│    246  
+│    247      def has_task(self, task_id):
+│    248          return task_id in self._tasks
+│    249  
+│   … (+4,437 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=4914 cache_r=76712 out=8
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Let me verify one more potential issue — whether any caller mutates `task.
+│ status` directly outside of `set_status`, which could leave `_status_tasks` 
+│ out of sync.
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "\\.status\\s*=\\s*[A-Z]+", "path_glob": "luigi/schedule
+│ r.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01MafBS3qJEkRvSekXqdE625
+│ chars: 50
+│
+│ preview:
+│   No matches for pattern '\\.status\\s*=\\s*[A-Z]+'.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=4914 cache_r=76712 out=8
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "disable_failures|disable_window|disable_persist|disable
+│ _time", "path_glob": "luigi/scheduler.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 20  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01FurZ6UD6unayGw5b3f9EXn
+│ chars: 1,927
+│
+│ preview:
+│   luigi/scheduler.py:63:        'disable_failures', 'disable_window', 'disab
+│ le_persist', 'disable_time',
+│   luigi/scheduler.py:113:                 disable_failures=None, disable_win
+│ dow=None):
+│   luigi/scheduler.py:132:        self.disable_failures = disable_failures
+│   luigi/scheduler.py:133:        self.failures = Failures(disable_window)
+│   luigi/scheduler.py:134:        self.scheduler_disable_time = None
+│   luigi/scheduler.py:143:        return self.failures.num_failures() >= self
+│ .disable_failures
+│   luigi/scheduler.py:146:        return self.disable_failures is not None
+│   luigi/scheduler.py:251:        task.sc
+│   … (+1,327 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 21  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=17302 cache_r=81626 out=40
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I've now confirmed the invariants and identified the most concrete bug. Le
+│ t me reason through what to submit:
+│   
+│   **Finding: `re_enable` regression for `disable_failures == 1`**
+│   
+│   Tracing through `luigi/scheduler.py:250-255`:
+│   ```python
+│   def re_enable(self, task, config=None):
+│       task.scheduler_disable_time = None
+│       task.failures.clear()
+│       if config:
+│           self.set_status(task, FAILED, config)
+│           task.failures.clear()
+│   ```
+│   
+│   When called with `config` (from `prune` at line 319, and `re_enable_task` 
+│ at line 795), `set_status(task, FAILED, config)` triggers the `if new_status
+│  == FAILED and task.can_disable():` branch at line 276, which calls `task.ad
+│ d_failure()` (counter now = 1), then evaluates `has_excessive_failures()` → 
+│ `num_failures() >= disable_failures` → `1 >= 1` if `disable_failures == 1`. 
+│ That puts us back into the "DISABLED due to excessive failures" path: `sched
+│ uler_disable_time` is re-set to now, `new_status` is flipped to `DISABLED`, 
+│ an error email is sent, and the task is moved back into `_status_tasks[DISAB
+│ LED]`. The trailing `task.failures.clear()` only undoes the counter — not th
+│ e email or the re-disable.
+│   
+│   The **original** `Task.re_enable()` did `self.status = FAILED` directly, b
+│ ypassing this logic entirely, so it always succeeded regardless of `disable_
+│ failures`. The new implementation regresses for the boundary case `disable_f
+│ ailures == 1`: a manual `re_enable_task` API call or the auto-re-enable path
+│  in `prune` after `disable_time` expiry leaves the task DISABLED again with 
+│ a fresh disable timer and a spurious "disabled due to excessive failures" no
+│ tification.
+│   
+│   Other concerns I evaluated and decided not to flag:
+│   - `_rank` switching from `get_active_tasks()` to `get_pending_tasks()` exc
+│ ludes FAILED/DISABLED tasks from dependents-counting. Likely intentional opt
+│ imization; net effect is bounded. Not a bug.
+│   - `_status_tasks[task.status].pop(task.id)` in `set_status` could KeyError
+│  if task.status drifted from `_status_tasks`. Verified that no code path mut
+│ ates `task.status` outside `set_status`, and every insertion to `_tasks` (lo
+│ ad, `get_task` setdefault) registers in `_status_tasks`. Invariant holds.
+│   - `defaultdict(dict)` access in `get_active_tasks(status)` for unknown sta
+│ tuses pollutes the dict with empty entries. Bounded by number of distinct st
+│ atuses; not impactful.
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "luigi/scheduler.py", "line": 254, "line_end"
+│ : 255, "category": "logic", "severity": "medium", "summary": "re_enable() re
+│ gresses for disable_failures == 1: re-disables the task and sends a spurious
+│  notification email …
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 22  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01AWPCfgsmxRUXEXXzrtRHdy
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 23  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=2146 cache_r=98928 out=1
+│
+│ text:
+│   I submitted one medium-severity finding:
+│   
+│   **`re_enable()` regresses when `disable_failures == 1`** (`luigi/scheduler
+│ .py:254-255`). The new `SimpleTaskState.re_enable(task, config)` clears fail
+│ ures and then routes through `set_status(task, FAILED, config)`, which itsel
+│ f calls `task.add_failure()` (failures → 1) and triggers `has_excessive_fail
+│ ures()` (`1 >= 1`). That re-sets `scheduler_disable_time = time.time()`, fli
+│ ps `new_status` back to `DISABLED`, sends the "DISABLED due to excessive fai
+│ lures" email, and re-inserts the task in `_status_tasks[DISABLED]`. The trai
+│ ling `task.failures.clear()` only fixes the counter, not the status/email/ti
+│ mer. The original `Task.re_enable()` directly set `self.status = FAILED` and
+│  so always re-enabled. Affected callers: `prune` at line 319 (auto-re-enable
+│  after `disable_time` expiry — every tick, the task gets re-disabled and a m
+│ isleading email goes out) and the public `re_enable_task` RPC at line 795 (r
+│ eturns a "serialized" but still-DISABLED task to the API caller).
+│   
+│   Other things I considered and ruled out: the `_rank` change from `get_acti
+│ ve_tasks()` to `get_pending_tasks()` (likely intentional optimization), the 
+│ defaultdict pollution in `get_active_tasks(status)` (bounded), and a possibl
+│ e KeyError in `_status_tasks[task.status].pop(task.id)` (verified no path mu
+│ tates `task.status` outside `set_status`).
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 24  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 13
+│ duration: 454482 ms
+│ total_cost_usd: $1.5869
+│ totals: in=17 cache_w=58980 cache_r=554500 out=37639
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-05-04T06:31:00.431162+00:00  submitted=True  duplicate_submission=False  findings=1  num_turns=13  stop_reason=end_turn

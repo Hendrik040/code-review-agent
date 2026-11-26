@@ -1,0 +1,582 @@
+=== Agent SDK reviewer run 285 ===
+repo: DaytonaRepo
+refs: 9568ab6ecd2d6836646006c59473c4a4ac0dee04^..9568ab6ecd2d6836646006c59473c4a4ac0dee04
+started: 2026-05-04T05:22:18.176701+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (434 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: 9568ab6ecd2d6836646006c59473c4a4ac0dee04^..9568ab6ecd2d6836646006c59473c4a4ac0dee04
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-opus-4-7
+│ cwd  : /Users/hendrikkrack/Desktop/code-review-agent-bench
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=5 cache_w=5551 cache_r=42094 out=0
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "9568ab6ecd2d6836646006c59473c4a4ac0dee04^", "head_ref"
+│ : "9568ab6ecd2d6836646006c59473c4a4ac0dee04"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_01P9tMk719xe2rtHp7fvdVcV
+│ chars: 8,214
+│
+│ preview:
+│   <unknown>:37: SyntaxWarning: "\w" is an invalid escape sequence. Such sequ
+│ ences will not work in the future. Did you mean "\\w"? A raw string is also 
+│ an option.
+│   <unknown>:91: SyntaxWarning: "\(" is an invalid escape sequence. Such sequ
+│ ences will not work in the future. Did you mean "\\("? A raw string is also 
+│ an option.
+│   <unknown>:37: SyntaxWarning: "\w" is an invalid escape sequence. Such sequ
+│ ences will not work in the future. Did you mean "\\w"? A raw string is also 
+│ an option.
+│   # Code Review Context
+│   
+│   ## 1. Git Diff (What Changed)
+│   
+│   <diff>
+│   diff --git a/cookiecutter/generate.py b/cookiecutter/gen
+│   … (+7,614 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3647 cache_r=47645 out=64
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Let me examine the surrounding context to understand the impact of the ear
+│ ly return in `generate_files`.
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "cookiecutter/generate.py", "start_line": 200, "end_line": 
+│ 320}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01834L4JSV1pzPCsRy5tdkeZ
+│ chars: 5,547
+│
+│ preview:
+│    200      output_dir_exists = os.path.exists(dir_to_create)
+│    201  
+│    202      if overwrite_if_exists:
+│    203          if output_dir_exists:
+│    204              logging.debug('Output directory {} already exists,'
+│    205                            'overwriting it'.format(dir_to_create))
+│    206      else:
+│    207          if output_dir_exists:
+│    208              msg = 'Error: "{}" directory already exists'.format(dir_
+│ to_create)
+│    209              raise OutputDirExistsException(msg)
+│   … (+4,947 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3647 cache_r=47645 out=64
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "generate_files\\("}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01TxCLN7Pi3QbbeJML8iVpau
+│ chars: 1,153
+│
+│ preview:
+│   cookiecutter/generate.py:225:def generate_files(repo_dir, context=None, ou
+│ tput_dir='.',
+│   cookiecutter/main.py:134:    return generate_files(
+│   tests/test_generate_copy_without_render.py:30:    generate.generate_files(
+│   tests/test_generate_files.py:65:        generate.generate_files(
+│   tests/test_generate_files.py:74:def test_generate_files():
+│   tests/test_generate_files.py:75:    generate.generate_files(
+│   tests/test_generate_files.py:91:    generate.generate_files(
+│   tests/test_generate_files.py:108:    generate.generate_files(
+│   tests/test_generate_files.py:130:    generate.generate_files(
+│   tests/test_gene
+│   … (+553 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3437 cache_r=51292 out=68
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "cookiecutter/generate.py", "start_line": 315, "end_line": 
+│ 360}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_015EFEDLXw8g4T2LKe9SRHTj
+│ chars: 349
+│
+│ preview:
+│    315                      continue
+│    316                  logging.debug('f is {0}'.format(f))
+│    317                  generate_file(project_dir, infile, context, env)
+│    318  
+│    319      # run post-gen hook from repo_dir
+│    320      with work_in(repo_dir):
+│    321          run_hook('post_gen_project', project_dir, context)
+│    322  
+│    323      return project_dir
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3437 cache_r=51292 out=68
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "cookiecutter/main.py", "start_line": 125, "end_line": 155}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01FHb3ACB4wTWswhNtJrpi4f
+│ chars: 550
+│
+│ preview:
+│    125          )
+│    126  
+│    127          # prompt the user to manually configure at the command line.
+│    128          # except when 'no-input' flag is set
+│    129          context['cookiecutter'] = prompt_for_config(context, no_inpu
+│ t)
+│    130  
+│    131          dump(template_name, context)
+│    132  
+│    133      # Create project from local context and project template.
+│    134      return generate_files(
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3437 cache_r=51292 out=68
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "tests/test_generate_files.py", "start_line": 145, "end_lin
+│ e": 180}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_018ABxy1W2t358X2mJSoxoJq
+│ chars: 1,351
+│
+│ preview:
+│    145          },
+│    146          repo_dir=os.path.abspath('tests/test-generate-files'),
+│    147          output_dir='tests/custom_output_dir'
+│    148      )
+│    149      assert os.path.isfile('tests/custom_output_dir/inputpizzä/simple
+│ .txt')
+│    150  
+│    151  
+│    152  @pytest.mark.usefixtures('clean_system', 'remove_additional_folders'
+│ )
+│    153  def test_return_rendered_project_dir():
+│    154      os.mkdir('tests/custom_output_dir')
+│   … (+751 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1377 cache_r=54729 out=42
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Let me check the test files for tests of the hook functions and any place 
+│ that might depend on the old return contract.
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "run_hook|run_script|run_script_with_context"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_017LzXhLq1v4HWeYx1TaJ96H
+│ chars: 1,249
+│
+│ preview:
+│   cookiecutter/generate.py:31:from .hooks import run_hook, EXIT_SUCCESS
+│   cookiecutter/generate.py:260:        if run_hook('pre_gen_project', projec
+│ t_dir, context) != EXIT_SUCCESS:
+│   cookiecutter/generate.py:321:        run_hook('post_gen_project', project_
+│ dir, context)
+│   cookiecutter/hooks.py:52:def run_script(script_path, cwd='.'):
+│   cookiecutter/hooks.py:75:def run_script_with_context(script_path, cwd, con
+│ text):
+│   cookiecutter/hooks.py:94:    return run_script(temp.name, cwd)
+│   cookiecutter/hooks.py:97:def run_hook(hook_name, project_dir, context):
+│   cookiecutter/hooks.py:109:    return run_script_with_con
+│   … (+649 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1377 cache_r=54729 out=42
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "tests/test_generate_hooks.py", "start_line": 1, "end_line"
+│ : 160}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01SkQnBoKn956pUVurbQz86u
+│ chars: 5,241
+│
+│ preview:
+│      1  #!/usr/bin/env python
+│      2  # -*- coding: utf-8 -*-
+│      3  
+│      4  """
+│      5  test_generate_hooks
+│      6  -------------------
+│      7  
+│      8  Tests formerly known from a unittest residing in test_generate.py na
+│ med
+│      9  TestHooks.test_ignore_hooks_dirs
+│     10  TestHooks.test_run_python_hooks
+│   … (+4,641 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=4329 cache_r=56106 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "cookiecutter/generate.py", "start_line": 170, "end_line": 
+│ 215}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_017FrPwqs9wMJKEJSqeVtHSF
+│ chars: 1,653
+│
+│ preview:
+│    170              exception.translated = False
+│    171              raise
+│    172          rendered_file = tmpl.render(**context)
+│    173  
+│    174          logging.debug('Writing {0}'.format(outfile))
+│    175  
+│    176          with io.open(outfile, 'w', encoding='utf-8') as fh:
+│    177              fh.write(rendered_file)
+│    178  
+│    179      # Apply file permissions to output file
+│   … (+1,053 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 20  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=4329 cache_r=56106 out=8
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "cookiecutter/hooks.py", "start_line": 52, "end_line": 96}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 21  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01Xo72UT6xoXC2HyDDQ3KwoZ
+│ chars: 1,481
+│
+│ preview:
+│     52  def run_script(script_path, cwd='.'):
+│     53      """
+│     54      Executes a script from a working directory.
+│     55  
+│     56      :param script_path: Absolute path to the script to run.
+│     57      :param cwd: The directory to run the script from.
+│     58      """
+│     59      run_thru_shell = sys.platform.startswith('win')
+│     60      if script_path.endswith('.py'):
+│     61          script_command = [sys.executable, script_path]
+│   … (+881 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 22  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1703 cache_r=60435 out=38
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I have enough evidence to assess the change. Let me verify the dangling-di
+│ rectory concern by confirming the order of operations: `render_and_create_di
+│ r` creates the project directory at lines 243-246 before `run_hook('pre_gen_
+│ project',...)` runs at line 260. When the hook returns non-zero, the early `
+│ return` at line 263 leaves the freshly-created project directory on disk.
+│   
+│   Let me also check whether `make_sure_path_exists` actually creates a direc
+│ tory (not just verifies it).
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "def make_sure_path_exists"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 23  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01BokkpgK651VQ7uVEWX7SsF
+│ chars: 57
+│
+│ preview:
+│   cookiecutter/utils.py:41:def make_sure_path_exists(path):
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 24  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=2146 cache_r=62138 out=47
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "cookiecutter/utils.py", "start_line": 41, "end_line": 65}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 25  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01AQw3kZf4wWARL69kDYQakG
+│ chars: 736
+│
+│ preview:
+│     41  def make_sure_path_exists(path):
+│     42      """
+│     43      Ensures that a directory exists.
+│     44  
+│     45      :param path: A directory path.
+│     46      """
+│     47  
+│     48      logging.debug('Making sure path exists: {0}'.format(path))
+│     49      try:
+│     50          os.makedirs(path)
+│   … (+136 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 26  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=412 cache_r=64284 out=50
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Confirmed — `render_and_create_dir` calls `make_sure_path_exists` which ca
+│ lls `os.makedirs(path)`, creating the directory on disk. After a failed `pre
+│ _gen_project` hook, that directory persists, and the next call hits `OutputD
+│ irExistsException` at `cookiecutter/generate.py:209`.
+│   
+│   I've completed my investigation. Summary of what I checked:
+│   
+│   1. **`generate.py:260-263`** — early-return after pre-gen hook failure ski
+│ ps cleanup of `project_dir` already created at line 243-246. This is a real 
+│ bug.
+│   2. **`generate.py:323` return contract** — `generate_files` previously alw
+│ ays returned `project_dir`; now returns `None` on hook failure, which propag
+│ ates to `main.py:134`. Likely by design (caller can detect failure), so not 
+│ flagging.
+│   3. **`hooks.py:72,94` return-value chain** — `run_script` / `run_script_wi
+│ th_context` now return the exit code; consistent with the new logic. `proc.w
+│ ait()` can return negative on Unix (signal kill), but `!= 0` correctly catch
+│ es that. No bug.
+│   4. **`generate.py:321` post-gen hook** — return value still ignored. This 
+│ is inconsistent but not a regression (was the prior behavior).
+│   5. **No callers** in the ODIS context relied on `run_hook` returning `None
+│ ` for "no hook found"; switching to `EXIT_SUCCESS=0` is safe.
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "cookiecutter/generate.py", "line": 263, "lin
+│ e_end": 263, "category": "resource", "severity": "medium", "summary": "Faile
+│ d pre_gen_project hook leaves an orphan project directory on disk, breaking 
+│ retry workflows.", "…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 27  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01GQfZAX5pbq1rhURMdZadbU
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 28  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1444 cache_r=64696 out=1
+│
+│ text:
+│   I submitted one finding:
+│   
+│   **`cookiecutter/generate.py:263` — medium / resource**: When the `pre_gen_
+│ project` hook returns a non-zero exit code, `generate_files` returns early b
+│ ut never removes the project directory that `render_and_create_dir` already 
+│ created at lines 243-246 (via `os.makedirs`). The user is left with an empty
+│ /partially-populated directory, and any retry hits `OutputDirExistsException
+│ ` at `generate.py:209` until they manually delete it or pass `overwrite_if_e
+│ xists=True`. The intent of letting pre-gen veto generation is to bail before
+│  side effects — this implementation still leaves the orphan dir behind.
+│   
+│   Other items I considered and rejected:
+│   - `generate_files` now returning `None` early instead of always returning 
+│ `project_dir` — a real contract change but plausibly intentional (lets calle
+│ rs detect failure); not flagged.
+│   - `post_gen_project` hook return value still discarded at `generate.py:321
+│ ` — inconsistent with the new pre-gen handling but not a regression.
+│   - `proc.wait()` returning negative values on Unix signals — handled correc
+│ tly by `!= EXIT_SUCCESS`.
+│   - `tempfile` leak in `run_script_with_context` — pre-existing, not introdu
+│ ced by this diff.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 29  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 14
+│ duration: 105683 ms
+│ total_cost_usd: $0.5885
+│ totals: in=18 cache_w=24046 cache_r=503419 out=7455
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-05-04T05:24:05.547558+00:00  submitted=True  duplicate_submission=False  findings=1  num_turns=14  stop_reason=end_turn

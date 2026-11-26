@@ -1,0 +1,605 @@
+=== Agent SDK reviewer run 369 ===
+repo: DaytonaRepo
+refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+started: 2026-05-04T10:31:20.557046+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (434 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-opus-4-7
+│ cwd  : /Users/hendrikkrack/Desktop/code-review-agent-bench
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=5 cache_w=5557 cache_r=42094 out=0
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^", "head_ref"
+│ : "4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_015KtsHYJKsv16JsQfqpeRND
+│ chars: 1,174
+│
+│ preview:
+│   Error: result (163,994 characters) exceeds maximum allowed tokens. Output 
+│ has been saved to /Users/hendrikkrack/.claude/projects/-Users-hendrikkrack-D
+│ esktop-code-review-agent-bench/38b644e7-fc58-4cc8-91a9-aed0308fa392/tool-res
+│ ults/mcp-reviewer-build_review_context-1777890688435.txt.
+│   Format: JSON array with schema: [{type: string, text: string}]
+│   Use offset and limit parameters to read specific portions of the file, sea
+│ rch within it for specific content, and jq to make structured queries.
+│   REQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:
+│   - You MUST read the content from the file at /Users/hendrikk
+│   … (+574 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=823 cache_r=47651 out=32
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "wc -l /Users/hendrikkrack/.claude/projects/-Users-hendr
+│ ikkrack-Desktop-code-review-agent-bench/38b644e7-fc58-4cc8-91a9-aed0308fa392
+│ /tool-results/mcp-reviewer-build_review_context-1777890688435.txt"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01RzhsrZrUrxRyQrBVaLpv3h
+│ chars: 230
+│
+│ preview:
+│   [exit 1]
+│   wc: /Users/hendrikkrack/.claude/projects/-Users-hendrikkrack-Desktop-code-
+│ review-agent-bench/38b644e7-fc58-4cc8-91a9-aed0308fa392/tool-results/mcp-rev
+│ iewer-build_review_context-1777890688435.txt: No such file or directory
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=823 cache_r=47651 out=32
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git -C \"$(pwd)\" log -1 --stat 4e7eceaa3afafe8585c3b68
+│ 0ec4f3d18b0c0e897"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_0145Ucxi4do3UXgGhwgc2JTc
+│ chars: 272
+│
+│ preview:
+│   commit 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+│   Author: mcarton <cartonmartin+git@gmail.com>
+│   Date:   Tue Jul 21 20:45:10 2015 +0200
+│   
+│       Add a `dirty_unzip` rule
+│   
+│    thefuck/rules/dirty_unzip.py | 40 +++++++++++++++++++++++++++++++++++++++
+│ +
+│    1 file changed, 40 insertions(+)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=676 cache_r=48474 out=59
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git show 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01Gg8TYn5awBUGcqc2xiuTwH
+│ chars: 1,444
+│
+│ preview:
+│   commit 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+│   Author: mcarton <cartonmartin+git@gmail.com>
+│   Date:   Tue Jul 21 20:45:10 2015 +0200
+│   
+│       Add a `dirty_unzip` rule
+│   
+│   diff --git a/thefuck/rules/dirty_unzip.py b/thefuck/rules/dirty_unzip.py
+│   new file mode 100644
+│   index 0000000..503b2bc
+│   --- /dev/null
+│   … (+844 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=801 cache_r=49150 out=35
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "ls /Users/hendrikkrack/.claude/projects/-Users-hendrikk
+│ rack-Desktop-code-review-agent-bench/38b644e7-fc58-4cc8-91a9-aed0308fa392/to
+│ ol-results/ 2>&1 | head -20"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_015z6uBEZcGUhMnbw1C1wRWm
+│ chars: 186
+│
+│ preview:
+│   ls: cannot access '/Users/hendrikkrack/.claude/projects/-Users-hendrikkrac
+│ k-Desktop-code-review-agent-bench/38b644e7-fc58-4cc8-91a9-aed0308fa392/tool-
+│ results/': No such file or directory
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=801 cache_r=49150 out=35
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "pwd && ls thefuck/rules/ | head -20"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_014sADdpuk3ituVWLrZhoXTs
+│ chars: 351
+│
+│ preview:
+│   /home/daytona/repo
+│   apt_get.py
+│   brew_install.py
+│   brew_unknown_command.py
+│   brew_upgrade.py
+│   cargo_no_command.py
+│   cargo.py
+│   cd_correction.py
+│   cd_mkdir.py
+│   cd_parent.py
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3545 cache_r=49951 out=35
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "thefuck/rules/dirty_unzip.py", "start_line": 1, "end_line"
+│ : 40}
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -rn \"side_effect\" thefuck/ 2>&1 | head -20"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01MQTt8fbBrcX7WVSC6gLgPH
+│ chars: 1,298
+│
+│ preview:
+│      1  import os
+│      2  import zipfile
+│      3  from thefuck import logs
+│      4  
+│      5  
+│      6  def _is_bad_zip(file):
+│      7      with zipfile.ZipFile(file, 'r') as archive:
+│      8          return len(archive.namelist()) > 1
+│      9  
+│     10  
+│   … (+698 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01CzyqHPX5LsCVe7EYq2ARWq
+│ chars: 1,173
+│
+│ preview:
+│   thefuck/logs.py:31:def show_command(new_command, side_effect, settings):
+│   thefuck/logs.py:32:    sys.stderr.write('{bold}{command}{side_effect}{rese
+│ t}\n'.format(
+│   thefuck/logs.py:34:        side_effect='*' if side_effect else '',
+│   thefuck/logs.py:39:def confirm_command(new_command, side_effect, settings)
+│ :
+│   thefuck/logs.py:41:        '{bold}{command}{side_effect}{reset} '
+│   thefuck/logs.py:44:            side_effect='*' if side_effect else '',
+│   thefuck/main.py:30:                      getattr(rule_module, 'side_effect
+│ ', None),
+│   thefuck/main.py:120:def confirm(new_command, side_effect, settings):
+│   thefuc
+│   … (+573 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1366 cache_r=53496 out=68
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "thefuck/main.py", "start_line": 120, "end_line": 160}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01TNc2H5589nXoizWD3U2U6X
+│ chars: 1,602
+│
+│ preview:
+│    120  def confirm(new_command, side_effect, settings):
+│    121      """Returns `True` when running of new command confirmed."""
+│    122      if not settings.require_confirmation:
+│    123          logs.show_command(new_command, side_effect, settings)
+│    124          return True
+│    125  
+│    126      logs.confirm_command(new_command, side_effect, settings)
+│    127      try:
+│    128          sys.stdin.read(1)
+│    129          return True
+│   … (+1,002 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1366 cache_r=53496 out=68
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "thefuck/types.py", "start_line": 1, "end_line": 80}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 20  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01CthjXUFpmfnPpySwdmLfLP
+│ chars: 957
+│
+│ preview:
+│      1  from collections import namedtuple
+│      2  
+│      3  
+│      4  Command = namedtuple('Command', ('script', 'stdout', 'stderr'))
+│      5  Script = namedtuple('Script', ('script'))
+│      6  
+│      7  Rule = namedtuple('Rule', ('name', 'match', 'get_new_command',
+│      8                             'enabled_by_default', 'side_effect',
+│      9                             'priority', 'requires_output'))
+│     10  
+│   … (+357 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 21  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=1442 cache_r=54862 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "thefuck/rules/ssh_known_hosts.py", "start_line": 1, "end_l
+│ ine": 40}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 22  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_012xrN9XwgLqS3zmTqZzs8nC
+│ chars: 1,259
+│
+│ preview:
+│      1  import re
+│      2  
+│      3  patterns = [
+│      4      r'WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!',
+│      5      r'WARNING: POSSIBLE DNS SPOOFING DETECTED!',
+│      6      r"Warning: the \S+ host key for '([^']+)' differs from the key f
+│ or the IP address '([^']+)'",
+│      7  ]
+│      8  offending_pattern = re.compile(
+│      9      r'(?:Offending (?:key for IP|\S+ key)|Matching host key) in ([^:
+│ ]+):(\d+)',
+│     10      re.MULTILINE)
+│   … (+659 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 23  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=1442 cache_r=54862 out=8
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -rn \"is_match\\|def match\\|matched_rule\\|except
+│ \" thefuck/main.py thefuck/types.py 2>&1 | head -30"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 24  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_018RtBHcSnDqZhNQuyWSvjd5
+│ chars: 514
+│
+│ preview:
+│   thefuck/main.py:66:    except TimeoutExpired:
+│   thefuck/main.py:103:def get_matched_rule(command, rules, settings):
+│   thefuck/main.py:116:        except Exception:
+│   thefuck/main.py:130:    except KeyboardInterrupt:
+│   thefuck/main.py:160:        matched_rule = get_matched_rule(command, rules
+│ , settings)
+│   thefuck/main.py:161:        if matched_rule:
+│   thefuck/main.py:162:            logs.debug(u'Matched rule: {}'.format(matc
+│ hed_rule.name), settings)
+│   thefuck/main.py:163:            run_rule(matched_rule, command, settings)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 25  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=1442 cache_r=54862 out=8
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -rn \"load_rule\\|def is_match\\|getattr.*match\" 
+│ thefuck/ 2>&1 | head -20"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 26  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01JWyJ7NeMXiQ4ai7nRfLqQu
+│ chars: 100
+│
+│ preview:
+│   thefuck/main.py:24:def load_rule(rule):
+│   thefuck/main.py:39:            loaded_rule = load_rule(rule)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 27  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1368 cache_r=56304 out=69
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "thefuck/main.py", "start_line": 100, "end_line": 125}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 28  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01Mu1BQ5XNHmzVDLnMoSsMKk
+│ chars: 980
+│
+│ preview:
+│    100              return types.Script(script)
+│    101  
+│    102  
+│    103  def get_matched_rule(command, rules, settings):
+│    104      """Returns first matched rule for command."""
+│    105      script_only = isinstance(command, types.Script)
+│    106  
+│    107      for rule in rules:
+│    108          if script_only and rule.requires_output:
+│    109              continue
+│   … (+380 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 29  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=466 cache_r=57672 out=39
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I have enough evidence to evaluate the new `dirty_unzip` rule. Let me conf
+│ irm my understanding of `side_effect` ordering and `command.script` semantic
+│ s, then submit findings.
+│   
+│   Key facts established:
+│   - `thefuck/main.py:138-142`: `side_effect` runs BEFORE the new command is 
+│ printed/executed; if it raises, the corrected command never runs.
+│   - `thefuck/main.py:111-117`: `match()` is wrapped in try/except, so failur
+│ es there are silent — but `side_effect` is NOT wrapped.
+│   - `thefuck/types.py:4`: `command.script` is the raw user-typed script stri
+│ ng, so `'-d' in command.script` is a substring check over the whole script (
+│ filename + flags).
+│   - Standard zip archives created with `zip -r` include directory entries (w
+│ ith trailing `/`) in `namelist()`, and `os.remove()` raises `IsADirectoryErr
+│ or` on directories.
+│   
+│   Real bugs:
+│   
+│   1. **`side_effect` uses `os.remove` on every namelist entry** (`thefuck/ru
+│ les/dirty_unzip.py:37`) — most real-world zips include directory entries (e.
+│ g. `mydir/`) in `namelist()`. `os.remove` raises `IsADirectoryError` on thos
+│ e, propagating out of `side_effect` (which is not wrapped in main.py:140). T
+│ he corrected `unzip … -d` command then never gets printed, leaving the user 
+│ with a half-cleaned mess.
+│   
+│   2. **`'-d' not in command.script` is a substring test** (`thefuck/rules/di
+│ rty_unzip.py:26`) — fires on any character pair `-d` anywhere in the script.
+│  Common archive names like `my-data.zip`, `2024-data.zip`, `lib-dev.zip` all
+│  contain `-d` in the filename, so the rule silently fails to match.
+│   
+│   3. **`_is_bad_zip` flags well-formed archives** (`thefuck/rules/dirty_unzi
+│ p.py:8`) — `len(namelist()) > 1` is true for every zip that contains a singl
+│ e top-level directory with files inside it (`['mydir/', 'mydir/a.txt', 'mydi
+│ r/b.txt']`). Those are the *clean* archives. The rule matches them anyway, t
+│ hen `side_effect` tries to `os.remove('mydir/')` and crashes.
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "thefuck/rules/dirty_unzip.py", "line": 37, "
+│ category": "error", "severity": "high", "summary": "side_effect calls os.rem
+│ ove on every namelist entry, which raises IsADirectoryError on directory ent
+│ ries in the zip", "d…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 30  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01Sjzs6FQnz78jeiX6mKyCJa
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 31  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=5660 cache_r=58138 out=1
+│
+│ text:
+│   I submitted three findings on `thefuck/rules/dirty_unzip.py`:
+│   
+│   1. **HIGH (error)** — `side_effect` (line 37) calls `os.remove` on every `
+│ namelist()` entry, but standard zip archives include directory entries with 
+│ trailing `/`; `os.remove` raises `IsADirectoryError` on those, and since `ma
+│ in.py:140` does not wrap `side_effect`, the exception propagates and the cor
+│ rected `unzip … -d` command at `main.py:142` is never printed. The user is l
+│ eft with partial cleanup and no fix.
+│   
+│   2. **MEDIUM (logic)** — `match` (line 26) uses `'-d' not in command.script
+│ ` as a substring test on the raw script string. Any archive name containing 
+│ the characters `-d` (`my-data.zip`, `lib-dev.zip`, `2024-data.zip`, …) makes
+│  the guard false and silently disables the rule on exactly the cases it shou
+│ ld fire.
+│   
+│   3. **MEDIUM (logic)** — `_is_bad_zip` (line 8) flags a zip as "dirty" when
+│ ever `namelist()` length > 1, but archives with a single top-level directory
+│  (`['mydir/', 'mydir/a.txt', 'mydir/b.txt']`) are precisely the clean case. 
+│ The rule matches, side-effect then tries to wipe `mydir/`, and a well-packag
+│ ed extraction is mis-treated as dirty. Count unique top-level path component
+│ s instead.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 32  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 16
+│ duration: 151038 ms
+│ total_cost_usd: $0.6745
+│ totals: in=19 cache_w=21704 cache_r=517792 out=11196
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-05-04T10:33:54.068583+00:00  submitted=True  duplicate_submission=False  findings=3  num_turns=16  stop_reason=end_turn

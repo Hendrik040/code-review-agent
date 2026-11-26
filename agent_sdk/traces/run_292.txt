@@ -1,0 +1,615 @@
+=== Agent SDK reviewer run 292 ===
+repo: DaytonaRepo
+refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+started: 2026-05-04T05:28:39.216572+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (433 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-opus-4-7
+│ cwd  : /Users/hendrikkrack/Desktop/code-review-agent-bench
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=5 cache_w=5544 cache_r=42094 out=0
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "fd358e8a388939959369f08f616e29552cdaf96e", "head_ref":
+│  "9966ec5a13e331659c3ea00981f9b11b0faf821f"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_01D3fLqQMkDP9D4fr1FUrVRC
+│ chars: 1,174
+│
+│ preview:
+│   Error: result (126,196 characters) exceeds maximum allowed tokens. Output 
+│ has been saved to /Users/hendrikkrack/.claude/projects/-Users-hendrikkrack-D
+│ esktop-code-review-agent-bench/e378d543-17c4-4289-a260-accfeded93e0/tool-res
+│ ults/mcp-reviewer-build_review_context-1777872538459.txt.
+│   Format: JSON array with schema: [{type: string, text: string}]
+│   Use offset and limit parameters to read specific portions of the file, sea
+│ rch within it for specific content, and jq to make structured queries.
+│   REQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:
+│   - You MUST read the content from the file at /Users/hendrikk
+│   … (+574 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=701 cache_r=47638 out=55
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "wc -c /Users/hendrikkrack/.claude/projects/-Users-hendr
+│ ikkrack-Desktop-code-review-agent-bench/e378d543-17c4-4289-a260-accfeded93e0
+│ /tool-results/mcp-reviewer-build_review_context-1777872538459.txt && git log
+│  --oneline fd358e8a3…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01Y8Lt7ioLBHmcCzwML6X1SF
+│ chars: 230
+│
+│ preview:
+│   [exit 1]
+│   wc: /Users/hendrikkrack/.claude/projects/-Users-hendrikkrack-Desktop-code-
+│ review-agent-bench/e378d543-17c4-4289-a260-accfeded93e0/tool-results/mcp-rev
+│ iewer-build_review_context-1777872538459.txt: No such file or directory
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=354 cache_r=48339 out=47
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git log --oneline fd358e8a388939959369f08f616e29552cdaf
+│ 96e..9966ec5a13e331659c3ea00981f9b11b0faf821f && echo \"---\" && git diff --
+│ stat fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b
+│ 11b0faf821f"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01PYB1TpUcyWdmY6aRt58B9s
+│ chars: 550
+│
+│ preview:
+│   9966ec5a remove gap test
+│   ---
+│    src/sentry/consumers/__init__.py                   |   4 +-
+│    .../consumers/queue_consumer.py                    | 345 +++++++++++++++
+│    .../consumers/result_consumer.py                   |  44 +-
+│    tests/sentry/remote_subscriptions/__init__.py      |   0
+│    .../remote_subscriptions/consumers/__init__.py     |   0
+│    .../consumers/test_queue_consumer.py               | 421 ++++++++++++++++
+│ ++
+│    .../uptime/consumers/test_results_consumer.py      | 468 ++++++++++++++++
+│ ++++-
+│    7 files changed, 1276 insertions(+), 6 deletions(-)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=485 cache_r=48693 out=72
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff fd358e8a388939959369f08f616e29552cdaf96e..9966
+│ ec5a13e331659c3ea00981f9b11b0faf821f -- src/sentry/consumers/__init__.py src
+│ /sentry/remote_subscriptions/consumers/result_consumer.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01GYTBsJvnTjDAexKaoU71xA
+│ chars: 6,295
+│
+│ preview:
+│   diff --git a/src/sentry/consumers/__init__.py b/src/sentry/consumers/__ini
+│ t__.py
+│   index 289c02cc..431c65b9 100644
+│   --- a/src/sentry/consumers/__init__.py
+│   +++ b/src/sentry/consumers/__init__.py
+│   @@ -118,7 +118,7 @@ def uptime_options() -> list[click.Option]:
+│        options = [
+│            click.Option(
+│                ["--mode", "mode"],
+│   -            type=click.Choice(["serial", "parallel", "batched-parallel"])
+│ ,
+│   +            type=click.Choice(["serial", "parallel", "batched-parallel", 
+│ "thread-queue-parallel"]),
+│   … (+5,695 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=2720 cache_r=49178 out=31
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff fd358e8a388939959369f08f616e29552cdaf96e..9966
+│ ec5a13e331659c3ea00981f9b11b0faf821f -- src/sentry/remote_subscriptions/cons
+│ umers/queue_consumer.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_012qUeBpADssu68SFXQzvMrL
+│ chars: 8,036
+│
+│ preview:
+│   diff --git a/src/sentry/remote_subscriptions/consumers/queue_consumer.py b
+│ /src/sentry/remote_subscriptions/consumers/queue_consumer.py
+│   new file mode 100644
+│   index 00000000..4eed5c73
+│   --- /dev/null
+│   +++ b/src/sentry/remote_subscriptions/consumers/queue_consumer.py
+│   @@ -0,0 +1,345 @@
+│   +from __future__ import annotations
+│   +
+│   +import logging
+│   +import queue
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3085 cache_r=51898 out=44
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git show 9966ec5a13e331659c3ea00981f9b11b0faf821f -- sr
+│ c/sentry/remote_subscriptions/consumers/queue_consumer.py | sed -n '230,400p
+│ '"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01QHuxsgKMGQyVcU3nMA6FP5
+│ chars: 4,609
+│
+│ preview:
+│   +            "queue_depths": queue_depths,
+│   +            "total_items": sum(queue_depths),
+│   +        }
+│   +
+│   +    def wait_until_empty(self, timeout: float = 5.0) -> bool:
+│   +        """Wait until all queues are empty. Returns True if successful, F
+│ alse if timeout."""
+│   +        start_time = time.time()
+│   +        while time.time() - start_time < timeout:
+│   +            if self.get_stats()["total_items"] == 0:
+│   +                return True
+│   … (+4,009 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1795 cache_r=54983 out=45
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -E \"^python|requires-python|python_requires\" pyp
+│ roject.toml setup.py setup.cfg 2>/dev/null | head -20; echo \"---\"; cat .py
+│ thon-version 2>/dev/null"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01UbUfws1bW6EULyCb8NBRcA
+│ chars: 145
+│
+│ preview:
+│   pyproject.toml:python_files = "test_*.py sentry/testutils/*"
+│   pyproject.toml:python_version = "3.13"
+│   setup.cfg:python_requires = >=3.13
+│   ---
+│   3.13.1
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=6617 cache_r=56778 out=45
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff fd358e8a388939959369f08f616e29552cdaf96e..9966
+│ ec5a13e331659c3ea00981f9b11b0faf821f -- tests/sentry/remote_subscriptions/co
+│ nsumers/test_queue_consumer.py | head -200"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01GVFNohqJQ812XpfjSAy1HG
+│ chars: 7,362
+│
+│ preview:
+│   diff --git a/tests/sentry/remote_subscriptions/consumers/test_queue_consum
+│ er.py b/tests/sentry/remote_subscriptions/consumers/test_queue_consumer.py
+│   new file mode 100644
+│   index 00000000..b94b9c0d
+│   --- /dev/null
+│   +++ b/tests/sentry/remote_subscriptions/consumers/test_queue_consumer.py
+│   @@ -0,0 +1,421 @@
+│   +"""
+│   +Tests for the thread-queue-parallel result consumer implementation.
+│   +"""
+│   +
+│   … (+6,762 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=2963 cache_r=63395 out=44
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git show 9966ec5a13e331659c3ea00981f9b11b0faf821f:src/s
+│ entry/remote_subscriptions/consumers/queue_consumer.py | sed -n '1,120p'"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_014y61hkpsuZk1y8iS7Sk19n
+│ chars: 4,221
+│
+│ preview:
+│   from __future__ import annotations
+│   
+│   import logging
+│   import queue
+│   import threading
+│   import time
+│   from collections import defaultdict
+│   from collections.abc import Callable
+│   from dataclasses import dataclass
+│   from typing import Any, Generic, TypeVar
+│   … (+3,621 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 20  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1564 cache_r=66358 out=58
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git show 9966ec5a13e331659c3ea00981f9b11b0faf821f:src/s
+│ entry/remote_subscriptions/consumers/result_consumer.py | sed -n '1,100p'"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 21  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_013acWDF6XBvARPTPJkbziWm
+│ chars: 3,158
+│
+│ preview:
+│   from __future__ import annotations
+│   
+│   import abc
+│   import logging
+│   import multiprocessing
+│   from collections import defaultdict
+│   from collections.abc import Mapping
+│   from concurrent.futures import ThreadPoolExecutor, wait
+│   from functools import partial
+│   from typing import Generic, Literal, TypeVar
+│   … (+2,558 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 22  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=1542 cache_r=67922 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git show 9966ec5a13e331659c3ea00981f9b11b0faf821f:src/s
+│ entry/remote_subscriptions/consumers/result_consumer.py | sed -n '180,290p'"
+│ }
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 23  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01CcAn9oqLj7kqBGdyagvbkt
+│ chars: 4,480
+│
+│ preview:
+│       def shutdown(self) -> None:
+│           if self.parallel_executor:
+│               self.parallel_executor.shutdown()
+│           if self.queue_pool:
+│               self.queue_pool.shutdown()
+│               self.queue_pool = None
+│   
+│       def decode_payload(self, topic_for_codec, payload: KafkaPayload | Filt
+│ eredPayload) -> T | None:
+│           assert not isinstance(payload, FilteredPayload)
+│   
+│   … (+3,880 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 24  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1824 cache_r=69464 out=49
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Let me check arroyo's Commit interface to verify my concern about the comm
+│ it-from-background-thread issue.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "python -c \"from arroyo.types import Commit; import ins
+│ pect; print(inspect.getsource(Commit) if not isinstance(Commit, type(lambda:
+│  None)) else 'callable')\" 2>&1 | head -20; echo \"---\"; python -c \"from a
+│ rroyo.processing.str…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 25  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01LJ8VjCbdhbsJh8T8x6HPgq
+│ chars: 616
+│
+│ preview:
+│   Traceback (most recent call last):
+│     File "<string>", line 1, in <module>
+│       from arroyo.types import Commit; import inspect; print(inspect.getsour
+│ ce(Commit) if not isinstance(Commit, type(lambda: None)) else 'callable')
+│       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+│   ModuleNotFoundError: No module named 'arroyo'
+│   ---
+│   Traceback (most recent call last):
+│     File "<string>", line 1, in <module>
+│       from arroyo.processing.strategies.commit import CommitOffsets; import 
+│ inspect; print(inspect.getsource(CommitOffsets))
+│       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+│   … (+16 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 26  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=8081 cache_r=71288 out=59
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "find / -path /proc -prune -o -name \"commit.py\" -print
+│  2>/dev/null | grep arroyo | head -5"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 27  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_012C2aeYAA97UVuRHAUuH1Si
+│ chars: 19
+│
+│ preview:
+│   (no output, exit=0)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 28  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=132 cache_r=79369 out=49
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Based on my analysis of the diff, I've checked:
+│   - `src/sentry/remote_subscriptions/consumers/queue_consumer.py:1-345` — ne
+│ w file with `OffsetTracker`, `OrderedQueueWorker`, `FixedQueuePool`, `Simple
+│ QueueProcessingStrategy`
+│   - `src/sentry/remote_subscriptions/consumers/result_consumer.py:96-260` — 
+│ new mode wiring
+│   - Python version (3.13) — confirms `queue.Queue.shutdown` is available
+│   - `OffsetTracker.get_committable_offsets` contiguity logic — correct due t
+│ o `start = max(last_committed + 1, min_offset)` handling the resume case
+│   - The `_commit_loop` final-flush behavior on close — does flush once when 
+│ shutdown_event is set
+│   
+│   Key concerns I identified:
+│   
+│   1. **`FixedQueuePool.shutdown` ordering — `queue_consumer.py:248-258`**: `
+│ worker.shutdown = True` is set before `q.shutdown(immediate=False)`. Since `
+│ OrderedQueueWorker.run` checks `while not self.shutdown:` at the top of each
+│  iteration, after a worker pulls one more item from the queue (from `q.shutd
+│ own(immediate=False)` allowing drain), it processes that single item and the
+│ n exits on the next loop check. Items beyond the first remaining in each que
+│ ue are abandoned, defeating the `immediate=False` "drain-then-stop" semantic
+│ s. Not data loss in the at-least-once sense (offsets remain outstanding so t
+│ hey aren't committed and will be reprocessed), but it undermines graceful sh
+│ utdown.
+│   
+│   2. **`SimpleQueueProcessingStrategy._commit_loop` calls arroyo's `Commit` 
+│ from a background thread — `queue_consumer.py:289-309`**: All other modes (`
+│ CommitOffsets` in serial / multiprocess / batched-parallel) invoke `commit` 
+│ from the strategy chain (single-threaded, driven by arroyo's main poll loop)
+│ . Here, `commit_offsets` runs in `commit_thread` concurrently with `submit`/
+│ `poll`/`close` being called by arroyo on the main thread. Arroyo's commit ca
+│ llback isn't documented as thread-safe.
+│   
+│   3. **Silent commit on `BrokerValue`-assertion failure — `queue_consumer.py
+│ :332-345`**: The outer `try` asserts `isinstance(message.value, BrokerValue)
+│ `, and the `except` branch only tracks the offset if `isinstance(message.val
+│ ue, BrokerValue)`. If the assertion fails (or any pre-add_offset error happe
+│ ns for a non-BrokerValue), the message is silently dropped — and a subsequen
+│ t offset added/committed will commit past it.
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "src/sentry/remote_subscriptions/consumers/qu
+│ eue_consumer.py", "line": 248, "line_end": 258, "category": "concurrency", "
+│ severity": "medium", "summary": "FixedQueuePool.shutdown abandons in-flight 
+│ queue items, defeati…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 29  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01M7jYYpNqpVKhnN2F8y5Rca
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 30  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=4209 cache_r=79501 out=2
+│
+│ text:
+│   Submitted 3 findings:
+│   
+│   1. **`FixedQueuePool.shutdown` drain ordering** (medium, concurrency): `wo
+│ rker.shutdown = True` is set before `q.shutdown(immediate=False)`, so worker
+│ s exit after pulling at most one extra item — defeating the `immediate=False
+│ ` graceful-drain semantics and the `wait_until_empty` contract.
+│   
+│   2. **Commit callback called from a background thread** (medium, concurrenc
+│ y): `_commit_loop` invokes arroyo's `Commit` from `commit_thread` concurrent
+│ ly with `submit`/`poll`/`close` on arroyo's main thread. All other modes com
+│ mit via `CommitOffsets` on the strategy thread; arroyo's commit callback isn
+│ 't documented as thread-safe.
+│   
+│   3. **Silent offset skip on non-BrokerValue submit errors** (low, error): I
+│ f an exception fires before `add_offset` and `message.value` isn't a `Broker
+│ Value`, the offset is never tracked; the next tracked offset becomes `min_of
+│ fset` and commit advances past the dropped offset — silent message loss.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 31  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 15
+│ duration: 327673 ms
+│ total_cost_usd: $1.2311
+│ totals: in=24 cache_w=41616 cache_r=896898 out=20899
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-05-04T05:34:08.739111+00:00  submitted=True  duplicate_submission=False  findings=3  num_turns=15  stop_reason=end_turn

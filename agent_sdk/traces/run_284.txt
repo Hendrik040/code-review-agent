@@ -1,0 +1,600 @@
+=== Agent SDK reviewer run 284 ===
+repo: DaytonaRepo
+refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+started: 2026-05-04T05:21:21.532569+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (433 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-opus-4-7
+│ cwd  : /Users/hendrikkrack/Desktop/code-review-agent-bench
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=5 cache_w=5544 cache_r=42094 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "de11fb0166a7244115bb066edd65ec0d6b7e365c", "head_ref":
+│  "3162ad68a5c87666788b27a44eb31235025091a9"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_018rgPbW8p3v3cXbzxjv5Lx9
+│ chars: 42,616
+│
+│ preview:
+│   # Code Review Context
+│   
+│   ## 1. Git Diff (What Changed)
+│   
+│   <diff>
+│   diff --git a/CLAUDE.md b/CLAUDE.md
+│   index 97b7d0f6..cc56fcd9 100644
+│   --- a/CLAUDE.md
+│   +++ b/CLAUDE.md
+│   @@ -445,6 +445,17 @@ for org in organizations:
+│   … (+42,016 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=16246 cache_r=47638 out=33
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Let me check a few suspicious areas before submitting findings.
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "def get_memory_info", "path_glob": "src/sentry/spans/bu
+│ ffer.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_013BKQHimmbTb7u5skK3jtXm
+│ chars: 89
+│
+│ preview:
+│   src/sentry/spans/buffer.py:375:    def get_memory_info(self) -> Generator[
+│ ServiceMemory]:
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=16246 cache_r=47638 out=33
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "src/sentry/spans/consumers/process/flusher.py", "start_lin
+│ e": 130, "end_line": 220}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01MkHFPoLrhft9q8pmptvRjT
+│ chars: 4,003
+│
+│ preview:
+│    130              if shard in shards:
+│    131                  self._create_process_for_shards(process_index, shard
+│ s)
+│    132                  break
+│    133  
+│    134      @staticmethod
+│    135      def main(
+│    136          buffer: SpansBuffer,
+│    137          shards: list[int],
+│    138          stopped,
+│    139          current_drift,
+│   … (+3,403 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=5212 cache_r=63884 out=43
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Let me look at the get_memory_info to understand if double-counting is rea
+│ l, and check the threading.Thread terminate issue:
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "src/sentry/spans/buffer.py", "start_line": 370, "end_line"
+│ : 420}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01VJKe9N7vZFPyJrKnEhfgp3
+│ chars: 2,499
+│
+│ preview:
+│    370                  "spans.buffer.flush_segments.queue_size",
+│    371                  queue_size,
+│    372                  tags={"shard_i": shard_i},
+│    373              )
+│    374  
+│    375      def get_memory_info(self) -> Generator[ServiceMemory]:
+│    376          return iter_cluster_memory_usage(self.client)
+│    377  
+│    378      def flush_segments(self, now: int) -> dict[SegmentKey, FlushedSe
+│ gment]:
+│    379          cutoff = now
+│   … (+1,899 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=5212 cache_r=63884 out=43
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "src/sentry/spans/consumers/process/flusher.py", "start_lin
+│ e": 85, "end_line": 133}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01XjMYE646bZiyDiZozNP5s7
+│ chars: 2,257
+│
+│ preview:
+│     85  
+│     86      def _create_process_for_shards(self, process_index: int, shards:
+│  list[int]):
+│     87          # Optimistically reset healthy_since to avoid a race between
+│  the
+│     88          # starting process and the next flush cycle. Keep back press
+│ ure across
+│     89          # the restart, however.
+│     90          self.process_healthy_since[process_index].value = int(time.t
+│ ime())
+│     91  
+│     92          # Create a buffer for these specific shards
+│     93          shard_buffer = SpansBuffer(shards)
+│     94  
+│   … (+1,657 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=5212 cache_r=63884 out=43
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "def run_with_initialized_sentry"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01ExR8eBUNesBcK4XEZiLqxT
+│ chars: 128
+│
+│ preview:
+│   src/sentry/utils/arroyo.py:214:def run_with_initialized_sentry(main_fn: Ca
+│ llable[..., None], *args: Any) -> Callable[..., None]:
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=3104 cache_r=69096 out=45
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "def iter_cluster_memory_usage"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01JuX7FrthGZbxugW6TpVwVJ
+│ chars: 124
+│
+│ preview:
+│   src/sentry/processing/backpressure/memory.py:82:def iter_cluster_memory_us
+│ age(cluster: Cluster) -> Generator[ServiceMemory]:
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=304 cache_r=72200 out=63
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "src/sentry/processing/backpressure/memory.py", "start_line
+│ ": 75, "end_line": 115}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01T5Ro6jAixUW7tWVYyoqpHF
+│ chars: 1,358
+│
+│ preview:
+│     75              return NodeInfo(node.host, node.port)
+│     76      except Exception:
+│     77          pass
+│     78  
+│     79      return NodeInfo(None, None)
+│     80  
+│     81  
+│     82  def iter_cluster_memory_usage(cluster: Cluster) -> Generator[Service
+│ Memory]:
+│     83      """
+│     84      A generator that yields redis `INFO` results for each of the nod
+│ es in the `cluster`.
+│   … (+758 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=6 cache_w=804 cache_r=72504 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "def record_stored_segments"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01A4Y8B3JbTfdQoVkLqftbFF
+│ chars: 68
+│
+│ preview:
+│   src/sentry/spans/buffer.py:357:    def record_stored_segments(self):
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 20  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=542 cache_r=73308 out=68
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "src/sentry/spans/buffer.py", "start_line": 357, "end_line"
+│ : 376}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 21  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_014Go5FGYc6yeFQbVrWnJnhZ
+│ chars: 872
+│
+│ preview:
+│    357      def record_stored_segments(self):
+│    358          with metrics.timer("spans.buffer.get_stored_segments"):
+│    359              with self.client.pipeline(transaction=False) as p:
+│    360                  for shard in self.assigned_shards:
+│    361                      key = self._get_queue_key(shard)
+│    362                      p.zcard(key)
+│    363  
+│    364                  result = p.execute()
+│    365  
+│    366          assert len(result) == len(self.assigned_shards)
+│   … (+272 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 22  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=459 cache_r=73850 out=41
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "python3 -c \"import multiprocessing; ctx = multiprocess
+│ ing.get_context('spawn'); p = ctx.Process(); print(type(p).__mro__); print(i
+│ sinstance(p, multiprocessing.Process))\""}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 23  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01LDEn9CVDceWjW4iuzc5hRT
+│ chars: 119
+│
+│ preview:
+│   (<class 'multiprocessing.context.SpawnProcess'>, <class 'multiprocessing.p
+│ rocess.BaseProcess'>, <class 'object'>)
+│   False
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 24  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1459 cache_r=74309 out=84
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "python3 -c \"import multiprocessing; print(multiprocess
+│ ing.Process); print(multiprocessing.Process.__mro__)\""}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 25  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01MNSWf4wWwLZnZzA5S5HcVZ
+│ chars: 150
+│
+│ preview:
+│   <class 'multiprocessing.context.Process'>
+│   (<class 'multiprocessing.context.Process'>, <class 'multiprocessing.proces
+│ s.BaseProcess'>, <class 'object'>)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 26  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1139 cache_r=75768 out=58
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__read_file_section
+│   args: {"path": "src/sentry/spans/consumers/process/flusher.py", "start_lin
+│ e": 218, "end_line": 262}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 27  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__read_file_section
+│ id : toolu_01KV77Z1caBQigeR88MHPs41
+│ chars: 2,074
+│
+│ preview:
+│    218      def _ensure_processes_alive(self) -> None:
+│    219          max_unhealthy_seconds = options.get("spans.buffer.flusher.ma
+│ x-unhealthy-seconds")
+│    220  
+│    221          for process_index, process in self.processes.items():
+│    222              if not process:
+│    223                  continue
+│    224  
+│    225              shards = self.process_to_shards_map[process_index]
+│    226  
+│    227              cause = None
+│   … (+1,474 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 28  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=2586 cache_r=76907 out=62
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "python3 -c \"\nimport multiprocessing\nctx = multiproce
+│ ssing.get_context('spawn')\np = ctx.Process()\nprint('SpawnProcess class:', 
+│ type(p).__name__)\nprint('multiprocessing.Process class:', multiprocessing.P
+│ rocess.__name__)\npr…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 29  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01PJ3qVUuGsjJSwKCL8UNuBK
+│ chars: 249
+│
+│ preview:
+│   SpawnProcess class: SpawnProcess
+│   multiprocessing.Process class: Process
+│   isinstance(spawn, multiprocessing.Process): False
+│   issubclass: False
+│   SpawnProcess MRO: ['SpawnProcess', 'BaseProcess', 'object']
+│   Process MRO: ['Process', 'BaseProcess', 'object']
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 30  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1266 cache_r=79493 out=44
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I've confirmed the key bug. The new `isinstance(process, multiprocessing.P
+│ rocess)` gate in `_ensure_processes_alive` will be **False** for production 
+│ `SpawnProcess` instances — they're siblings of `multiprocessing.Process`, no
+│ t subclasses. The old code unconditionally called `self.process.kill()`. Thi
+│ s means hung flusher subprocesses (cause="hang") are no longer killed before
+│  the replacement is spawned, leaking the zombie subprocess (Redis connection
+│ s, file descriptors, memory).
+│   
+│   Let me also check the dead method `_create_process_for_shard` to make sure
+│  it's unused:
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "_create_process_for_shard\\b"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 31  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01HZ1pmDMcL4nhqyNPshv3ZC
+│ chars: 102
+│
+│ preview:
+│   src/sentry/spans/consumers/process/flusher.py:127:    def _create_process_
+│ for_shard(self, shard: int):
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 32  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=1128 cache_r=80759 out=81
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "src/sentry/spans/consumers/process/flusher.p
+│ y", "line": 254, "category": "resource", "severity": "high", "summary": "isi
+│ nstance gate prevents killing hung SpawnProcess subprocesses, leaking them o
+│ n every restart", "d…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 33  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_017nre9nN6wKEkYfTYP4fQx1
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 34  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=1 cache_w=869 cache_r=81887 out=2
+│
+│ text:
+│   Submitted one high-severity finding:
+│   
+│   **`src/sentry/spans/consumers/process/flusher.py:254` — hung flusher subpr
+│ ocesses are no longer killed before being replaced.** The new `isinstance(pr
+│ ocess, multiprocessing.Process)` gate evaluates to `False` for the `SpawnPro
+│ cess` instances created via `mp_context.Process` (verified empirically: Spaw
+│ nProcess and `multiprocessing.Process` are sibling classes under `BaseProces
+│ s`, not in an `is-a` relationship). The previous code called `self.process.k
+│ ill()` unconditionally, so this is a regression: when `_ensure_processes_ali
+│ ve` detects a "hang", it now spawns a replacement without killing the origin
+│ al, leaking the hung daemon subprocess (Redis client, FDs, memory) on every 
+│ restart cycle.
+│   
+│   I also noticed but did not file:
+│   - `_create_process_for_shard` (singular) at line 127 is dead code — define
+│ d, never called. Cleanup, not a bug.
+│   - `if isinstance(self.process, multiprocessing.Process): self.process.term
+│ inate()` in `join()` has the same broken isinstance check, but it was alread
+│ y present before this PR — pre-existing latent issue, outside the diff's reg
+│ ression.
+│   - `get_memory_info()` and `record_stored_segments()` aggregation across mu
+│ ltiple buffers: I considered this but it's safe — `record_stored_segments` o
+│ nly iterates each buffer's own `assigned_shards` (no overlap), and `get_memo
+│ ry_info` would double-count cluster-level info but `used/available` ratio is
+│  preserved since both numerator and denominator scale equally.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 35  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 17
+│ duration: 220667 ms
+│ total_cost_usd: $1.1000
+│ totals: in=23 cache_w=40662 cache_r=983697 out=14157
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-05-04T05:25:03.831252+00:00  submitted=True  duplicate_submission=False  findings=1  num_turns=17  stop_reason=end_turn
