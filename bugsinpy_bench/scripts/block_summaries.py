@@ -37,6 +37,9 @@ CACHE_DIR = ROOT / "bugsinpy_bench" / "router_inputs" / "blocks"
 BUGSINPY_DIFFS = ROOT / "bugsinpy_bench" / "router_inputs"
 MARTIAN_DIFFS = ROOT / "martian_bench" / "routing" / "diffs"
 MAX_BLOCKS = 40
+# Some Martian PRs diff thousands of files (greptile#1: 6,125). Only the files
+# with the most changed lines are described; the rest are counted as dropped.
+MAX_FILES = 40
 MAX_CHUNK = 24_000
 
 KINDS = ["data_structure", "function", "method", "class", "config", "test", "call_site", "import", "other"]
@@ -162,9 +165,13 @@ def get_blocks(client, title: str, diff: str, *, cache_dir: Path) -> dict:
     path = cache_dir / f"{hashlib.sha256(diff.encode()).hexdigest()}.json"
     if path.exists():
         return {**json.loads(path.read_text()), "cached": True}
+    files = split_files(diff)
+    size = {s["path"]: s["added"] + s["removed"] for s in numstat(diff)}
+    keep = sorted(files, key=lambda p: size.get(p, 0), reverse=True)[:MAX_FILES]
+    files_dropped = len(files) - len(keep)
     blocks, tin, tout = [], 0, 0
-    for fpath, fdiff in split_files(diff).items():
-        b, u = extract_file(client, title, fpath, fdiff)
+    for fpath in keep:
+        b, u = extract_file(client, title, fpath, files[fpath])
         blocks += b
         tin += u["input_tokens"]
         tout += u["output_tokens"]
@@ -172,7 +179,8 @@ def get_blocks(client, title: str, diff: str, *, cache_dir: Path) -> dict:
     kept, dropped = blocks[:MAX_BLOCKS], max(0, len(blocks) - MAX_BLOCKS)
     usage = {"input_tokens": tin, "output_tokens": tout,
              "cost_usd": round((tin * PRICE_IN + tout * PRICE_OUT) / 1e6, 6)}
-    rec = {"title": title, "blocks": kept, "blocks_dropped": dropped, "usage": usage}
+    rec = {"title": title, "blocks": kept, "blocks_dropped": dropped, "files_dropped": files_dropped,
+           "usage": usage}
     path.write_text(json.dumps(rec, indent=1) + "\n")
     return {**rec, "cached": False}
 

@@ -59,3 +59,15 @@ def test_cap_keeps_40_largest(tmp_path):
     r = get_blocks(FakeClient(blocks_per_call=25), "t", TWO_FILE_DIFF, cache_dir=tmp_path)
     assert len(r["blocks"]) == 40 and r["blocks_dropped"] == 10
     assert min(b["lines_added"] for b in r["blocks"]) == 5
+
+
+def test_file_cap_extracts_only_40_largest_files(tmp_path):
+    diff = "".join(
+        f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n@@ -1 +1,{i + 1} @@\n-x\n"
+        + "".join(f"+y{j}\n" for j in range(i + 1))
+        for i in range(45)
+    )
+    client = FakeClient(blocks_per_call=1)
+    r = get_blocks(client, "t", diff, cache_dir=tmp_path)
+    assert client.calls == 40 and r["files_dropped"] == 5
+    assert {b["file"] for b in r["blocks"]} == {f"f{i}.py" for i in range(5, 45)}
