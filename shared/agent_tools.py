@@ -229,28 +229,53 @@ def build_review_context(
     rng = f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
     # NB: the ".." in BASE..HEAD must NOT be quoted; that's why we
     # quote each ref individually.
-    cfg = impact_select.load_config()
-    if cfg.mode == "off":
+
+    def one_shot() -> str:
         result = repo.exec(f"python -m shared.odis_cli {rng}", timeout=_ODIS_TIMEOUT_S)
         return result.stdout if result.ok else _odis_error(result)
 
+    cfg = impact_select.load_config()
+    if cfg.mode == "off":
+        return one_shot()
+
+    log = logging.getLogger("shared.impact_select")
     token = secrets.token_hex(8)
-    result = repo.exec(f"python -m shared.odis_cli collect {token} {rng}", timeout=_ODIS_TIMEOUT_S)
-    if not result.ok:
-        return _odis_error(result)
-    doc = json.loads(result.stdout)
+    rendered = False
     try:
-        decisions, _ = impact_select.decide(doc, cfg, client=jev_client)
-    except Exception:  # noqa: BLE001 — selection must never fail the review
-        logging.getLogger("shared.impact_select").exception("impact_select failed; retrying in cap mode")
+        result = repo.exec(f"python -m shared.odis_cli collect {token} {rng}", timeout=_ODIS_TIMEOUT_S)
+        if not result.ok:
+            return _odis_error(result)
+        # DaytonaRepo merges stderr into stdout, so git or Python warnings
+        # can precede the JSON; collect prints it as the last line.
         try:
-            decisions, _ = impact_select.decide(doc, dataclasses.replace(cfg, mode="cap"))
-        except Exception:  # noqa: BLE001
-            logging.getLogger("shared.impact_select").exception("cap mode failed; full context")
-            decisions = {"tiers": None, "note": "", "drop_changed": False}
-    repo.upload_bytes(json.dumps(decisions).encode("utf-8"), f".git/odis/{token}.decisions.json")
-    result = repo.exec(f"python -m shared.odis_cli render {token}", timeout=_ODIS_TIMEOUT_S)
-    return result.stdout if result.ok else _odis_error(result)
+            doc = json.loads(result.stdout.rstrip().splitlines()[-1])
+        except (ValueError, IndexError):
+            log.warning("impact_select: unreadable collect output; using the one-shot context")
+            return one_shot()
+        try:
+            decisions, _ = impact_select.decide(doc, cfg, client=jev_client)
+        except Exception:  # noqa: BLE001 — selection must never fail the review
+            log.exception("impact_select failed; retrying in cap mode")
+            try:
+                decisions, _ = impact_select.decide(doc, dataclasses.replace(cfg, mode="cap"))
+            except Exception:  # noqa: BLE001
+                log.exception("cap mode failed; full context")
+                decisions = {"tiers": None, "note": "", "drop_changed": False}
+        try:
+            repo.upload_bytes(json.dumps(decisions).encode("utf-8"), f".git/odis/{token}.decisions.json")
+        except Exception:  # noqa: BLE001 — a backend that refuses .git/ still gets a context
+            log.exception("impact_select: could not upload decisions; using the one-shot context")
+            return one_shot()
+        result = repo.exec(f"python -m shared.odis_cli render {token}", timeout=_ODIS_TIMEOUT_S)
+        rendered = True  # render deletes its files whether or not it succeeded
+        return result.stdout if result.ok else _odis_error(result)
+    finally:
+        if not rendered:
+            repo.exec(
+                f"rm -f .git/odis/{token}.collected.json .git/odis/{token}.decisions.json; "
+                "rmdir .git/odis 2>/dev/null; true",
+                timeout=10,
+            )
 
 
 # --------------------------------------------------------------------------- #

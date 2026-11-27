@@ -25,6 +25,7 @@ import dataclasses
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 from shared import impact
@@ -37,6 +38,19 @@ from shared.odis import Collected, ImpactCandidate, build_context, collect, rend
 # its own token so two calls in one review cannot mix.
 _TOKEN = re.compile(r"[a-z0-9]{8,32}")
 _WORKDIR = Path(".git") / "odis"
+# Files older than this belong to a call that never reached render
+# (crash, timeout); a live call finishes within the tool's 30 s timeouts.
+_STALE_S = 600
+
+
+def _purge_stale() -> None:
+    now = time.time()
+    for f in _WORKDIR.glob("*.json"):
+        try:
+            if now - f.stat().st_mtime > _STALE_S:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def _split_range(spec: str) -> tuple[str, str] | None:
@@ -54,7 +68,12 @@ def _collect(token: str, spec: str) -> int:
     except Exception as e:  # noqa: BLE001 — boundary; surface to stderr
         print(f"error: build_context failed ({type(e).__name__}): {e}", file=sys.stderr)
         return 1
-    _WORKDIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _WORKDIR.mkdir(parents=True, exist_ok=True)
+        _purge_stale()
+    except OSError as e:  # e.g. .git is a file (worktree / submodule)
+        print(f"error: cannot write {_WORKDIR}: {e}", file=sys.stderr)
+        return 1
     (_WORKDIR / f"{token}.collected.json").write_text(json.dumps(dataclasses.asdict(c)))
     doc = {
         "diff": c.diff,
