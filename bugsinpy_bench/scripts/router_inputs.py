@@ -86,6 +86,11 @@ def _stem(e: dict) -> str:
     return f"{e['project']}_{e['bug_id']}"
 
 
+def needs_summary(e: dict, out_dir: Path = OUT_DIR) -> bool:
+    """A bug whose summary file exists is skipped, so a rerun pays only for the missing ones."""
+    return not (out_dir / f"{_stem(e)}.summary.json").exists()
+
+
 def _sh(cmd: str, cwd: Path) -> str:
     return subprocess.run(
         cmd, shell=True, cwd=cwd, check=True, capture_output=True, text=True
@@ -133,7 +138,7 @@ def is_source(path: str) -> bool:
 def summarize(client, path: str, file_diff: str) -> tuple[dict, int, int]:
     resp = client.messages.create(
         model=SUMMARY_MODEL,
-        max_tokens=1500,
+        max_tokens=6000,  # 1500 cut one long file summary off mid-JSON
         system=SYSTEM,
         messages=[{"role": "user", "content": USER_TEMPLATE.format(path=path, diff=file_diff)}],
         output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
@@ -165,7 +170,7 @@ def main() -> int:
         diff = diff_path.read_text()
         src = {p: d for p, d in split_files(diff).items() if is_source(p)}
         print(f"{_label(e)}: {len(split_files(diff))} files, {len(src)} source", flush=True)
-        if args.diffs_only:
+        if args.diffs_only or not needs_summary(e):
             continue
 
         merged = {
@@ -197,7 +202,12 @@ def main() -> int:
             "cost_usd": round(cost, 6),
             "rates_usd_per_mtok": {"input": HAIKU_IN, "output": HAIKU_OUT},
         }
-        (OUT_DIR / "_summary_cost.json").write_text(json.dumps(meta, indent=2) + "\n")
+        # One record per run that made calls; the pilot-30 run is in _summary_cost.json.
+        if calls:
+            log = OUT_DIR / "_summary_cost_log.json"
+            runs = json.loads(log.read_text()) if log.exists() else []
+            runs.append({"prepared": args.prepared, **meta})
+            log.write_text(json.dumps(runs, indent=2) + "\n")
         print(json.dumps(meta), flush=True)
     return 0
 
