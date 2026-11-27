@@ -27,7 +27,7 @@ The benchmark numbers behind the Client SDK vs Agent SDK slides are in
 
 ## Quick start
 
-Review a real GitHub PR end-to-end with the Agent SDK at maximum effort:
+Review a real GitHub PR end-to-end with the Agent SDK:
 
 ```bash
 # 1. Install
@@ -48,7 +48,7 @@ The agent clones the PR, investigates the diff with `read_file_section`,
 `bash`, `ast_search`, and `grep` tools, files structured findings, and
 posts them as a single GitHub Pull Request Review with inline
 line-anchored comments + a summary body. Default model:
-`claude-opus-4-7` at `effort="max"` (the most capable mode).
+`claude-opus-5-5` at `effort="high"`.
 
 > **Important — collaborator requirement.** The bot account
 > (`Working-Ant` by default) must be a **collaborator on the target
@@ -78,11 +78,11 @@ unreachable, just without the past-learnings prompt block.
 ### Tuning effort + reviewer choice
 
 The Agent SDK reviewer's effort level is set by the `EFFORT` constant
-in `agent_sdk/reviewer.py`. Defaults to `"max"`. Other options, in
-order of capability and cost: `"low" | "medium" | "high" | "xhigh" |
-"max"`. Lower effort is faster and cheaper but finds fewer bugs. See
-`docs/PLAN.md` for the effort-frontier data we collected during
-Phase 2.3.
+in `agent_sdk/reviewer.py`. Defaults to `"high"`, the level Opus 5.5
+was benchmarked at. The options, in order of capability and cost:
+`"low" | "medium" | "high" | "xhigh" | "max"`. Lower effort is faster
+and cheaper but finds fewer bugs. See `docs/PLAN.md` for the
+effort-frontier data we collected on Opus 4.7 during Phase 2.3.
 
 The **Client SDK** reviewer (`client_sdk/reviewer.py`) uses the
 Anthropic SDK directly with a hand-rolled tool loop, 3-breakpoint
@@ -93,7 +93,7 @@ numbers.
 
 ### Model routing with Jev (Phase 7)
 
-By default every PR is reviewed by `claude-opus-4-7` at `effort="max"`.
+By default every PR is reviewed by `claude-opus-5-5` at `effort="high"`.
 With `TYPESAFE_API_KEY` set, `review_pr.py` makes one call to
 [Jev](https://typesafe.ai) (TypeSafe's decision model) after the clone
 and before the agent starts, and picks a tier for that PR:
@@ -116,8 +116,8 @@ To compare setups on the fixtures, run one sweep per arm and compare
 Jev call; `ROUTER_TIER_DEEP` sets what "deep" means):
 
 ```bash
-uv run python scripts/run_suite.py --sdk agent --tier deep                  # old setup
-ROUTER_TIER_DEEP=claude-opus-5-5:high uv run python scripts/run_suite.py --sdk agent --tier deep
+uv run python scripts/run_suite.py --sdk agent --tier deep                  # default: Opus 5.5 high
+ROUTER_TIER_DEEP=claude-opus-4-7:max uv run python scripts/run_suite.py --sdk agent --tier deep   # previous default
 uv run python scripts/run_suite.py --sdk agent --route                      # Jev routing
 ```
 

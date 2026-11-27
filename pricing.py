@@ -1,11 +1,16 @@
-"""Anthropic API pricing for Claude Opus 4.7 (USD per million tokens).
+"""Anthropic API pricing (USD per million tokens).
 
-These are the rates the reviewers' model, `claude-opus-4-7`, is billed at:
-$5 input / $25 output, cache writes at 1.25x input (5 min) and 2x input
-(1 h), cache reads at 0.1x input.
+The module-level constants are the `claude-opus-4-7` rates: $5 input /
+$25 output, cache writes at 1.25x input (5 min) and 2x input (1 h), cache
+reads at 0.1x input. `cost_usd(usage)` with no model uses them; that is
+what the Client SDK reviewer and the offload runners, which still run
+Opus 4.7, call. The Agent SDK reviewer defaults to `claude-opus-5-5` and
+can be routed to other models, so it calls `cost_usd(usage, model)`,
+which prices from the per-model `RATES` table below.
 
-They reproduce the harness's own `total_cost_usd` (ResultMessage) from the
-stored usage dict: agent_sdk/results/run_044.txt has 8 input, 13,835
+The Opus 4.7 constants reproduce the harness's own `total_cost_usd`
+(ResultMessage) from the stored usage dict of an Opus 4.7 run:
+agent_sdk/results/run_044.txt has 8 input, 13,835
 output, 179,482 cache-read and 77,307 5-minute cache-write tokens, which
 is $0.918825 at these rates and $0.918825 harness-reported.
 

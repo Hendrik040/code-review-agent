@@ -85,20 +85,26 @@ from shared.findings import (  # noqa: E402
 )
 from shared.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE  # noqa: E402
 
-MODEL = "claude-opus-4-7"
+# Opus 5.5 at effort "high" is the setup the November 2026 benchmark
+# measured: on BugsInPy's 100 bugs it found 42 for $16.33, where Opus 4.7
+# at "max" (the previous default) found 30 for $112.40. The numbers are in
+# bugsinpy_bench/EXPERIMENT_LOG.md on the bench/model-tiers-pilot-local
+# branch. Opus 5.5 needs Claude Code CLI 2.1.280 or newer, which
+# claude-agent-sdk 0.2.189 bundles (see pyproject.toml).
+# MODEL and EFFORT are also the router's "deep" tier (shared/routing.py).
+MODEL = "claude-opus-5-5"
 MAX_TURNS = 100  # parity with client_sdk/reviewer.py
 # Per-call output budget — informational on the Agent SDK side.
 # ClaudeAgentOptions does not expose a per-call max_tokens equivalent
 # (the harness sizes it internally), but we pin the same number the
 # Client SDK uses so any drift between SDKs is documented.
 MAX_TOKENS = 16000
-# Default to "max" — the most capable mode, matching the README's
-# quick-start framing ("review a real PR with maximum effort"). For
-# benchmarking + Client-vs-Agent comparisons (Phase 2.2 / 2.3 sweeps)
-# pin this to "high" or "xhigh" so the two SDKs stay at the same
-# reasoning depth. Other valid values: "low" | "medium" | "high" |
-# "xhigh" | "max".
-EFFORT = "max"
+# "high" is the effort the benchmark above ran Opus 5.5 at; "xhigh" and
+# "max" were not measured for it. For Client-vs-Agent comparisons
+# (Phase 2.2 / 2.3 sweeps) pass the effort explicitly so the two SDKs
+# stay at the same reasoning depth. Valid values: "low" | "medium" |
+# "high" | "xhigh" | "max".
+EFFORT = "high"
 
 RESULTS_DIR = Path(__file__).parent / "results"
 TRACES_DIR = Path(__file__).parent / "traces"
@@ -138,6 +144,43 @@ mcp__reviewer__submit_findings exactly once.
 """
 
 SYSTEM_PROMPT_AGENT_SDK = SYSTEM_PROMPT + "\n" + SDK_ADDENDUM
+
+# Opt-in prompt variant, REVIEW_PROMPT_VARIANT=file_considered. In the
+# November 2026 benchmark Opus 5.5 described real bugs in its own closing
+# summary and then left them out of submit_findings ("pre-existing",
+# "low impact", "intended"). With this note it matched 14 of 31 golden
+# comments on the 10 Martian PRs instead of 9, at the same precision
+# (one run each). It did not help Sonnet 5.5 and was not run on BugsInPy,
+# so it stays off unless asked for.
+FILE_CONSIDERED_ADDENDUM = """\
+<reporting_note>
+If you identify a concrete defect in code that this change adds, modifies,
+moves or newly calls, file it, even when:
+- it may have existed before this change (moved or copied code counts as
+  part of the change),
+- its practical impact looks small, or another bug currently masks it,
+- the behaviour change might be intentional.
+Give such findings the severity they merit (often low) and say in `detail`
+why you are unsure. Do not leave out an issue you have already described
+in your reasoning: anything your final summary would call a bug, a slip,
+or an issue you left out belongs in submit_findings.
+This does not change the other rules: still no style, naming, or
+missing-test findings.
+</reporting_note>
+"""
+PROMPT_VARIANTS = {"": "", "file_considered": "\n" + FILE_CONSIDERED_ADDENDUM}
+
+
+def system_prompt() -> str:
+    """The system prompt for this run: the shared prompt, plus the note
+    REVIEW_PROMPT_VARIANT asks for. Read per run, so a value in .env
+    (loaded by run()) counts. An unknown variant is an error, not a
+    silent fallback to the plain prompt."""
+    variant = os.environ.get("REVIEW_PROMPT_VARIANT", "").strip()
+    if variant not in PROMPT_VARIANTS:
+        known = ", ".join(sorted(v for v in PROMPT_VARIANTS if v))
+        raise ValueError(f"unknown REVIEW_PROMPT_VARIANT={variant!r} (known: {known})")
+    return SYSTEM_PROMPT_AGENT_SDK + PROMPT_VARIANTS[variant]
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +350,25 @@ def _next_run_id() -> int:
     return (max(used) + 1) if used else 1
 
 
+def _reserve_run_id() -> int:
+    """Claim the next run number by creating its trace file exclusively.
+
+    Several reviews can run at once in one checkout (parallel sweeps, or
+    two PRs reviewed on one host). Two processes that pick the same
+    number race on the exclusive create; the loser moves on to the next
+    number instead of overwriting the other's trace. `_next_run_id()`
+    only looks, for callers such as compare.py that pass their own
+    `run_id`.
+    """
+    run_id = _next_run_id()
+    while True:
+        try:
+            (TRACES_DIR / f"run_{run_id:03d}.txt").open("x").close()
+            return run_id
+        except FileExistsError:
+            run_id += 1
+
+
 def _wrap_text(text: str) -> dict[str, Any]:
     """Standard MCP success envelope around a tool wrapper's return text."""
     return {"content": [{"type": "text", "text": text}]}
@@ -322,8 +384,11 @@ async def _run_async(
     model: str,
     effort: str,
 ) -> dict[str, Any]:
+    # Resolve the prompt first: a bad REVIEW_PROMPT_VARIANT should fail
+    # before a run number is claimed or the model is called.
+    prompt = system_prompt()
     if run_id is None:
-        run_id = _next_run_id()
+        run_id = _reserve_run_id()
     trace_path = TRACES_DIR / f"run_{run_id:03d}.txt"
     result_path = RESULTS_DIR / f"run_{run_id:03d}.txt"
 
@@ -502,7 +567,7 @@ async def _run_async(
 
     options = ClaudeAgentOptions(
         model=model,
-        system_prompt=SYSTEM_PROMPT_AGENT_SDK,
+        system_prompt=prompt,
         mcp_servers={"reviewer": server},
         # Phase 4 — every tool the agent can call is now an MCP proxy
         # routed through `repo.exec` / `repo.upload_bytes`. Harness
@@ -568,8 +633,8 @@ async def _run_async(
     log(f"use_oauth: {use_oauth}")
     log(f"model: {model}  effort: {effort}")
     log("")
-    log(f"--- system prompt ({len(SYSTEM_PROMPT_AGENT_SDK)} chars) ---")
-    log(SYSTEM_PROMPT_AGENT_SDK)
+    log(f"--- system prompt ({len(prompt)} chars) ---")
+    log(prompt)
     log(f"--- user prompt ({len(user_prompt)} chars) ---")
     log(user_prompt)
     log("")

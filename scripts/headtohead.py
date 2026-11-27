@@ -88,6 +88,18 @@ def stored_usage(path: Path) -> dict | None:
     return None
 
 
+def stored_model(path: Path) -> str | None:
+    """Return the model a run_NNN.txt header names, or None.
+
+    Agent SDK runs written since model routing (Phase 7) carry
+    `# model: <id>  effort: <level>`. Older runs have no such line; they
+    all ran `claude-opus-4-7`.
+    """
+    head = path.read_text().partition("# ---")[0]
+    m = re.search(r"^# model: (\S+)", head, re.M)
+    return m.group(1) if m else None
+
+
 def run_cost(sdk: str, path: Path) -> float | None:
     """Cost of one stored run, on the same basis for both SDKs.
 
