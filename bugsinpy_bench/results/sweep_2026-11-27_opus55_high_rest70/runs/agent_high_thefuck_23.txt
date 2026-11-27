@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: thefuck#23
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# fixed_commit: 9a02e821cdc58a4aba2c0acc521fb25cacab87a5
+# base_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^
+# head_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# started: 2026-11-27T01:34:56+00:00
+# finished: 2026-11-27T01:35:30+00:00
+# duration_s: 34.2
+# cost_usd: 0.1795
+# num_turns: 4
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 712
+# repo: LocalRepo
+# refs: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^..4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# turns: 4
+# cost (USD, harness-reported): 0.179481
+# cost (USD, public Opus 4 rate): 0.787878
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 16130, 'cache_read_input_tokens': 153097, 'output_tokens': 3409, 'output_tokens_details': {'thinking_tokens': 1024}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16130}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 835, 'cache_read_input_tokens': 44852, 'cache_creation_input_tokens': 1476, 'cache_creation': {'ephemeral_5m_input_tokens': 1476, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/utils.py",
+    "line": 183,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "`with shelve.open(...)` fails on Python 2.7 and 3.3, which the project supports, so Bash/Zsh alias lookup crashes.",
+    "detail": "`shelve.Shelf` only supports the context-manager protocol from Python 3.4. setup.py, tox.ini and .travis.yml all declare support for Python 2.7 and 3.3. On those versions, `with shelve.open(cache_path) as db:` raises AttributeError (`__exit__`/`__enter__`). `cache.disabled` is False by default, so every call to `Bash.get_aliases`/`Zsh.get_aliases` (via `get_aliases`, used by `get_all_executables` and alias expansion) crashes thefuck for bash/zsh users on those Python versions. The tests miss this because they mock `shelve.open` with a contextmanager.",
+    "line_end": null,
+    "suggested_fix": "-        with shelve.open(cache_path) as db:\n+        from contextlib import closing\n+        with closing(shelve.open(cache_path)) as db:"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 178,
+    "category": "security",
+    "severity": "high",
+    "summary": "The pickle-based cache sits at a fixed, shared path in the system temp dir, so on multi-user hosts it can be tampered with (unpickling leads to code execution) or block other users.",
+    "detail": "`cache_path = os.path.join(tempfile.gettempdir(), '.thefuck-cache')` resolves to `/tmp/.thefuck-cache` on Linux, which every user shares. `shelve` stores values with pickle and unpickles them on `db.get(key)`. Another local user can create that file first with a malicious pickled entry under the known key (`thefuck.shells.<function Bash.get_aliases `), and it runs as the victim on the next lookup. Even without malice, whichever user creates the file first owns it. Other users then get a permission error from `shelve.open`, which is not caught, so thefuck crashes for them.",
+    "line_end": null,
+    "suggested_fix": "Store the cache in a per-user location (e.g. under ~/.thefuck or the user's cache dir), and catch errors from opening or reading the shelve so the code falls back to calling fn directly."
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The cache key comes from `repr(fn).split('at')[0]`, so it cuts names that contain 'at' and lets keys collide across classes on Python 2/3.3.",
+    "detail": "`split('at')` splits at the first occurrence of 'at' anywhere in the repr, not just the ' at 0x...' suffix. Any function or class name containing 'at' (e.g. `update`, `Pattern.get`) gets cut early, so different functions in the same module can share a key. Also, on Python 2 and 3.3 function reprs have no `__qualname__` (`<function get_aliases at 0x..>`). So `Bash.get_aliases` and `Zsh.get_aliases` both map to `thefuck.shells.<function get_aliases `. When their etags happen to match (e.g. both rc files are missing, so the etag is just '0' for each), one shell's cached aliases can be returned for the other.",
+    "line_end": null,
+    "suggested_fix": "-        key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])\n+        key = '{}.{}'.format(fn.__module__, getattr(fn, '__qualname__', fn.__name__))  # and include depends_on to separate Bash/Zsh on py2"
+  }
+]

@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: scrapy#40
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: scrapy/scrapy
+# introducing_commit: c76190d491fca9f35b6758bdc06c34d77f5d9be9
+# fixed_commit: f1d971a5c0cdfe0f4fe5619146cd6818324fc98e
+# base_ref: c76190d491fca9f35b6758bdc06c34d77f5d9be9^
+# head_ref: c76190d491fca9f35b6758bdc06c34d77f5d9be9
+# started: 2026-11-27T01:30:59+00:00
+# finished: 2026-11-27T01:31:25+00:00
+# duration_s: 25.8
+# cost_usd: 0.1783
+# num_turns: 3
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 705
+# repo: LocalRepo
+# refs: c76190d491fca9f35b6758bdc06c34d77f5d9be9^..c76190d491fca9f35b6758bdc06c34d77f5d9be9
+# turns: 3
+# cost (USD, harness-reported): 0.178262
+# cost (USD, public Opus 4 rate): 0.753973
+# usage: {'input_tokens': 6, 'cache_creation_input_tokens': 20624, 'cache_read_input_tokens': 113989, 'output_tokens': 2616, 'output_tokens_details': {'thinking_tokens': 504}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20624}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 602, 'cache_read_input_tokens': 48916, 'cache_creation_input_tokens': 1906, 'cache_creation': {'ephemeral_5m_input_tokens': 1906, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "scrapy/exporters.py",
+    "line": 267,
+    "category": "logic",
+    "severity": "high",
+    "summary": "PythonItemExporter._serialize_value now passes every non-iterable value through to_bytes/to_unicode, which raises TypeError for ints, floats, None, bools, datetimes and so on.",
+    "detail": "Before this change, the last line only encoded unicode values (`value.encode(...) if isinstance(value, unicode) else value`). Anything else, such as an int, float, None, bool, Decimal or datetime, came back unchanged. Now every scalar goes to `to_bytes` (when binary=True) or `to_unicode` (when binary=False). Both helpers raise `TypeError` for anything that isn't bytes or text (see scrapy/utils/python.py:102-104 and :115-117). So exporting an item like `TestItem(name=u'x', age=22)`, or a field holding None, with PythonItemExporter now crashes. The point of this exporter is to produce built-in Python types for json/msgpack, so turning numbers into strings or crashing on them breaks its main job.",
+    "line_end": 270,
+    "suggested_fix": "-        if self.binary:\n-            return to_bytes(value, encoding=self.encoding)\n-        else:\n-            return to_unicode(value, encoding=self.encoding)\n+        if isinstance(value, (six.text_type, bytes)):\n+            if self.binary:\n+                return to_bytes(value, encoding=self.encoding)\n+            return to_unicode(value, encoding=self.encoding)\n+        return value"
+  },
+  {
+    "file": "scrapy/exporters.py",
+    "line": 264,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "On Python 3, bytes values pass the new string check and get iterated into a list of ints.",
+    "detail": "The new check is `hasattr(value, '__iter__') and not isinstance(value, six.string_types)`. On Python 3, `six.string_types` is `(str,)`, so it doesn't cover `bytes`, and bytes objects do have `__iter__`. A bytes field value such as b'foo' is therefore turned into `[102, 111, 111]` instead of reaching the to_bytes/to_unicode branch. Because of the first bug, each int element then hits `to_bytes(int)` and raises `TypeError`. So any bytes field value either crashes or comes out wrong on Python 3.",
+    "line_end": 266,
+    "suggested_fix": "-        if hasattr(value, '__iter__') \\\n-                and not isinstance(value, six.string_types):\n+        if hasattr(value, '__iter__') \\\n+                and not isinstance(value, (six.text_type, bytes)):"
+  },
+  {
+    "file": "scrapy/exporters.py",
+    "line": 142,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "On Python 3, XmlItemExporter iterates bytes values element by element, emitting <value> children and crashing on int elements.",
+    "detail": "`_export_xml_field` excludes only `six.string_types` from the iterable branch, and on Python 3 that doesn't include bytes. So a bytes value, for example one produced by a serializer or CsvItemExporter-style encoding, is iterated as ints. Each int goes to `_export_xml_field('value', int)` and then to `_xg_characters(int)`, which calls `int.decode(...)` and raises `AttributeError`. On Python 2 the same bytes value was written as text, so this is a regression from switching to six.string_types.",
+    "line_end": 145,
+    "suggested_fix": "-        elif (hasattr(serialized_value, '__iter__')\n-              and not isinstance(serialized_value, six.string_types)):\n+        elif (hasattr(serialized_value, '__iter__')\n+              and not isinstance(serialized_value, (six.text_type, bytes))):"
+  }
+]

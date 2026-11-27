@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: pandas#149
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# fixed_commit: fa1364d1299a53093bc704f9c34c595b602a568b
+# base_ref: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4^
+# head_ref: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# started: 2026-11-27T01:26:45+00:00
+# finished: 2026-11-27T01:27:21+00:00
+# duration_s: 36.4
+# cost_usd: 0.1861
+# num_turns: 3
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 686
+# repo: LocalRepo
+# refs: 6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4^..6e0927ec352ac5d05332eb9b86b7a84d4a6fbde4
+# turns: 3
+# cost (USD, harness-reported): 0.186059
+# cost (USD, public Opus 4 rate): 0.782379
+# usage: {'input_tokens': 6, 'cache_creation_input_tokens': 21724, 'cache_read_input_tokens': 112876, 'output_tokens': 2742, 'output_tokens_details': {'thinking_tokens': 1147}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 21724}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 550, 'cache_read_input_tokens': 49436, 'cache_creation_input_tokens': 2032, 'cache_creation': {'ephemeral_5m_input_tokens': 2032, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/io/parquet.py",
+    "line": 110,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "PyArrowImpl.write opens an S3File in 'wb' mode but never closes it, so the S3 upload depends on garbage collection and upload errors are lost.",
+    "detail": "For s3:// paths, `get_filepath_or_buffer(path, mode='wb')` now returns an open s3fs S3File. That object is passed to `pyarrow.parquet.write_table`. pyarrow's ParquetWriter only closes sinks it opened itself, so a user-supplied file object stays open. An s3fs file buffers writes and only finishes the multipart upload or PUT when `close()`/`flush(force=True)` runs. Nothing in `write()` closes the file, so the object only appears on S3 when the S3File is garbage-collected and its `__del__` runs. That timing is not guaranteed, for example on PyPy, with reference cycles, or when a traceback keeps the frame alive. Any upload failure in `__del__` is swallowed, so `to_parquet` can return successfully while no file, or a stale one, exists on S3. A `read_parquet` right afterwards can also miss the data. The fastparquet path does not have this problem because fastparquet wraps `open_with(...)` in a `with` block.",
+    "line_end": 122,
+    "suggested_fix": "--- a/pandas/io/parquet.py\n+++ b/pandas/io/parquet.py\n@@\n-        path, _, _ = get_filepath_or_buffer(path, mode='wb')\n+        should_close = is_s3_url(path)\n+        path, _, _ = get_filepath_or_buffer(path, mode='wb')\n@@\n             self.api.parquet.write_table(\n                 table, path, compression=compression,\n                 coerce_timestamps=coerce_timestamps, **kwargs)\n+        if should_close:\n+            path.close()\n"
+  }
+]

@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: thefuck#23
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# fixed_commit: 9a02e821cdc58a4aba2c0acc521fb25cacab87a5
+# base_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^
+# head_ref: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# started: 2026-11-27T01:26:33+00:00
+# finished: 2026-11-27T01:27:05+00:00
+# duration_s: 32.3
+# cost_usd: 0.0060
+# num_turns: 3
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 685
+# repo: LocalRepo
+# refs: 4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9^..4129ff2717cc6e6fa51d70cc4e6c31d56ef8e2c9
+# turns: 3
+# cost (USD, harness-reported): 0.005951
+# cost (USD, public Opus 4 rate): 0.892644
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 15584, 'cache_read_input_tokens': 109866, 'output_tokens': 5807, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 15584}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 422, 'cache_read_input_tokens': 42823, 'cache_creation_input_tokens': 5258, 'cache_creation': {'ephemeral_5m_input_tokens': 5258, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/utils.py",
+    "line": 183,
+    "category": "security",
+    "severity": "high",
+    "summary": "cache() stores values in a predictable, world-writable /tmp path and unpickles them with shelve, so another local user can plant a malicious pickle that executes code in the victim's thefuck process.",
+    "detail": "cache_path = os.path.join(tempfile.gettempdir(), '.thefuck-cache') is a fixed name in the shared temp dir (typically /tmp, sticky but world-writable). shelve.open() deserializes values with pickle. If an attacker creates /tmp/.thefuck-cache first (owned by them, readable by the victim), then writes a record under the victim's key (e.g. 'thefuck.shells.<function Bash.get_aliases ') with an etag matching the victim's current etag, the victim's next call to Bash.get_aliases()/Zsh.get_aliases() takes the `db.get(key).get('etag') == etag` branch at line 182 and runs `db[key]['value']` at line 185, which unpickles attacker-controlled data. The etag is just mtimes of ~/.bashrc etc. or '0' when the files are missing, so it is guessable in many setups. Even without code execution, the attacker can inject arbitrary alias mappings into thefuck's command rewriting. The cache is also shared across users, so one user's aliases can be served to another user with a matching etag.",
+    "line_end": 185,
+    "suggested_fix": "Store the cache under a per-user location (e.g. ~/.cache/thefuck or a directory created with mode 0700 and owner-checked), and avoid pickle-based shelve for data that may be tampered with; or at minimum verify ownership/permissions of the cache file before opening it. For example:\n-        cache_path = os.path.join(tempfile.gettempdir(), '.thefuck-cache')\n+        cache_dir = os.path.join(os.path.expanduser('~'), '.cache', 'thefuck')\n+        os.makedirs(cache_dir, mode=0o700, exist_ok=True)\n+        cache_path = os.path.join(cache_dir, 'cache')"
+  },
+  {
+    "file": "thefuck/utils.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The cache key derived from repr(fn).split('at')[0] omits the class name on Python 2, so Bash.get_aliases and Zsh.get_aliases (both in thefuck.shells) collide on the same key.",
+    "detail": "On Python 2, repr of a plain function is '<function get_aliases at 0x...>' (no qualname), so Bash.get_aliases and Zsh.get_aliases both produce the key 'thefuck.shells.<function get_aliases '. They share one slot in the shelve db. Their etags differ in most setups (.bashrc/.bash_profile vs .zshrc), so the entries constantly overwrite each other and the cache is ineffective. When both etags coincidentally match (for example, both config files missing, giving '0' versus '0.0' which still differ, but other combinations could match), one shell's aliases are returned for the other shell. The test expectations use the Python 3 qualname format, so this only shows up outside Python 3. Using fn.__qualname__ or an explicit key argument avoids the problem.",
+    "line_end": null,
+    "suggested_fix": "-        key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])\n+        key = '{}.{}'.format(fn.__module__, getattr(fn, '__qualname__', fn.__name__))"
+  }
+]

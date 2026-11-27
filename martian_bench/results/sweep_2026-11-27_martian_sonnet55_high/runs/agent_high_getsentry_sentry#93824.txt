@@ -1,0 +1,59 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_sonnet55_high
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-11-27T01:08:59+00:00
+# finished: 2026-11-27T01:11:11+00:00
+# duration_s: 131.9
+# cost_usd: 0.1054
+# num_turns: 5
+# num_findings: 2
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 577
+# repo: LocalRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 5
+# cost (USD, harness-reported): 0.105389
+# cost (USD, public Opus 4 rate): 0.957927
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 21624, 'cache_read_input_tokens': 223348, 'output_tokens': 2897, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 21624}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 308, 'cache_read_input_tokens': 53279, 'cache_creation_input_tokens': 842, 'cache_creation': {'ephemeral_5m_input_tokens': 842, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The hung-process kill is guarded by `isinstance(process, multiprocessing.Process)`, which is always False for spawn-context processes, so hung flusher processes are never killed on restart.",
+    "detail": "Processes are created with `multiprocessing.get_context(\"spawn\").Process`, which returns a `SpawnProcess`. `SpawnProcess` subclasses `BaseProcess`, not `multiprocessing.context.Process`, which is what `multiprocessing.Process` refers to. I confirmed `isinstance(spawn_ctx.Process(), multiprocessing.Process)` is False. The previous code called `self.process.kill()` unconditionally. In `_ensure_processes_alive`, a flusher that is hung (cause == \"hang\") is therefore no longer killed before `_create_process_for_shards` starts a replacement. The old process stays alive, and the old and new flushers then work on the same shards. This can cause duplicate or conflicting flushes and leaked processes, and the repeated restarts hit MAX_PROCESS_RESTARTS. The same check in `join` (line 346) means `terminate()` is never called for real processes.",
+    "line_end": null,
+    "suggested_fix": "-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n+                if not isinstance(process, threading.Thread):\n+                    process.kill()"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 341,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`join` breaks out of the loop when the deadline expires, so the remaining flusher processes are never terminated.",
+    "detail": "The old `join` always terminated the process after its wait loop. The new loop does `break` once `remaining_time <= 0`, which skips the `terminate()` call for every process not yet visited. With several flusher processes and a timeout, the processes after the first slow one are left running. They are only cleaned up if they are daemons and the parent exits.",
+    "line_end": null,
+    "suggested_fix": "Replace the `break` with a `continue`-style path that still calls `terminate()` for the remaining processes. For example, skip the wait loop when the deadline has passed but still terminate."
+  }
+]

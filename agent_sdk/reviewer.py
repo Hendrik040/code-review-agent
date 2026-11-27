@@ -294,13 +294,25 @@ class _TraceWriter:
 
 
 def _next_run_id() -> int:
+    """Reserve the next run number by creating its trace file exclusively.
+
+    Several sweeps can run at once in one checkout: two processes that
+    pick the same number race on the exclusive create, and the loser
+    moves on to the next number instead of overwriting the other's trace.
+    """
     TRACES_DIR.mkdir(exist_ok=True)
     used = [
         int(m.group(1))
         for p in TRACES_DIR.glob("run_*.txt")
         if (m := re.match(r"run_(\d+)\.txt$", p.name))
     ]
-    return (max(used) + 1) if used else 1
+    run_id = (max(used) + 1) if used else 1
+    while True:
+        try:
+            (TRACES_DIR / f"run_{run_id:03d}.txt").open("x").close()
+            return run_id
+        except FileExistsError:
+            run_id += 1
 
 
 def _wrap_text(text: str) -> dict[str, Any]:

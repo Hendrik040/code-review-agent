@@ -35,7 +35,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 3b | 2026-11-26 23:25-23:47 | A second run of the same plan (cloud) pushed `bench/model-tiers-pilot` | 21/30 and 18/30: run-to-run noise of ±2-4 bugs |
 | 4 | 2026-11-27 00:10 | Jev routing of the 30 bugs, two passes; triage scored from stored results | 6-8 to Sonnet, rest to Opus; 13-25% cheaper than all-Opus 4.7 |
 | 5 | 2026-11-27 00:13-00:40 | Opus 5.5 high on the 30 bugs (needed a newer CLI) | 22/30 for $4.77 |
-| 6 | 2026-11-27 | Full benchmark: remaining 70 BugsInPy bugs and Martian's 10 PRs | In progress |
+| 6 | 2026-11-27 00:45-01:40 | Full benchmark: all three models on the other 70 BugsInPy bugs and Martian's 10 PRs, six sweeps in parallel | Triage matches all-Opus 5.5 (42/100) for 13% less |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -118,12 +118,74 @@ thefuck#7, and misses keras#3 and sanic#1. Only pandas#6 (Opus 5.5) and sanic#1
 
 ![Which run found which of the 30 pilot bugs](experiment_figures/pilot30_overlap.png)
 
-## Step 6. Full benchmark (in progress)
+## Step 6. Full benchmark: every model on every bug
 
-The 70 BugsInPy bugs outside the pilot (`dataset/prepared_rest70.json`) and Martian's
-10 Sentry PRs are being routed by Jev. Then Opus 5.5 high reviews all of them (deep
-tier and no-triage baseline in one), and Sonnet 5.5 and Haiku 5.5 review only the
-bugs routed to them. Results will be added here.
+**What ran.** Jev routed the 70 BugsInPy bugs outside the pilot
+(`dataset/prepared_rest70.json`; routes in `routing/routes_rest70.json`) and Martian's
+10 Sentry PRs (`martian_bench/routing/routes_martian.json`). Then Haiku 5.5 medium,
+Sonnet 5.5 high and Opus 5.5 high each reviewed all 70 bugs and all 10 PRs, so
+every model has a result for every bug: together with the pilot, each single-model
+arm covers the full 100 BugsInPy bugs. Triage is scored from those results, as in
+step 4. Scores: `bugsinpy_bench/scripts/score_full.py`, output
+`routing/full_scores.json`.
+
+**Running sweeps in parallel.** The reviewer used to number each run as the highest
+existing trace number plus one, so two sweeps at once could take the same number and
+overwrite each other's trace. `_next_run_id` in `agent_sdk/reviewer.py` now reserves
+its number by creating the trace file exclusively and moving on if it already exists
+(64 parallel reservations gave 64 unique numbers). The six sweeps then ran at once in
+41 minutes. A sequential queue had been started first and was stopped after two
+Opus 5.5 bugs; those runs (about $0.30) were deleted and redone.
+
+**Routing.** BugsInPy, all 100 bugs: 2 light, 26 standard, 72 deep. Martian: all 10
+deep (8 by Jev's answer, 5 of them high-stakes; for 2 PRs Jev returned
+`TypeSafeBadRequestError` and the router fell back to deep), so triage on Martian is
+the same as all-Opus 5.5.
+
+**One Martian PR needed a rerun.** On `sentry-greptile#1` the Sonnet and Haiku runs
+failed with the Agent SDK's 1 MB message-buffer limit on the bundled CLI. Opus 5.5,
+on Claude Code 2.1.332, was not affected. That PR was rerun for Sonnet and Haiku on
+2.1.332 in `_tail` sweeps, whose verdict and cost replace the failed row.
+
+### BugsInPy, all 100 bugs
+
+| Setup | Found (of 100) | Cost | Per bug |
+|---|---:|---:|---:|
+| All Haiku 5.5 medium | 35 | $0.52 | $0.005 |
+| All Sonnet 5.5 high | 35 | $5.60 | $0.056 |
+| All Opus 5.5 high | 42 | $16.33 | $0.163 |
+| **Jev triage** (light Haiku, standard Sonnet, deep Opus 5.5) | **42** | **$14.15** | **$0.142** |
+| All Opus 4.7 low / high / max (May) | 17 / 28 / 30 | $24.29 / $54.35 / $112.40 | $0.24 / $0.54 / $1.12 |
+
+On the 26 bugs routed to Sonnet, Sonnet and Opus 5.5 each found 10, for $1.17 against
+$3.21. Neither model found the 2 bugs routed to Haiku. Opus 5.5 found 11 bugs that no
+Opus 4.7 run found and missed 3 that one did (keras#3, pandas#121, sanic#1).
+
+![Bugs found against cost per bug, all 100 BugsInPy bugs](experiment_figures/bugsinpy100_cost_vs_found.png)
+
+**Different models find partly different bugs.** Together, the three 2026-11 models
+found 49 distinct bugs, against 42 for Opus 5.5 alone. Haiku found 6 bugs neither
+Sonnet nor Opus 5.5 found; Opus 5.5 found 4 bugs neither cheaper model found.
+
+![Which of Haiku, Sonnet and Opus 5.5 found each bug](experiment_figures/bugsinpy100_overlap.png)
+
+### Martian, 10 Sentry PRs
+
+Judged with Martian's own judge prompt and the same judge model as May
+(`judge_martian.py`); micro scores over 31 golden comments.
+
+| Setup | Recall | Precision | F1 | Cost |
+|---|---:|---:|---:|---:|
+| All Haiku 5.5 medium | 0.226 | 0.545 | 0.319 | $0.10 |
+| All Sonnet 5.5 high | 0.419 | 0.650 | 0.510 | $1.06 |
+| All Opus 5.5 high (= Jev triage) | 0.290 | 0.471 | 0.359 | $2.77 |
+| Opus 4.7 max (May) | 0.452 | 0.684 | 0.544 | $23.33 |
+
+On Martian, Opus 5.5 high scores below Sonnet 5.5 and below May's Opus 4.7 max. With
+10 PRs and a single run per arm this is a small sample; the pilot showed run-to-run
+differences of the same size.
+
+![F1 against cost per PR on Martian](experiment_figures/martian10_cost_vs_f1.png)
 
 ## Spend
 
@@ -131,7 +193,9 @@ bugs routed to them. Results will be added here.
 |---|---:|
 | 2-3 Smoke tests, pilot sweeps, judging, router summaries | $2.51 |
 | 5 Opus 5.5 smoke tests, sweep, judging | $5.44 |
-| **Total so far** | **$7.95** |
+| 6 Six full sweeps ($19.75), Martian tail reruns ($0.19), judging ($1.14) | $21.08 |
+| 6 Stopped sequential start (two Opus 5.5 bugs, cost not recorded) | about $0.30 |
+| **Total** | **about $29.33** |
 
 Jev's own cost is not measured.
 

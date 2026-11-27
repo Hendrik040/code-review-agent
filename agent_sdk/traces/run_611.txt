@@ -1,0 +1,572 @@
+=== Agent SDK reviewer run 611 ===
+repo: LocalRepo
+refs: 9f00f10cb94671be6d251d856ca09322a8ce95a2^..9f00f10cb94671be6d251d856ca09322a8ce95a2
+started: 2026-11-27T01:15:33.757027+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (434 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: 9f00f10cb94671be6d251d856ca09322a8ce95a2^..9f00f10cb94671be6d251d856ca09322a8ce95a2
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-opus-5-5
+│ cwd  : /Users/hendrikkrack/Projects/triage-smoke-test
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3944 cache_r=29744 out=32
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "9f00f10cb94671be6d251d856ca09322a8ce95a2^", "head_ref"
+│ : "9f00f10cb94671be6d251d856ca09322a8ce95a2"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_01XiXB85PMie9apDX2mrZYeW
+│ chars: 2,398
+│
+│ preview:
+│   <persisted-output>
+│   Output too large (55KB). Full output saved to: /private/tmp/claude-501/-Us
+│ ers-hendrikkrack-Desktop-build-vs-buy-coderabbit/b977857b-e465-4b80-a2f8-471
+│ 76593fa63/scratchpad/empty-claude-config/projects/-Users-hendrikkrack-Projec
+│ ts-triage-smoke-test/6249f9e2-3d97-470c-8a8b-2d3d7e5988c7/tool-results/toolu
+│ _01XiXB85PMie9apDX2mrZYeW.json
+│   
+│   Preview (first 2KB):
+│   [
+│     {
+│       "type": "text",
+│       "text": "# Code Review Context\n\n## 1. Git Diff (What Changed)\n\n<di
+│ ff>\ndiff --git a/pandas/core/arrays/datetimes.py b/pandas/core/arrays/datet
+│ imes.py\nindex a0a9b57..7daaa8d 100644\n--- a/pand
+│   … (+1,798 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=2199 cache_r=33688 out=9
+│
+│ thinking: (omitted)
+│
+│ text:
+│   The context was too large to show inline, so I'm reading the raw diff dire
+│ ctly to check the changed code.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 9f00f10cb94671be6d251d856ca09322a8ce95a2^..9f0
+│ 0f10cb94671be6d251d856ca09322a8ce95a2 -- pandas/core pandas/tseries | head -
+│ 400"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_015fQvW8Jszam4YVrKLPHbXX
+│ chars: 8,036
+│
+│ preview:
+│   diff --git a/pandas/core/arrays/datetimes.py b/pandas/core/arrays/datetime
+│ s.py
+│   index a0a9b57..7daaa8d 100644
+│   --- a/pandas/core/arrays/datetimes.py
+│   +++ b/pandas/core/arrays/datetimes.py
+│   @@ -31,7 +31,7 @@ import pandas.core.common as com
+│    from pandas.core.algorithms import checked_add_with_arr
+│    from pandas.core import ops
+│    
+│   -from pandas.tseries.frequencies import to_offset
+│   +from pandas.tseries.frequencies import to_offset, get_period_alias
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3612 cache_r=35887 out=3
+│
+│ thinking: (omitted)
+│
+│ text:
+│   The first part looks like a straight move of `to_period`/`to_timestamp` in
+│ to the array mixins. Next I'm reading the rest of the diff to compare these 
+│ against the original index implementations.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 9f00f10cb94671be6d251d856ca09322a8ce95a2^..9f0
+│ 0f10cb94671be6d251d856ca09322a8ce95a2 -- pandas/core/indexes | sed -n 1,400p
+│ "}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01GvVA8LjdK2mMBfMn2mnoFS
+│ chars: 8,036
+│
+│ preview:
+│   diff --git a/pandas/core/indexes/datetimes.py b/pandas/core/indexes/dateti
+│ mes.py
+│   index a6cdaa0..e40cead 100644
+│   --- a/pandas/core/indexes/datetimes.py
+│   +++ b/pandas/core/indexes/datetimes.py
+│   @@ -36,7 +36,7 @@ from pandas.core.arrays import datetimelike as dtl
+│    from pandas.core.indexes.base import Index, _index_shared_docs
+│    from pandas.core.indexes.numeric import Int64Index, Float64Index
+│    import pandas.compat as compat
+│   -from pandas.tseries.frequencies import to_offset, get_period_alias, Resol
+│ ution
+│   +from pandas.tseries.frequencies import to_offset, Resolution
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=4221 cache_r=39499 out=3
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I'm reading the rest of the period index diff, since it was cut off.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 9f00f10cb94671be6d251d856ca09322a8ce95a2^..9f0
+│ 0f10cb94671be6d251d856ca09322a8ce95a2 -- pandas/core/indexes/period.py | sed
+│  -n 75,250p; git diff --stat 9f00f10cb94671be6d251d856ca09322a8ce95a2^..9f00
+│ f10cb94671be6d251d85…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_013Se7rRqRnLPLSKbhi5Lqby
+│ chars: 2,069
+│
+│ preview:
+│        def _mpl_repr(self):
+│            # how to represent ourselves to matplotlib
+│            return self.astype(object).values
+│    
+│   +    @Appender(PeriodArrayMixin.to_timestamp.__doc__)
+│        def to_timestamp(self, freq=None, how='start'):
+│   -        """
+│   -        Cast to DatetimeIndex
+│   -
+│   -        Parameters
+│   … (+1,469 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1425 cache_r=43720 out=3
+│
+│ thinking: (omitted)
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "cd pandas/core; sed -n 250,420p indexes/datetimes.py; e
+│ cho ----; sed -n 100,140p arrays/period.py; grep -n \"^import\\|^from\\|freq
+│ uencies\" arrays/period.py | head -30"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_014MuZfTfCVoEYDXcJgkm8rG
+│ chars: 8,036
+│
+│ preview:
+│       _comparables = ['name', 'freqstr', 'tz']
+│       _attributes = ['name', 'freq', 'tz']
+│   
+│       # define my properties & methods for delegation
+│       _bool_ops = ['is_month_start', 'is_month_end',
+│                    'is_quarter_start', 'is_quarter_end', 'is_year_start',
+│                    'is_year_end', 'is_leap_year']
+│       _object_ops = ['weekday_name', 'freq', 'tz']
+│       _field_ops = ['year', 'month', 'day', 'hour', 'minute', 'second',
+│                     'weekofyear', 'week', 'weekday', 'dayofweek',
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3872 cache_r=45145 out=8
+│
+│ thinking: (omitted)
+│
+│ text:
+│   `DatetimeIndex` picks up the array's `freq`, so that path is fine. Next I'
+│ m reading `PeriodArrayMixin.__new__` and the imports in `arrays/period.py`, 
+│ to make sure `frequencies` is in scope there.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "cd pandas/core; sed -n 1,40p arrays/period.py; sed -n 1
+│ 12,150p arrays/period.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01TJYxSogvSTYCjcbQfNn2F3
+│ chars: 2,709
+│
+│ preview:
+│   # -*- coding: utf-8 -*-
+│   from datetime import timedelta
+│   import warnings
+│   
+│   import numpy as np
+│   
+│   from pandas._libs import lib
+│   from pandas._libs.tslib import NaT, iNaT
+│   from pandas._libs.tslibs.period import (
+│       Period, IncompatibleFrequency, DIFFERENT_FREQ_INDEX,
+│   … (+2,109 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1294 cache_r=49017 out=2
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Next I'm checking `_from_ordinals` and `PeriodIndex.__new__`, to see how a
+│  string `freq` and a `PeriodArrayMixin` input are handled.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "cd pandas/core; sed -n 150,175p arrays/period.py; echo 
+│ ----; sed -n 160,260p indexes/period.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01QRq4vMf4SwvxZE8crahVTX
+│ chars: 4,667
+│
+│ preview:
+│   
+│           return cls._from_ordinals(values, freq)
+│   
+│       @classmethod
+│       def _from_ordinals(cls, values, freq=None):
+│           """
+│           Values should be int ordinals
+│           `__new__` & `_simple_new` cooerce to ordinals and call this method
+│           """
+│   
+│   … (+4,067 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1914 cache_r=50311 out=8
+│
+│ thinking: (omitted)
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "timeout 14 python -c \"\nimport pandas as pd\ndti=pd.da
+│ te_range('2000',periods=3,freq='M',name='x')\nprint(dti.to_period())\npi=pd.
+│ period_range('2000',periods=3,freq='M',name='y')\nprint(pi.to_timestamp(how=
+│ 'end'))\n\" 2>&1 | t…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01NsqyvHMAaraHFUFYynv5sQ
+│ chars: 32
+│
+│ preview:
+│   bash: timeout: command not found
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=487 cache_r=52225 out=24
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "python -c \"\nimport pandas as pd\nprint(pd.__file__)\n
+│ dti=pd.date_range('2000',periods=3,freq='M',name='x')\nprint(dti.to_period()
+│ )\n\" 2>&1 | tail -8"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_014uJyEUmtkeCP2aRjzuH7M9
+│ chars: 288
+│
+│ preview:
+│   Traceback (most recent call last):
+│     File "<string>", line 2, in <module>
+│     File "/private/var/folders/0l/rz12v__93vl603hh_b5ptmww0000gn/T/fixture-b
+│ ench-pandas-27-tm225cyi/pandas/__init__.py", line 18, in <module>
+│       raise ImportError(
+│   ImportError: Missing required dependencies ['pytz']
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 20  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=266 cache_r=52712 out=4
+│
+│ thinking: (omitted)
+│
+│ text:
+│   pandas can't be imported here (pytz is missing), so I'll check statically 
+│ whether `DatetimeLikeArrayMixin` supports iteration, which `PeriodIndex.__ne
+│ w__` would rely on.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "cd pandas/core; grep -n \"def __iter__\\|def __getitem_
+│ _\\|def __len__\\|def values\\|def _box_func\\|def _box_values\" arrays/date
+│ timelike.py arrays/period.py arrays/datetimes.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 21  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_011z9dygkFavd11tKgWyopUK
+│ chars: 464
+│
+│ preview:
+│   arrays/datetimelike.py:117:    def _box_func(self):
+│   arrays/datetimelike.py:123:    def _box_values(self, values):
+│   arrays/datetimelike.py:129:    def __iter__(self):
+│   arrays/datetimelike.py:133:    def values(self):
+│   arrays/datetimelike.py:153:    def __len__(self):
+│   arrays/datetimelike.py:156:    def __getitem__(self, key):
+│   arrays/period.py:88:    def _box_func(self):
+│   arrays/datetimes.py:314:    def _box_func(self):
+│   arrays/datetimes.py:378:    def __iter__(self):
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 22  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=647 cache_r=52978 out=5
+│
+│ thinking: (omitted)
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -n \"def extract_freq\" -A 22 pandas/_libs/tslibs/
+│ period.pyx; sed -n 125,135p pandas/core/arrays/datetimelike.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 23  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01Dzp6oL1zWVKMbb7JZ2Zap5
+│ chars: 972
+│
+│ preview:
+│   1466:def extract_freq(object[:] values):
+│   1467-    cdef:
+│   1468-        Py_ssize_t i, n = len(values)
+│   1469-        object p
+│   1470-
+│   1471-    for i in range(n):
+│   1472-        p = values[i]
+│   1473-
+│   1474-        try:
+│   1475-            # now Timestamp / NaT has freq attr
+│   … (+372 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 24  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=971 cache_r=53625 out=8
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I'm reporting one confirmed regression, in `DatetimeIndex.to_period` at `p
+│ andas/core/indexes/datetimes.py:682`.
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "pandas/core/indexes/datetimes.py", "line": 6
+│ 82, "line_end": null, "category": "contract-mismatch", "severity": "medium",
+│  "summary": "DatetimeIndex.to_period wraps a PeriodArrayMixin in PeriodIndex
+│  without passing fre…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 25  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01W6WWtkL8pMr2Svn1Tvjtpr
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 26  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1375 cache_r=54596 out=3
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I found one real regression in this commit. It's in `DatetimeIndex.to_peri
+│ od` in `pandas/core/indexes/datetimes.py`, around line 682. I couldn't run i
+│ t because pandas won't import in the sandbox (pytz is missing), so this come
+│ s from reading the code.
+│   
+│   **Empty or all-NaT `to_period` now raises (medium):**
+│   - **What changed:** `to_period` now builds a `PeriodArrayMixin` and wraps 
+│ it with `PeriodIndex(result, name=self.name)`, without passing `freq`.
+│   - **Why it breaks:** `PeriodIndex.__new__` only has a fast path for real `
+│ PeriodIndex` input. The new array type falls through to the generic path. Th
+│ at path turns every element into a `Period` object and then has to work out 
+│ the frequency from those elements.
+│   - **Effect:** For an empty or all-NaT index there are no `Period` elements
+│  to read a frequency from, so it raises `ValueError('freq not specified and 
+│ cannot be inferred')`. Both `pd.DatetimeIndex([]).to_period('D')` and `pd.Da
+│ tetimeIndex([pd.NaT, pd.NaT]).to_period('D')` worked before this commit, bec
+│ ause `freq` was passed straight through.
+│   - **Performance:** Even when it succeeds, every conversion now creates one
+│  Python object per element instead of copying the integer period values dire
+│ ctly.
+│   - **Suggested fix:** Build the index directly from the array's values and 
+│ frequency: `PeriodIndex._simple_new(result.asi8, name=self.name, freq=result
+│ .freq)`.
+│   
+│   Everything else I checked looked correct:
+│   - `PeriodIndex.to_timestamp` still keeps `freq`, because `DatetimeIndex.__
+│ new__` takes it from the array it's given.
+│   - The `_shallow_copy` rewrites in `unique`, `insert` and `delete` keep the
+│  same timezone, name and frequency as the old constructor calls.
+│   - The new `freq` handling in the `DatetimeArrayMixin` constructor is fine.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 27  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 13
+│ duration: 67320 ms
+│ total_cost_usd: $0.3869
+│ totals: in=26 cache_w=26227 cache_r=593147 out=6851
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-11-27T01:16:42.147052+00:00  submitted=True  duplicate_submission=False  findings=1  num_turns=13  stop_reason=end_turn

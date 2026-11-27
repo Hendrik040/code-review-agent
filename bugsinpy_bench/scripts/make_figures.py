@@ -21,6 +21,7 @@ from matplotlib.ticker import FixedLocator, FuncFormatter  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 SCORES = ROOT / "bugsinpy_bench" / "routing" / "triage_scores.json"
+FULL = ROOT / "bugsinpy_bench" / "routing" / "full_scores.json"
 OUT = ROOT / "bugsinpy_bench" / "experiment_figures"
 
 # Categorical palette, fixed order (blue, orange, aqua, yellow, violet).
@@ -127,11 +128,115 @@ def overlap_grid(s: dict) -> None:
     plt.close(fig)
 
 
+ARM_STYLE = {  # arm: (label, colour, marker)
+    "haiku55_medium": ("Haiku 5.5 medium", BLUE, "o"),
+    "sonnet55_high": ("Sonnet 5.5 high", ORANGE, "^"),
+    "opus55_high": ("Opus 5.5 high", YELLOW, "*"),
+    "opus47_low": ("Opus 4.7 low (May)", AQUA, "s"),
+    "opus47_high": ("Opus 4.7 high (May)", AQUA, "s"),
+    "opus47_max": ("Opus 4.7 max (May)", AQUA, "s"),
+    "opus47_max_may": ("Opus 4.7 max (May)", AQUA, "s"),
+    "triage_jev": ("Jev triage", VIOLET, "D"),
+}
+
+
+def _scatter(ax, points, xlabel, ylabel, title, xlim):
+    ax.grid(True, color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for x, y, label, colour, marker, side in points:
+        ax.scatter([x], [y], s=220 if marker == "*" else 70, marker=marker, color=colour, zorder=3)
+        dx, dy, ha = {"l": (-9, 0, "right"), "r": (9, 0, "left"),
+                      "a": (0, 11, "center"), "b": (0, -12, "center")}[side]
+        ax.annotate(label, (x, y), xytext=(dx, dy), textcoords="offset points",
+                    ha=ha, va="center", fontsize=9, color=INK)
+    ax.set_xscale("log")
+    ax.set_xlim(*xlim)
+    ticks = [t for t in (0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5) if xlim[0] <= t <= xlim[1]]
+    ax.xaxis.set_major_locator(FixedLocator(ticks))
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:g}"))
+    ax.xaxis.set_minor_formatter(FuncFormatter(lambda v, _: ""))
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, loc="left", fontsize=11, color=INK)
+
+
+def full_bugsinpy(f: dict) -> None:
+    S = f["bugsinpy"]["setups"]
+    n = f["bugsinpy"]["n_bugs"]
+    side = {"all_haiku55_medium": "r", "all_sonnet55_high": "a", "all_opus55_high": "r",
+            "triage_jev": "b", "all_opus47_low": "r", "all_opus47_high": "r", "all_opus47_max": "l"}
+    pts = []
+    for key, sd in side.items():
+        arm = key.replace("all_", "")
+        label, colour, marker = ARM_STYLE[arm]
+        pts.append((S[key]["cost_usd"] / n, S[key]["found"], label, colour, marker, sd))
+    fig, ax = plt.subplots(figsize=(8.4, 5.0), dpi=160)
+    _scatter(ax, pts, "Review cost per bug (USD, log scale)", f"Bugs found (of {n})",
+             f"BugsInPy, all {n} bugs: bugs found against cost per bug", (0.003, 2.5))
+    ax.set_ylim(10, 50)
+    fig.tight_layout()
+    fig.savefig(OUT / "bugsinpy100_cost_vs_found.png")
+    plt.close(fig)
+
+
+def full_martian(f: dict) -> None:
+    M = f["martian"]
+    side = {"haiku55_medium": "r", "sonnet55_high": "r", "opus55_high": "b", "opus47_max_may": "l"}
+    pts = []
+    for arm, sd in side.items():
+        label, colour, marker = ARM_STYLE[arm]
+        if arm == "opus55_high":
+            label = "Opus 5.5 high = Jev triage"
+        pts.append((M[arm]["cost_usd"] / M[arm]["prs"], M[arm]["f1"], label, colour, marker, sd))
+    fig, ax = plt.subplots(figsize=(8.4, 4.6), dpi=160)
+    _scatter(ax, pts, "Review cost per PR (USD, log scale)", "Micro F1 (Martian judge)",
+             "Martian, 10 Sentry PRs: F1 against cost per PR", (0.005, 5))
+    ax.set_ylim(0.2, 0.65)
+    fig.tight_layout()
+    fig.savefig(OUT / "martian10_cost_vs_f1.png")
+    plt.close(fig)
+
+
+def full_overlap(f: dict) -> None:
+    fb = {k: set(v) for k, v in f["bugsinpy"]["found_by"].items()}
+    H, S, O = fb["haiku55_medium"], fb["sonnet55_high"], fb["opus55_high"]
+    regions = [
+        ("All three", H & S & O),
+        ("Sonnet + Opus 5.5", (S & O) - H),
+        ("Haiku + Opus 5.5", (H & O) - S),
+        ("Haiku + Sonnet", (H & S) - O),
+        ("Opus 5.5 only", O - H - S),
+        ("Sonnet only", S - H - O),
+        ("Haiku only", H - S - O),
+    ]
+    n = f["bugsinpy"]["n_bugs"]
+    fig, ax = plt.subplots(figsize=(8.4, 4.0), dpi=160)
+    names = [r[0] for r in regions][::-1]
+    vals = [len(r[1]) for r in regions][::-1]
+    ax.barh(names, vals, color=BLUE, height=0.6)
+    for i, v in enumerate(vals):
+        ax.text(v + 0.4, i, str(v), va="center", fontsize=9, color=INK)
+    ax.grid(True, axis="x", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_xlabel("Bugs found (BugsInPy)")
+    union = len(H | S | O)
+    ax.set_title(f"Haiku, Sonnet and Opus 5.5: {union} of {n} bugs found by at least one, "
+                 f"{n - union} by none", loc="left", fontsize=11, color=INK)
+    fig.tight_layout()
+    fig.savefig(OUT / "bugsinpy100_overlap.png")
+    plt.close(fig)
+
+
 def main() -> int:
     OUT.mkdir(exist_ok=True)
     s = json.loads(SCORES.read_text())
     cost_vs_found(s)
     overlap_grid(s)
+    if FULL.exists():
+        f = json.loads(FULL.read_text())
+        full_bugsinpy(f)
+        full_martian(f)
+        full_overlap(f)
     for p in sorted(OUT.glob("*.png")):
         print(p.relative_to(ROOT))
     return 0

@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: pandas#121
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# fixed_commit: 958756af5cb40658e975a70d29089b68aea93040
+# base_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda^
+# head_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# started: 2026-11-27T01:18:34+00:00
+# finished: 2026-11-27T01:19:19+00:00
+# duration_s: 45.3
+# cost_usd: 0.0109
+# num_turns: 12
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 632
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 12
+# cost (USD, harness-reported): 0.010892
+# cost (USD, public Opus 4 rate): 1.633822
+# usage: {'input_tokens': 30, 'cache_creation_input_tokens': 16818, 'cache_read_input_tokens': 487590, 'output_tokens': 7822, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16818}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 418, 'cache_read_input_tokens': 47926, 'cache_creation_input_tokens': 1389, 'cache_creation': {'ephemeral_5m_input_tokens': 1389, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/blocks.py",
+    "line": 2643,
+    "category": "logic",
+    "severity": "high",
+    "summary": "ObjectBlock._replace_coerce iterates over the result of super()._replace_coerce, which is a single Block on the regex path, causing a TypeError for regex dict replacement with convert=True.",
+    "detail": "In the regex branch, Block._replace_coerce returns self._replace_single(...), and ObjectBlock._replace_single returns a single Block (make_block / block.convert). ObjectBlock._replace_coerce then does `if convert: block = [b.convert(by_item=True, numeric=False, copy=True) for b in block]`. Block defines __len__ but no __iter__ or __getitem__, so this iteration raises `TypeError: 'ObjectBlock' object is not iterable`. Trigger: `df = pd.DataFrame({'a': ['x', 'y']}); df.replace({'a': 'x'}, 'X', regex=True)`. The manager calls _replace_coerce with convert=True for the last src item (i == src_len), and the mask is non-empty, so this path is hit. The non-regex path is unaffected because putmask returns a list. The added test only covers non-regex behavior, so it does not catch this. I could not execute this because the pandas C extensions are not built in the sandbox; the conclusion comes from reading the code.",
+    "line_end": 2645,
+    "suggested_fix": "Normalize the return value before iterating, e.g.:\n-            if convert:\n-                block = [b.convert(by_item=True, numeric=False, copy=True)\n-                         for b in block]\n-            return block\n+            if not isinstance(block, list):\n+                block = [block]\n+            if convert:\n+                block = [b.convert(by_item=True, numeric=False, copy=True)\n+                         for b in block]\n+            return block"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "error",
+    "severity": "low",
+    "summary": "Regex branch of _compare_or_regex_match calls np.vectorize without otypes, which raises on zero-size inputs, so regex dict replace on an empty object-dtype frame now fails.",
+    "detail": "In _compare_or_regex_match, when regex=True, `op = np.vectorize(lambda x: ...)` is built without `otypes`. The mask is computed over the whole manager via `values = self.as_array()`, so a frame with zero rows (for example an empty object column) produces a size-0 array. NumPy raises `ValueError: cannot call vectorize on size 0 inputs unless otypes is set` for that input. The previous code went through Block.replace for regex and did not hit this. Trigger: `pd.DataFrame({'a': pd.Series([], dtype=object)}).replace({'a': 'x'}, 'X', regex=True)`. This was also not run, because the extensions are not built. Impact is narrow (empty frames with regex replacement), so severity is low.",
+    "line_end": null,
+    "suggested_fix": "Pass otypes=[bool] to np.vectorize, or short-circuit when the array is empty:\n-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n-                          else False)\n+        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n+                          else False, otypes=[bool])"
+  }
+]

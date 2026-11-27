@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: luigi#19
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: 6cffbf438d023441f7f42c2019a51c62eecd9018
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-11-27T01:05:59+00:00
+# finished: 2026-11-27T01:06:37+00:00
+# duration_s: 37.8
+# cost_usd: 0.0088
+# num_turns: 8
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 549
+# repo: LocalRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 8
+# cost (USD, harness-reported): 0.008797
+# cost (USD, public Opus 4 rate): 1.319587
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 11282, 'cache_read_input_tokens': 326390, 'output_tokens': 8243, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 11282}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 434, 'cache_read_input_tokens': 53231, 'cache_creation_input_tokens': 1872, 'cache_creation': {'ephemeral_5m_input_tokens': 1872, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 254,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "re_enable(task, config) now routes through set_status(FAILED), which re-counts a failure and can immediately re-disable the task when disable_failures == 1, so such tasks can never leave DISABLED.",
+    "detail": "Previously re_enable() just set status=FAILED and cleared failures. The new re_enable(task, config) clears scheduler_disable_time, then calls set_status(task, FAILED, config). In set_status, for a task with can_disable() true, FAILED calls task.add_failure() and then checks has_excessive_failures(). With disable_failures == 1, num_failures() is 1 >= 1, so the task is set back to DISABLED with a fresh scheduler_disable_time and an 'excessive failures' error email is sent. Only after that does re_enable clear the failures list. Triggering scenario: a task with disable_failures=1 is re-enabled by prune() (after disable_time) or via the re_enable_task API. It is re-disabled on the spot and the cycle repeats every disable_time, sending a spurious notification each time, so the task never gets retried. The same path is hit by re_enable_task() at line 795. The fix is to set the status directly without failure accounting, as the original code did.",
+    "line_end": 256,
+    "suggested_fix": "--- a/luigi/scheduler.py\n+++ b/luigi/scheduler.py\n@@ def re_enable(self, task, config=None):\n     task.scheduler_disable_time = None\n     task.failures.clear()\n-    if config:\n-        self.set_status(task, FAILED, config)\n-        task.failures.clear()\n+    if task.status != FAILED:\n+        self._status_tasks[task.status].pop(task.id)\n+        self._status_tasks[FAILED][task.id] = task\n+        task.status = FAILED"
+  },
+  {
+    "file": "luigi/scheduler.py",
+    "line": 535,
+    "category": "logic",
+    "severity": "low",
+    "summary": "_rank() now counts dependents only from PENDING/RUNNING tasks, dropping FAILED/DISABLED/UNKNOWN dependents that the old loop included, which changes scheduling priority.",
+    "detail": "Before, _rank() iterated get_active_tasks() and counted every non-DONE task's unfinished deps as dependents. It now iterates get_pending_tasks(), which yields only PENDING and RUNNING. Deps of FAILED, DISABLED, or UNKNOWN tasks therefore receive no dependents boost. The effect is a silent change in the tie-breaking order for get_work(). The new loop also keeps the now-redundant 'if task.status != DONE' check. If this was not meant to change ranking, the iteration should cover all non-DONE statuses instead.",
+    "line_end": 540,
+    "suggested_fix": ""
+  }
+]

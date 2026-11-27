@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_opus55_high
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T01:01:37+00:00
+# finished: 2026-11-27T01:03:27+00:00
+# duration_s: 110.6
+# cost_usd: 0.2943
+# num_turns: 11
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 511
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 11
+# cost (USD, harness-reported): 0.294277
+# cost (USD, public Opus 4 rate): 1.442157
+# usage: {'input_tokens': 22, 'cache_creation_input_tokens': 20690, 'cache_read_input_tokens': 451493, 'output_tokens': 5022, 'output_tokens_details': {'thinking_tokens': 1505}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20690}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 751, 'cache_read_input_tokens': 48697, 'cache_creation_input_tokens': 1737, 'cache_creation': {'ephemeral_5m_input_tokens': 1737, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 840,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator.get_item_key calls math.floor/ceil on a datetime, so any optimized audit-log request that returns rows raises TypeError.",
+    "detail": "The audit log endpoint uses OptimizedCursorPaginator with order_by='-datetime', which makes self.key 'datetime'. get_item_key does `getattr(item, 'datetime')` and passes the datetime object straight to math.floor/math.ceil, and that raises TypeError. build_cursor (src/sentry/utils/cursors.py:137,197) always calls key() on the results, so every request with ?optimized_pagination=true from a superuser or global-access member returns a 500 whenever any audit rows exist. DateTimePaginator (paginator.py:233-236) first converts the value to epoch milliseconds; the new class leaves out that step.",
+    "line_end": 842,
+    "suggested_fix": "Subclass DateTimePaginator instead of BasePaginator, or reuse its get_item_key/value_from_cursor (strftime('%s.%f') * multiplier and datetime.fromtimestamp(value/multiplier, tz=utc))."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 844,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "value_from_cursor returns the raw integer cursor value, and that value is compared against the datetime column in SQL.",
+    "detail": "build_queryset adds `WHERE datetime <= %s` (or >=) using the value from value_from_cursor. The new paginator returns cursor.value unchanged, which is an integer (epoch milliseconds, the same format DateTimePaginator issues), so the database compares a timestamp column against an integer. Depending on the backend, this either errors (Postgres: operator does not exist: timestamp with time zone <= integer) or filters incorrectly. As a result, following a next or prev cursor fails even if get_item_key is fixed.",
+    "line_end": 845,
+    "suggested_fix": "Convert the value back to a datetime: `return datetime.fromtimestamp(float(cursor.value)/1000).replace(tzinfo=timezone.utc)` (or inherit from DateTimePaginator)."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "error",
+    "severity": "medium",
+    "summary": "`organization_context.member.has_global_access` is evaluated on every request and raises AttributeError when member is None.",
+    "detail": "RpcUserOrganizationContext.member is documented as Optional: it is None when the requester has no membership in the organization (model.py:344-346). enable_advanced is computed unconditionally, even when optimized_pagination is not requested, and only `request.user.is_superuser` short-circuits it. Some requesters pass OrganizationAuditPermission without being members, for example active staff who are not superusers, or token-based or anonymous request.user objects whose is_superuser is False. For these requesters the expression dereferences None, so the normal audit-log listing they could previously load now returns a 500.",
+    "line_end": null,
+    "suggested_fix": "Evaluate it only when it is needed and guard against None: `enable_advanced = use_optimized and (request.user.is_superuser or (organization_context.member is not None and organization_context.member.has_global_access))`."
+  }
+]

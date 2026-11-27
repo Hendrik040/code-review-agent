@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: thefuck#20
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# fixed_commit: 280751b36e715b006c631ba6c08de99ccc74f6d2
+# base_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^
+# head_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# started: 2026-11-27T01:25:40+00:00
+# finished: 2026-11-27T01:26:13+00:00
+# duration_s: 32.7
+# cost_usd: 0.0072
+# num_turns: 8
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 681
+# repo: LocalRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 8
+# cost (USD, harness-reported): 0.007247
+# cost (USD, public Opus 4 rate): 1.087009
+# usage: {'input_tokens': 20, 'cache_creation_input_tokens': 9800, 'cache_read_input_tokens': 296673, 'output_tokens': 6106, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 9800}, 'inference_geo': '', 'iterations': [{'input_tokens': 4, 'output_tokens': 441, 'cache_read_input_tokens': 41838, 'cache_creation_input_tokens': 1152, 'cache_creation': {'ephemeral_5m_input_tokens': 1152, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "security",
+    "severity": "high",
+    "summary": "side_effect deletes every archive member name relative to cwd, so it can delete pre-existing user files and files outside cwd via zip-slip paths like ../x.",
+    "detail": "thefuck/main.py:138-140 (run_rule) calls rule.side_effect(command, settings) after the user confirms, with no further prompt. side_effect (lines 34-37) iterates archive.namelist() and calls os.remove(file) on each name relative to the current directory. This is not limited to files the bad unzip created: any existing file in cwd whose name matches an archive member is deleted, even if unzip would have skipped or prompted about it. Zip entries are attacker-controllable, so an entry named '../../.bashrc' or '/home/u/x' (absolute) makes os.remove delete files outside cwd. Triggering scenario: user runs `unzip untrusted.zip` in a directory containing a file README.md; the zip has a member README.md; the user accepts the thefuck suggestion and README.md is deleted. Or a crafted archive with a '../' member deletes files elsewhere on the filesystem.",
+    "line_end": null,
+    "suggested_fix": "Only remove members that were extracted into cwd and resolve inside it, e.g.:\n-            os.remove(file)\n+            target = os.path.realpath(file)\n+            if target.startswith(os.getcwd() + os.sep) and os.path.isfile(target):\n+                os.remove(target)\nBetter: do not delete at all, or skip names that are absolute or contain '..'."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "error",
+    "severity": "medium",
+    "summary": "os.remove raises on directory entries or members not on disk, and run_rule does not catch side_effect exceptions, so the fixed command is never output.",
+    "detail": "Zip archives created with `zip -r` include directory entries (names ending in '/'). os.remove on such a name raises IsADirectoryError/PermissionError. Members that were never extracted (missing on disk, or extracted elsewhere) raise FileNotFoundError. Because thefuck/main.py:138-140 does not wrap side_effect, the exception propagates out of run_rule after the user confirmed. The loop also stops partway, leaving some files deleted and others not, and the corrected command is never printed to the shell history. The match-time exceptions are caught (main.py:116), but this side_effect path is not.",
+    "line_end": null,
+    "suggested_fix": "-        for file in archive.namelist():\n-            os.remove(file)\n+        for file in archive.namelist():\n+            if not file.endswith('/') and os.path.isfile(file):\n+                os.remove(file)"
+  }
+]

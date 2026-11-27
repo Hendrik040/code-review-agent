@@ -1,0 +1,422 @@
+=== Agent SDK reviewer run 552 ===
+repo: LocalRepo
+refs: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+started: 2026-11-27T01:06:10.488812+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (433 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-sonnet-5-5
+│ cwd  : /Users/hendrikkrack/Projects/triage-smoke-test
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=4 cache_w=1321 cache_r=33190 out=33
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "344aa102e7818606e29426ebe69d5a680d8727c6", "head_ref":
+│  "bb75657fc8f13923c1d7983f422290908a1e7310"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_01EMbwxBQN4Kwjdq3WY2BctL
+│ chars: 1,395
+│
+│ preview:
+│   Error: result (94,841 characters) exceeds maximum allowed tokens. Output h
+│ as been saved to /private/tmp/claude-501/-Users-hendrikkrack-Desktop-build-v
+│ s-buy-coderabbit/b977857b-e465-4b80-a2f8-47176593fa63/scratchpad/empty-claud
+│ e-config/projects/-Users-hendrikkrack-Projects-triage-smoke-test/02a84f82-53
+│ e8-4682-bd0e-a75e53895529/tool-results/mcp-reviewer-build_review_context-179
+│ 5741578455.txt.
+│   Format: JSON array with schema: [{type: string, text: string}]
+│   Use offset and limit parameters to read specific portions of the file, sea
+│ rch within it for specific content, and jq to make structured queries
+│   … (+795 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=728 cache_r=34511 out=5
+│
+│ thinking: (omitted)
+│
+│ text:
+│   The context is too big to use directly. I'll check the diff stat first.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff --stat 344aa102e7818606e29426ebe69d5a680d8727c
+│ 6 bb75657fc8f13923c1d7983f422290908a1e7310 | tail -30"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01SSMKR1LhuA9ZpeSfMv6fjz
+│ chars: 1,065
+│
+│ preview:
+│    requirements-base.txt                              |   2 +-
+│    requirements-dev-frozen.txt                        |   2 +-
+│    requirements-frozen.txt                            |   2 +-
+│    src/sentry/conf/types/sdk_config.py                |  11 +-
+│    src/sentry/integrations/github/integration.py      | 159 +++++++++++++++-
+│ -----
+│    .../monitors/tasks/detect_broken_monitor_envs.py   |   4 +-
+│    src/sentry/replays/consumers/recording_buffered.py |   3 -
+│    src/sentry/replays/usecases/ingest/__init__.py     |  26 ++--
+│    src/sentry/search/events/constants.py              |   2 -
+│    .../search/events/datasets/filt
+│   … (+465 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=645 cache_r=35239 out=28
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 344aa102e7818606e29426ebe69d5a680d8727c6 bb756
+│ 57fc8f13923c1d7983f422290908a1e7310 -- src/ requirements-base.txt"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01SGEkMzwVyC49D3zJ7GtDF2
+│ chars: 8,036
+│
+│ preview:
+│   diff --git a/requirements-base.txt b/requirements-base.txt
+│   index 75775e8f..ec4c6b45 100644
+│   --- a/requirements-base.txt
+│   +++ b/requirements-base.txt
+│   @@ -66,7 +66,7 @@ sentry-kafka-schemas>=0.1.64
+│    sentry-ophio==0.2.6
+│    sentry-redis-tools>=0.1.7
+│    sentry-relay>=0.8.55
+│   -sentry-sdk>=1.44.0
+│   +sentry-sdk>=1.43.0
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3444 cache_r=35884 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 344aa102e7818606e29426ebe69d5a680d8727c6 bb756
+│ 57fc8f13923c1d7983f422290908a1e7310 -- src/sentry/integrations src/sentry/mo
+│ nitors src/sentry/replays src/sentry/search src/sentry/web | tail -n +150"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_0174WPsXUGeZPRjvVNawatYF
+│ chars: 8,036
+│
+│ preview:
+│   +            "installation_id", pipeline.fetch_state("installation_id")
+│   +        )
+│   +        if installation_id is None:
+│                return self.redirect(self.get_app_url())
+│    
+│   +        pipeline.bind_state("installation_id", installation_id)
+│            self.determine_active_organization(request)
+│    
+│            integration_pending_deletion_exists = False
+│   @@ -374,57 +465,43 @@ class GitHubInstallation(PipelineView):
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3225 cache_r=39328 out=5
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 344aa102e7818606e29426ebe69d5a680d8727c6 bb756
+│ 57fc8f13923c1d7983f422290908a1e7310 -- src/sentry/web src/sentry/search; gre
+│ p -rn \"is_replay_video\\|track_initial_segment_event\" src | head"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01R425kGKYnxe1bym4eZN2Gf
+│ chars: 3,876
+│
+│ preview:
+│   diff --git a/src/sentry/search/events/constants.py b/src/sentry/search/eve
+│ nts/constants.py
+│   index b630dfc5..ebf18f77 100644
+│   --- a/src/sentry/search/events/constants.py
+│   +++ b/src/sentry/search/events/constants.py
+│   @@ -49,8 +49,6 @@ SPAN_DOMAIN_ALIAS = "span.domain"
+│    SPAN_DOMAIN_SEPARATOR = ","
+│    UNIQUE_SPAN_DOMAIN_ALIAS = "unique.span_domains"
+│    SPAN_IS_SEGMENT_ALIAS = "span.is_segment"
+│   -SPAN_OP = "span.op"
+│   -SPAN_DESCRIPTION = "span.description"
+│   … (+3,276 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=2110 cache_r=42553 out=4
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -n \"signature\" src/sentry/pipeline/base.py | hea
+│ d; grep -n \"sender\" src/sentry/integrations/github/integration.py; grep -n
+│  \"def get_user_info\" -A12 src/sentry/identity/github/provider.py src/sentr
+│ y/identity/github/__…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01JzSu1eByoz4bscvNykYeam
+│ chars: 1,255
+│
+│ preview:
+│   133:        self.signature = md5_text(*pipe_ids).hexdigest()
+│   149:            and self.state.signature == self.signature
+│   165:            "signature": self.signature,
+│   376:        if state.get("sender"):
+│   377:            integration["metadata"]["sender"] = state["sender"]
+│   503:            != integration.metadata["sender"]["login"]
+│   src/sentry/identity/github/provider.py:7:def get_user_info(access_token):
+│   src/sentry/identity/github/provider.py-8-    with http.build_session() as 
+│ session:
+│   src/sentry/identity/github/provider.py-9-        resp = session.get(
+│   src/sentry/identity/github/provider.py-10-    
+│   … (+655 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=704 cache_r=44663 out=5
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "cat src/sentry/identity/github/__init__.py; sed -n 365,
+│ 382p src/sentry/integrations/github/integration.py; sed -n 120,135p src/sent
+│ ry/pipeline/base.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01FrmtK4CT2L24tnVR1ipNPh
+│ chars: 1,422
+│
+│ preview:
+│   from .provider import *  # noqa: F401,F403
+│               "idp_external_id": installation["app_id"],
+│               "metadata": {
+│                   # The access token will be populated upon API usage
+│                   "access_token": None,
+│                   "expires_at": None,
+│                   "icon": installation["account"]["avatar_url"],
+│                   "domain_name": installation["account"]["html_url"].replace
+│ ("https://", ""),
+│                   "account_type": installation["account"]["type"],
+│               },
+│   … (+822 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=747 cache_r=45367 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "src/sentry/integrations/github/integration.p
+│ y", "line": 503, "category": "error", "severity": "medium", "summary": "`int
+│ egration.metadata[\"sender\"][\"login\"]` raises KeyError for integrations t
+│ hat have no stored s…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01CPBgNMaffQzkD6sS2aJ9qi
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1013 cache_r=46114 out=444
+│
+│ text:
+│   I submitted two findings, both in `src/sentry/integrations/github/integrat
+│ ion.py`. I didn't run any code or tests.
+│   
+│   The context from `build_review_context` was too large to use, so I read th
+│ e `git diff` directly instead. The other changes in the diff look like rever
+│ ts of earlier features (replay-video billing exemption, span search lowercas
+│ ing, the monitor mute period, and the `sentry-sdk` version). I didn't report
+│  any of them as bugs.
+│   
+│   1. **Possible 500 on re-install (medium, line 503):** the new check reads 
+│ `integration.metadata["sender"]["login"]`. `build_integration` only stores `
+│ sender` when `state.get("sender")` is truthy. An existing integration with n
+│ o stored sender would raise an exception instead of showing the error page. 
+│ That includes one uninstalled from another org and then re-installed. Such i
+│ ntegrations could never be re-installed.
+│   2. **OAuth `state` is not a real CSRF token (medium, line 411):** `OAuthLo
+│ ginView` uses `pipeline.signature` as the `state`. That value is an `md5` of
+│  the pipeline view class names (`src/sentry/pipeline/base.py:133`), so it is
+│  identical for every user and session. An attacker can forge a callback that
+│  passes the `state` check with their own `code`. I suggested a random per-se
+│ ssion nonce checked with a constant-time compare, plus URL-encoding the redi
+│ rect parameters.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 9
+│ duration: 35767 ms
+│ total_cost_usd: $0.1000
+│ totals: in=20 cache_w=13937 cache_r=356849 out=2945
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-11-27T01:06:46.787673+00:00  submitted=True  duplicate_submission=False  findings=2  num_turns=9  stop_reason=end_turn

@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: tornado#11
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-11-27T01:28:09+00:00
+# finished: 2026-11-27T01:28:50+00:00
+# duration_s: 41.5
+# cost_usd: 0.0096
+# num_turns: 10
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 695
+# repo: LocalRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 10
+# cost (USD, harness-reported): 0.009574
+# cost (USD, public Opus 4 rate): 1.436032
+# usage: {'input_tokens': 24, 'cache_creation_input_tokens': 16115, 'cache_read_input_tokens': 400177, 'output_tokens': 7110, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16115}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 502, 'cache_read_input_tokens': 47558, 'cache_creation_input_tokens': 1054, 'cache_creation': {'ephemeral_5m_input_tokens': 1054, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 94,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "After handling a 1xx interim response, _process_message falls through and tries to read a body for the interim headers, corrupting the response.",
+    "detail": "In _process_message, for a client response with code 100-199 the code recursively calls self._process_message(...) to consume the real response, but does not return afterward. Control then continues to `if not skip_body:` and calls _read_body(is_client, headers, delegate) using the interim response's headers. Interim responses carry no Content-Length or Transfer-Encoding, so for a client this selects _read_body_until_close, which reads the rest of the stream and calls delegate.data_received again; delegate.finish() is then called a second time and self._finish_future is overwritten. Triggering scenario: any client request that gets a 100 Continue (or 103 Early Hints) before the final response; with no_keep_alive the read-until-close either blocks or feeds the final response's bytes into the body path again. Fix: return after the recursive call so the interim response's body and finish logic are skipped.",
+    "line_end": 96,
+    "suggested_fix": "-                if code >= 100 and code < 200:\n-                    yield self._process_message(delegate, is_client, method=method)\n+                if code >= 100 and code < 200:\n+                    ret = yield self._process_message(delegate, is_client, method=method)\n+                    raise gen.Return(ret)"
+  },
+  {
+    "file": "tornado/http1connection.py",
+    "line": 239,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "_read_chunked_body returns after the zero-size chunk without consuming the trailing CRLF, so the next message on a keep-alive connection is mis-framed.",
+    "detail": "Per RFC 7230, a chunked body ends with `0\\r\\n` followed by optional trailers and a final `\\r\\n`. The new _read_chunked_body reads the size line `0\\r\\n` and returns immediately, leaving the final `\\r\\n` in the stream buffer. The server path (_process_requests) keeps the connection open for keep-alive and calls _process_message again, which uses read_until_regex(b\"\\r?\\n\\r?\\n\"). The leftover `\\r\\n` is prepended to the next request, so header_data starts with an empty line and the next request's start line parses as empty and is rejected as BadRequestException, closing the connection. Triggering scenario: a client sends a chunked POST followed by another request on the same keep-alive connection. This was not an issue before this diff because the server never accepted chunked request bodies. Fix: read and verify the final CRLF after the zero-size chunk (or consume trailers up to the blank line).",
+    "line_end": 242,
+    "suggested_fix": "             if chunk_len == 0:\n+                crlf = yield self.stream.read_bytes(2)\n+                assert crlf == b\"\\r\\n\"\n                 return"
+  }
+]
