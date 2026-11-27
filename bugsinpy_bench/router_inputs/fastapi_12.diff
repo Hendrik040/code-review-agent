@@ -1,0 +1,324 @@
+diff --git a/fastapi/security/__init__.py b/fastapi/security/__init__.py
+index 738cb8e..5f2b38c 100644
+--- a/fastapi/security/__init__.py
++++ b/fastapi/security/__init__.py
+@@ -1,4 +1,10 @@
+ from .api_key import APIKeyQuery, APIKeyHeader, APIKeyCookie
+-from .http import HTTPBasic, HTTPBearer, HTTPDigest
++from .http import (
++    HTTPBasic,
++    HTTPBearer,
++    HTTPDigest,
++    HTTPBasicCredentials,
++    HTTPAuthorizationCredentials,
++)
+ from .oauth2 import OAuth2PasswordRequestForm, OAuth2, OAuth2PasswordBearer
+ from .open_id_connect_url import OpenIdConnect
+diff --git a/fastapi/security/http.py b/fastapi/security/http.py
+index 287beee..3e4aeb6 100644
+--- a/fastapi/security/http.py
++++ b/fastapi/security/http.py
+@@ -78,6 +78,11 @@ class HTTPBearer(HTTPBase):
+             raise HTTPException(
+                 status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
+             )
++        if scheme.lower() != "bearer":
++            raise HTTPException(
++                status_code=HTTP_403_FORBIDDEN,
++                detail="Invalid authentication credentials",
++            )
+         return HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials)
+ 
+ 
+@@ -93,4 +98,9 @@ class HTTPDigest(HTTPBase):
+             raise HTTPException(
+                 status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
+             )
++        if scheme.lower() != "digest":
++            raise HTTPException(
++                status_code=HTTP_403_FORBIDDEN,
++                detail="Invalid authentication credentials",
++            )
+         return HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials)
+diff --git a/tests/test_security_http_base.py b/tests/test_security_http_base.py
+new file mode 100644
+index 0000000..d37248e
+--- /dev/null
++++ b/tests/test_security_http_base.py
+@@ -0,0 +1,56 @@
++from fastapi import FastAPI, Security
++from fastapi.security.http import HTTPAuthorizationCredentials, HTTPBase
++from starlette.testclient import TestClient
++
++app = FastAPI()
++
++security = HTTPBase(scheme="Other")
++
++
++@app.get("/users/me")
++def read_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
++    return {"scheme": credentials.scheme, "credentials": credentials.credentials}
++
++
++client = TestClient(app)
++
++openapi_schema = {
++    "openapi": "3.0.2",
++    "info": {"title": "Fast API", "version": "0.1.0"},
++    "paths": {
++        "/users/me": {
++            "get": {
++                "responses": {
++                    "200": {
++                        "description": "Successful Response",
++                        "content": {"application/json": {"schema": {}}},
++                    }
++                },
++                "summary": "Read Current User Get",
++                "operationId": "read_current_user_users_me_get",
++                "security": [{"HTTPBase": []}],
++            }
++        }
++    },
++    "components": {
++        "securitySchemes": {"HTTPBase": {"type": "http", "scheme": "Other"}}
++    },
++}
++
++
++def test_openapi_schema():
++    response = client.get("/openapi.json")
++    assert response.status_code == 200
++    assert response.json() == openapi_schema
++
++
++def test_security_http_base():
++    response = client.get("/users/me", headers={"Authorization": "Other foobar"})
++    assert response.status_code == 200
++    assert response.json() == {"scheme": "Other", "credentials": "foobar"}
++
++
++def test_security_http_base_no_credentials():
++    response = client.get("/users/me")
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Not authenticated"}
+diff --git a/tests/test_security_http_basic.py b/tests/test_security_http_basic.py
+new file mode 100644
+index 0000000..c0c94da
+--- /dev/null
++++ b/tests/test_security_http_basic.py
+@@ -0,0 +1,76 @@
++from base64 import b64encode
++
++from fastapi import FastAPI, Security
++from fastapi.security import HTTPBasic, HTTPBasicCredentials
++from requests.auth import HTTPBasicAuth
++from starlette.testclient import TestClient
++
++app = FastAPI()
++
++security = HTTPBasic()
++
++
++@app.get("/users/me")
++def read_current_user(credentials: HTTPBasicCredentials = Security(security)):
++    return {"username": credentials.username, "password": credentials.password}
++
++
++client = TestClient(app)
++
++openapi_schema = {
++    "openapi": "3.0.2",
++    "info": {"title": "Fast API", "version": "0.1.0"},
++    "paths": {
++        "/users/me": {
++            "get": {
++                "responses": {
++                    "200": {
++                        "description": "Successful Response",
++                        "content": {"application/json": {"schema": {}}},
++                    }
++                },
++                "summary": "Read Current User Get",
++                "operationId": "read_current_user_users_me_get",
++                "security": [{"HTTPBasic": []}],
++            }
++        }
++    },
++    "components": {
++        "securitySchemes": {"HTTPBasic": {"type": "http", "scheme": "basic"}}
++    },
++}
++
++
++def test_openapi_schema():
++    response = client.get("/openapi.json")
++    assert response.status_code == 200
++    assert response.json() == openapi_schema
++
++
++def test_security_http_basic():
++    auth = HTTPBasicAuth(username="john", password="secret")
++    response = client.get("/users/me", auth=auth)
++    assert response.status_code == 200
++    assert response.json() == {"username": "john", "password": "secret"}
++
++
++def test_security_http_basic_no_credentials():
++    response = client.get("/users/me")
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Not authenticated"}
++
++
++def test_security_http_basic_invalid_credentials():
++    response = client.get(
++        "/users/me", headers={"Authorization": "Basic notabase64token"}
++    )
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Invalid authentication credentials"}
++
++
++def test_security_http_basic_non_basic_credentials():
++    payload = b64encode(b"johnsecret").decode("ascii")
++    auth_header = f"Basic {payload}"
++    response = client.get("/users/me", headers={"Authorization": auth_header})
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Invalid authentication credentials"}
+diff --git a/tests/test_security_http_bearer.py b/tests/test_security_http_bearer.py
+new file mode 100644
+index 0000000..ad1bef3
+--- /dev/null
++++ b/tests/test_security_http_bearer.py
+@@ -0,0 +1,62 @@
++from fastapi import FastAPI, Security
++from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
++from starlette.testclient import TestClient
++
++app = FastAPI()
++
++security = HTTPBearer()
++
++
++@app.get("/users/me")
++def read_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
++    return {"scheme": credentials.scheme, "credentials": credentials.credentials}
++
++
++client = TestClient(app)
++
++openapi_schema = {
++    "openapi": "3.0.2",
++    "info": {"title": "Fast API", "version": "0.1.0"},
++    "paths": {
++        "/users/me": {
++            "get": {
++                "responses": {
++                    "200": {
++                        "description": "Successful Response",
++                        "content": {"application/json": {"schema": {}}},
++                    }
++                },
++                "summary": "Read Current User Get",
++                "operationId": "read_current_user_users_me_get",
++                "security": [{"HTTPBearer": []}],
++            }
++        }
++    },
++    "components": {
++        "securitySchemes": {"HTTPBearer": {"type": "http", "scheme": "bearer"}}
++    },
++}
++
++
++def test_openapi_schema():
++    response = client.get("/openapi.json")
++    assert response.status_code == 200
++    assert response.json() == openapi_schema
++
++
++def test_security_http_bearer():
++    response = client.get("/users/me", headers={"Authorization": "Bearer foobar"})
++    assert response.status_code == 200
++    assert response.json() == {"scheme": "Bearer", "credentials": "foobar"}
++
++
++def test_security_http_bearer_no_credentials():
++    response = client.get("/users/me")
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Not authenticated"}
++
++
++def test_security_http_bearer_incorrect_scheme_credentials():
++    response = client.get("/users/me", headers={"Authorization": "Basic notreally"})
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Invalid authentication credentials"}
+diff --git a/tests/test_security_http_digest.py b/tests/test_security_http_digest.py
+new file mode 100644
+index 0000000..d9be2d4
+--- /dev/null
++++ b/tests/test_security_http_digest.py
+@@ -0,0 +1,64 @@
++from fastapi import FastAPI, Security
++from fastapi.security import HTTPAuthorizationCredentials, HTTPDigest
++from starlette.testclient import TestClient
++
++app = FastAPI()
++
++security = HTTPDigest()
++
++
++@app.get("/users/me")
++def read_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
++    return {"scheme": credentials.scheme, "credentials": credentials.credentials}
++
++
++client = TestClient(app)
++
++openapi_schema = {
++    "openapi": "3.0.2",
++    "info": {"title": "Fast API", "version": "0.1.0"},
++    "paths": {
++        "/users/me": {
++            "get": {
++                "responses": {
++                    "200": {
++                        "description": "Successful Response",
++                        "content": {"application/json": {"schema": {}}},
++                    }
++                },
++                "summary": "Read Current User Get",
++                "operationId": "read_current_user_users_me_get",
++                "security": [{"HTTPDigest": []}],
++            }
++        }
++    },
++    "components": {
++        "securitySchemes": {"HTTPDigest": {"type": "http", "scheme": "digest"}}
++    },
++}
++
++
++def test_openapi_schema():
++    response = client.get("/openapi.json")
++    assert response.status_code == 200
++    assert response.json() == openapi_schema
++
++
++def test_security_http_digest():
++    response = client.get("/users/me", headers={"Authorization": "Digest foobar"})
++    assert response.status_code == 200
++    assert response.json() == {"scheme": "Digest", "credentials": "foobar"}
++
++
++def test_security_http_digest_no_credentials():
++    response = client.get("/users/me")
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Not authenticated"}
++
++
++def test_security_http_digest_incorrect_scheme_credentials():
++    response = client.get(
++        "/users/me", headers={"Authorization": "Other invalidauthorization"}
++    )
++    assert response.status_code == 403
++    assert response.json() == {"detail": "Invalid authentication credentials"}

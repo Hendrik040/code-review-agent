@@ -39,6 +39,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 7 | 2026-11-27 | Trace analysis of Opus 5.5's misses; alternative routings scored from stored results | Opus 5.5 often sees the bug and decides not to report it; triage + Haiku second pass: 48/100 for $14.66 |
 | 8 | 2026-11-27 17:00-17:35 | Opus 5.5 high on Martian with a prompt addendum asking it to file what it would drop | Recall 9 → 14 of 31, precision unchanged, F1 0.359 → 0.459 for $3.07 |
 | 9 | 2026-11-27 | Sonnet 5.5 high on Martian with the same addendum; Jev routing compared with random routing | Sonnet F1 0.510 → 0.464 (no gain); Jev's tier picks beat random same-mix routing by about 2 bugs |
+| 10 | 2026-11-27 19:50-20:45 | Block-level Jev routing: Haiku 5.5 per-block facts, 11 Jev questions, facts only (A) vs facts + Haiku complexity (B), scored on stored BugsInPy reviews | No ranking signal (AUC 0.51-0.53); best point 42/100 for $15.08, worse than the current router |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -332,6 +333,62 @@ which bugs go deep is worth about 2 bugs over chance on this benchmark; most of
 triage's saving against all-Opus 5.5 comes from sending 28% of bugs to cheaper tiers
 at all.
 
+## Step 10. Block-level Jev routing (BugsInPy only)
+
+Design: `docs/superpowers/specs/2026-11-27-jev-block-routing-design.md`; plan:
+`docs/superpowers/plans/2026-11-27-jev-block-routing.md`. Scripts:
+`block_summaries.py` (Haiku 5.5, effort high, one record per changed code block, cached
+per diff), `route_blocks.py` (question wording, one Jev call per block plus one per PR),
+`block_rules.py` (decision rule), `score_blocks.py` (scoring). Scored on the stored
+reviews; no new reviews. Martian was started and then dropped at the user's request, so
+there is no held-out result.
+
+**Setup.** 878 blocks over 100 bugs (8.8 per bug). Each block got 7 questions
+(`precision_logic`, `state_tracking`, `error_path`, `contract_change`, `value_domain`,
+`async_flow`, `verify_effort`); each PR got 4 (`change_kind`, `beyond_title`,
+`tests_exercise_change`, `high_stakes`). Arm A sent block facts without Haiku's 1-10
+complexity score, arm B with it. Each arm ran twice. The rule was fixed before scoring:
+Opus if high-stakes >= 0.5 or the riskiest block >= T; otherwise from `change_kind`.
+
+**Ranking: does the score put the 14 Opus-needed bugs above the 35 bugs Haiku found?**
+(AUC; 0.5 is chance, below 0.5 points the wrong way)
+
+| Signal | AUC |
+|---|---:|
+| Current router, P(deep) | 0.27 |
+| Haiku's max block complexity alone | 0.36 |
+| Arm A riskiest-block score, pass 1 / 2 | 0.53 / 0.52 |
+| Arm B riskiest-block score, pass 1 / 2 | 0.51 / 0.52 |
+| `change_kind` top level (A / B) | 0.40-0.41 |
+
+Per question (arm A pass 1, max over blocks): `precision_logic` 0.65, `async_flow` 0.58,
+number of blocks 0.56, `high_stakes` 0.52, `tests_exercise_change` 0.50,
+`state_tracking` 0.47, `error_path` 0.47, `value_domain` 0.42, `beyond_title` 0.42,
+`verify_effort` 0.37, `contract_change` 0.32. With 14 positives, an AUC needs to be
+well above about 0.65 to be distinguishable from chance.
+
+**Cost against bugs found.** The riskiest-block score saturates: its median is 0.90 for
+both groups. At the declared T = 0.5, 98 of 100 bugs go to Opus (42 found, $16.22,
+about all-Opus 5.5). Raising T only moves bugs to Sonnet; at T = 1.0 the result is 42
+found for $15.08 (2 Haiku, 12 Sonnet, 86 Opus). The current router reaches 42 for
+$14.15, so no threshold beats it.
+
+**Other findings.**
+- Arms A and B give the same result: Haiku's complexity score adds nothing, and on its
+  own it ranks the Opus-needed bugs low (0.36), like the current router.
+- Both passes routed every bug to the same tier at T = 0.5, and the Jev token totals were
+  identical. Unlike step 4, Jev answered deterministically here.
+- Only `precision_logic` (regexes, slicing, comparisons, bounds) leans the right way,
+  matching the earlier trace analysis, where the Opus-only bugs were small precision bugs.
+  It is one signal from 14 bugs, not a result.
+- Martian greptile#1 diffs 6,125 files (50 MB) and greptile#3 4,131 files; extraction
+  now describes only the 40 files with the most changed lines (`MAX_FILES`).
+
+**Conclusion.** Asking Jev narrow questions about each block removes the current router's
+inverted ranking but does not replace it with a useful one, and taking the riskiest block
+sends nearly everything to Opus. On these 100 bugs, which model finds a bug is not well
+predicted by describing the change.
+
 ## Spend
 
 | Step | Cost |
@@ -343,7 +400,8 @@ at all.
 | 7 Trace analysis (no API calls) | $0 |
 | 8 Martian sweep ($3.07), judging ($0.30), discarded first attempt ($0.27) | $3.64 |
 | 9 Sonnet sweep ($1.17), judging ($0.19) | $1.36 |
-| **Total** | **about $34.33** |
+| 10 Haiku block extraction ($0.40 BugsInPy; about $0.25-0.50 Martian, partly unlogged after the stopped runs); Jev 3,958 calls, about 3.6M input and 0.46M output tokens (price not measured) | about $0.65-0.90 + Jev |
+| **Total** | **about $35.0-35.2 + Jev** |
 
 Jev's own cost is not measured.
 

@@ -1,0 +1,253 @@
+diff --git a/httpie/__init__.py b/httpie/__init__.py
+index 8754177..996f0a5 100644
+--- a/httpie/__init__.py
++++ b/httpie/__init__.py
+@@ -7,7 +7,8 @@ __version__ = '0.4.0-alpha'
+ __licence__ = 'BSD'
+ 
+ 
+-class exit:
++class ExitStatus:
++    """Exit status code constants."""
+     OK = 0
+     ERROR = 1
+     ERROR_TIMEOUT = 2
+diff --git a/httpie/core.py b/httpie/core.py
+index b72b896..5678d6c 100644
+--- a/httpie/core.py
++++ b/httpie/core.py
+@@ -22,23 +22,23 @@ from pygments import __version__ as pygments_version
+ from .cli import parser
+ from .client import get_response
+ from .models import Environment
+-from .output import output_stream, write, write_with_colors_win_p3k
+-from . import exit
++from .output import build_output_stream, write, write_with_colors_win_p3k
++from . import ExitStatus
+ 
+ 
+-def get_exist_status(code, follow=False):
+-    """Translate HTTP status code to exit status."""
++def get_exist_status_code(code, follow=False):
++    """Translate HTTP status code to exit status code."""
+     if 300 <= code <= 399 and not follow:
+         # Redirect
+-        return exit.ERROR_HTTP_3XX
++        return ExitStatus.ERROR_HTTP_3XX
+     elif 400 <= code <= 499:
+         # Client Error
+-        return exit.ERROR_HTTP_4XX
++        return ExitStatus.ERROR_HTTP_4XX
+     elif 500 <= code <= 599:
+         # Server Error
+-        return exit.ERROR_HTTP_5XX
++        return ExitStatus.ERROR_HTTP_5XX
+     else:
+-        return exit.OK
++        return ExitStatus.OK
+ 
+ 
+ def print_debug_info(env):
+@@ -54,7 +54,7 @@ def print_debug_info(env):
+ def main(args=sys.argv[1:], env=Environment()):
+     """Run the main program and write the output to ``env.stdout``.
+ 
+-    Return exit status.
++    Return exit status code.
+ 
+     """
+     if env.config.default_options:
+@@ -66,12 +66,12 @@ def main(args=sys.argv[1:], env=Environment()):
+ 
+     debug = '--debug' in args
+     traceback = debug or '--traceback' in args
+-    status = exit.OK
++    exit_status_code = ExitStatus.OK
+ 
+     if debug:
+         print_debug_info(env)
+         if args == ['--debug']:
+-            sys.exit(exit.OK)
++            return exit_status_code
+ 
+     try:
+         args = parser.parse_args(args=args, env=env)
+@@ -79,15 +79,14 @@ def main(args=sys.argv[1:], env=Environment()):
+         response = get_response(args, config_dir=env.config.directory)
+ 
+         if args.check_status:
+-            status = get_exist_status(response.status_code,
+-                                      args.follow)
+-            if status and not env.stdout_isatty:
++            exit_status_code = get_exist_status_code(response.status_code,
++                                                     args.follow)
++            if exit_status_code != ExitStatus.OK and not env.stdout_isatty:
+                 error('%s %s', response.raw.status, response.raw.reason)
+ 
+-        stream = output_stream(args, env, response.request, response)
+-
+         write_kwargs = {
+-            'stream': stream,
++            'stream': build_output_stream(
++                args, env, response.request, response),
+             'outfile': env.stdout,
+             'flush': env.stdout_isatty or args.stream
+         }
+@@ -108,16 +107,18 @@ def main(args=sys.argv[1:], env=Environment()):
+         if traceback:
+             raise
+         env.stderr.write('\n')
+-        status = exit.ERROR
++        exit_status_code = ExitStatus.ERROR
++
+     except requests.Timeout:
+-        status = exit.ERROR_TIMEOUT
++        exit_status_code = ExitStatus.ERROR_TIMEOUT
+         error('Request timed out (%ss).', args.timeout)
++
+     except Exception as e:
+-        # TODO: distinguish between expected and unexpected errors.
+-        #       network errors vs. bugs, etc.
++        # TODO: Better distinction between expected and unexpected errors.
++        #       Network errors vs. bugs, etc.
+         if traceback:
+             raise
+         error('%s: %s', type(e).__name__, str(e))
+-        status = exit.ERROR
++        exit_status_code = ExitStatus.ERROR
+ 
+-    return status
++    return exit_status_code
+diff --git a/httpie/output.py b/httpie/output.py
+index bb091dc..df96180 100644
+--- a/httpie/output.py
++++ b/httpie/output.py
+@@ -78,23 +78,21 @@ def write_with_colors_win_p3k(stream, outfile, flush):
+             outfile.flush()
+ 
+ 
+-def output_stream(args, env, request, response):
++def build_output_stream(args, env, request, response):
+     """Build and return a chain of iterators over the `request`-`response`
+     exchange each of which yields `bytes` chunks.
+ 
+     """
+ 
+-    Stream = make_stream(env, args)
+-
+     req_h = OUT_REQ_HEAD in args.output_options
+     req_b = OUT_REQ_BODY in args.output_options
+     resp_h = OUT_RESP_HEAD in args.output_options
+     resp_b = OUT_RESP_BODY in args.output_options
+-
+     req = req_h or req_b
+     resp = resp_h or resp_b
+ 
+     output = []
++    Stream = get_stream_type(env, args)
+ 
+     if req:
+         output.append(Stream(
+@@ -120,7 +118,7 @@ def output_stream(args, env, request, response):
+     return chain(*output)
+ 
+ 
+-def make_stream(env, args):
++def get_stream_type(env, args):
+     """Pick the right stream type based on `env` and `args`.
+     Wrap it in a partial with the type-specific args so that
+     we don't need to think what stream we are dealing with.
+@@ -147,7 +145,7 @@ def make_stream(env, args):
+ 
+ 
+ class BaseStream(object):
+-    """Base HTTP message stream class."""
++    """Base HTTP message output stream class."""
+ 
+     def __init__(self, msg, with_headers=True, with_body=True):
+         """
+diff --git a/tests/tests.py b/tests/tests.py
+index 8c4f298..4cbf4e3 100755
+--- a/tests/tests.py
++++ b/tests/tests.py
+@@ -56,7 +56,7 @@ from requests.compat import is_windows, is_py26, bytes, str
+ TESTS_ROOT = os.path.abspath(os.path.dirname(__file__))
+ sys.path.insert(0, os.path.realpath(os.path.join(TESTS_ROOT, '..')))
+ 
+-from httpie import exit
++from httpie import ExitStatus
+ from httpie import input
+ from httpie.models import Environment
+ from httpie.core import main
+@@ -188,7 +188,7 @@ def http(*args, **kwargs):
+             sys.stderr.write(env.stderr.read())
+             raise
+         except SystemExit:
+-            exit_status = exit.ERROR
++            exit_status = ExitStatus.ERROR
+ 
+         env.stdout.seek(0)
+         env.stderr.seek(0)
+@@ -895,7 +895,7 @@ class ExitStatusTest(BaseTestCase):
+             httpbin('/status/200')
+         )
+         self.assertIn(OK, r)
+-        self.assertEqual(r.exit_status, exit.OK)
++        self.assertEqual(r.exit_status, ExitStatus.OK)
+ 
+     def test_error_response_exits_0_without_check_status(self):
+         r = http(
+@@ -903,7 +903,7 @@ class ExitStatusTest(BaseTestCase):
+             httpbin('/status/500')
+         )
+         self.assertIn('HTTP/1.1 500', r)
+-        self.assertEqual(r.exit_status, exit.OK)
++        self.assertEqual(r.exit_status, ExitStatus.OK)
+         self.assertTrue(not r.stderr)
+ 
+     def test_timeout_exit_status(self):
+@@ -912,7 +912,7 @@ class ExitStatusTest(BaseTestCase):
+             'GET',
+             httpbin('/delay/1')
+         )
+-        self.assertEqual(r.exit_status, exit.ERROR_TIMEOUT)
++        self.assertEqual(r.exit_status, ExitStatus.ERROR_TIMEOUT)
+ 
+     def test_3xx_check_status_exits_3_and_stderr_when_stdout_redirected(self):
+         r = http(
+@@ -923,7 +923,7 @@ class ExitStatusTest(BaseTestCase):
+             env=TestEnvironment(stdout_isatty=False,)
+         )
+         self.assertIn('HTTP/1.1 301', r)
+-        self.assertEqual(r.exit_status, exit.ERROR_HTTP_3XX)
++        self.assertEqual(r.exit_status, ExitStatus.ERROR_HTTP_3XX)
+         self.assertIn('301 moved permanently', r.stderr.lower())
+ 
+     @skipIf(requests_version == '0.13.6',
+@@ -937,7 +937,7 @@ class ExitStatusTest(BaseTestCase):
+         )
+         # The redirect will be followed so 200 is expected.
+         self.assertIn('HTTP/1.1 200 OK', r)
+-        self.assertEqual(r.exit_status, exit.OK)
++        self.assertEqual(r.exit_status, ExitStatus.OK)
+ 
+     def test_4xx_check_status_exits_4(self):
+         r = http(
+@@ -946,7 +946,7 @@ class ExitStatusTest(BaseTestCase):
+             httpbin('/status/401')
+         )
+         self.assertIn('HTTP/1.1 401', r)
+-        self.assertEqual(r.exit_status, exit.ERROR_HTTP_4XX)
++        self.assertEqual(r.exit_status, ExitStatus.ERROR_HTTP_4XX)
+         # Also stderr should be empty since stdout isn't redirected.
+         self.assertTrue(not r.stderr)
+ 
+@@ -957,7 +957,7 @@ class ExitStatusTest(BaseTestCase):
+             httpbin('/status/500')
+         )
+         self.assertIn('HTTP/1.1 500', r)
+-        self.assertEqual(r.exit_status, exit.ERROR_HTTP_5XX)
++        self.assertEqual(r.exit_status, ExitStatus.ERROR_HTTP_5XX)
+ 
+ 
+ class WindowsOnlyTests(BaseTestCase):

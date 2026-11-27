@@ -1,0 +1,177 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+index aa232a1..f05cd22 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -10,3 +10,8 @@ def no_memoize(monkeypatch):
+ @pytest.fixture
+ def settings():
+     return Mock(debug=False, no_colors=True)
++
++
++@pytest.fixture(autouse=True)
++def no_cache(monkeypatch):
++    monkeypatch.setattr('thefuck.utils.cache.disabled', True)
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 5979b20..30a5aaf 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -1,8 +1,9 @@
++from contextlib import contextmanager
+ import pytest
+ from mock import Mock
+-from thefuck.utils import wrap_settings,\
++from thefuck.utils import wrap_settings, \
+     memoize, get_closest, get_all_executables, replace_argument, \
+-    get_all_matched_commands, is_app, for_app
++    get_all_matched_commands, is_app, for_app, cache
+ from thefuck.types import Settings
+ from tests.utils import Command
+ 
+@@ -34,7 +35,6 @@ def test_no_memoize():
+ 
+ 
+ class TestGetClosest(object):
+-
+     def test_when_can_match(self):
+         assert 'branch' == get_closest('brnch', ['branch', 'status'])
+ 
+@@ -116,3 +116,56 @@ def test_for_app(script, names, result):
+         return True
+ 
+     assert match(Command(script), None) == result
++
++
++class TestCache(object):
++    @pytest.fixture(autouse=True)
++    def enable_cache(self, monkeypatch):
++        monkeypatch.setattr('thefuck.utils.cache.disabled', False)
++
++    @pytest.fixture
++    def shelve(self, mocker):
++        value = {}
++
++        @contextmanager
++        def _shelve(path):
++            yield value
++
++        mocker.patch('thefuck.utils.shelve.open', new_callable=lambda: _shelve)
++        return value
++
++    @pytest.fixture(autouse=True)
++    def mtime(self, mocker):
++        mocker.patch('thefuck.utils.os.path.getmtime', return_value=0)
++
++    @pytest.fixture
++    def fn(self):
++        @cache('~/.bashrc')
++        def fn():
++            return 'test'
++
++        return fn
++
++    def test_with_blank_cache(self, shelve, fn):
++        assert shelve == {}
++        assert fn() == 'test'
++        assert shelve == {
++            'tests.test_utils.<function TestCache.fn.<locals>.fn ': {
++                'etag': '0', 'value': 'test'}}
++
++    def test_with_filled_cache(self, shelve, fn):
++        cache_value = {
++            'tests.test_utils.<function TestCache.fn.<locals>.fn ': {
++                'etag': '0', 'value': 'new-value'}}
++        shelve.update(cache_value)
++        assert fn() == 'new-value'
++        assert shelve == cache_value
++
++    def test_when_etag_changed(self, shelve, fn):
++        shelve.update({
++            'tests.test_utils.<function TestCache.fn.<locals>.fn ': {
++                'etag': '-1', 'value': 'old-value'}})
++        assert fn() == 'test'
++        assert shelve == {
++            'tests.test_utils.<function TestCache.fn.<locals>.fn ': {
++                'etag': '0', 'value': 'test'}}
+diff --git a/thefuck/shells.py b/thefuck/shells.py
+index 505dbed..753373f 100644
+--- a/thefuck/shells.py
++++ b/thefuck/shells.py
+@@ -9,7 +9,7 @@ from subprocess import Popen, PIPE
+ from time import time
+ import io
+ import os
+-from .utils import DEVNULL, memoize
++from .utils import DEVNULL, memoize, cache
+ 
+ 
+ class Generic(object):
+@@ -85,6 +85,7 @@ class Bash(Generic):
+         return name, value
+ 
+     @memoize
++    @cache('.bashrc', '.bash_profile')
+     def get_aliases(self):
+         proc = Popen(['bash', '-ic', 'alias'], stdout=PIPE, stderr=DEVNULL)
+         return dict(
+@@ -169,6 +170,7 @@ class Zsh(Generic):
+         return name, value
+ 
+     @memoize
++    @cache('.zshrc')
+     def get_aliases(self):
+         proc = Popen(['zsh', '-ic', 'alias'], stdout=PIPE, stderr=DEVNULL)
+         return dict(
+diff --git a/thefuck/utils.py b/thefuck/utils.py
+index 3c70abb..14ca1df 100644
+--- a/thefuck/utils.py
++++ b/thefuck/utils.py
+@@ -1,6 +1,8 @@
+ from difflib import get_close_matches
+ from functools import wraps
++import shelve
+ from decorator import decorator
++import tempfile
+ 
+ import os
+ import pickle
+@@ -150,3 +152,40 @@ def for_app(*app_names):
+             return False
+ 
+     return decorator(_for_app)
++
++
++def cache(*depends_on):
++    """Caches function result in temporary file.
++
++    Cache will be expired when modification date of files from `depends_on`
++    will be changed.
++
++    Function wrapped in `cache` should be arguments agnostic.
++
++    """
++    def _get_mtime(name):
++        path = os.path.join(os.path.expanduser('~'), name)
++        try:
++            return str(os.path.getmtime(path))
++        except OSError:
++            return '0'
++
++    @decorator
++    def _cache(fn, *args, **kwargs):
++        if cache.disabled:
++            return fn(*args, **kwargs)
++
++        cache_path = os.path.join(tempfile.gettempdir(), '.thefuck-cache')
++        key = '{}.{}'.format(fn.__module__, repr(fn).split('at')[0])
++
++        etag = '.'.join(_get_mtime(name) for name in depends_on)
++
++        with shelve.open(cache_path) as db:
++            if db.get(key, {}).get('etag') == etag:
++                return db[key]['value']
++            else:
++                value = fn(*args, **kwargs)
++                db[key] = {'etag': etag, 'value': value}
++                return value
++    return _cache
++cache.disabled = False

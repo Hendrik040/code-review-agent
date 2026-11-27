@@ -1,0 +1,264 @@
+diff --git a/tests/rules/test_history.py b/tests/rules/test_history.py
+index a9b2505..87129f7 100644
+--- a/tests/rules/test_history.py
++++ b/tests/rules/test_history.py
+@@ -3,38 +3,23 @@ from thefuck.rules.history import match, get_new_command
+ from tests.utils import Command
+ 
+ 
+-@pytest.fixture
+-def history(mocker):
+-    return mocker.patch('thefuck.shells.shell.get_history',
+-                        return_value=['le cat', 'fuck', 'ls cat',
+-                                      'diff x', 'nocommand x'])
++@pytest.fixture(autouse=True)
++def history_without_current(mocker):
++    return mocker.patch(
++        'thefuck.rules.history.get_valid_history_without_current',
++        return_value=['ls cat', 'diff x'])
+ 
+ 
+-@pytest.fixture
+-def alias(mocker):
+-    return mocker.patch('thefuck.rules.history.get_alias',
+-                        return_value='fuck')
+-
+-
+-@pytest.fixture
+-def callables(mocker):
+-    return mocker.patch('thefuck.rules.history.get_all_executables',
+-                        return_value=['diff', 'ls'])
+-
+-
+-@pytest.mark.usefixtures('history', 'callables', 'no_memoize', 'alias')
+ @pytest.mark.parametrize('script', ['ls cet', 'daff x'])
+ def test_match(script):
+     assert match(Command(script=script))
+ 
+ 
+-@pytest.mark.usefixtures('history', 'callables', 'no_memoize', 'alias')
+ @pytest.mark.parametrize('script', ['apt-get', 'nocommand y'])
+ def test_not_match(script):
+     assert not match(Command(script=script))
+ 
+ 
+-@pytest.mark.usefixtures('history', 'callables', 'no_memoize', 'alias')
+ @pytest.mark.parametrize('script, result', [
+     ('ls cet', 'ls cat'),
+     ('daff x', 'diff x')])
+diff --git a/tests/rules/test_no_command.py b/tests/rules/test_no_command.py
+index a8a21cb..5249c2b 100644
+--- a/tests/rules/test_no_command.py
++++ b/tests/rules/test_no_command.py
+@@ -6,22 +6,37 @@ from tests.utils import Command
+ @pytest.fixture(autouse=True)
+ def get_all_executables(mocker):
+     mocker.patch('thefuck.rules.no_command.get_all_executables',
+-                 return_value=['vim', 'apt-get', 'fsck'])
++                 return_value=['vim', 'fsck', 'git', 'go'])
++
++
++@pytest.fixture(autouse=True)
++def history_without_current(mocker):
++    return mocker.patch(
++        'thefuck.rules.no_command.get_valid_history_without_current',
++        return_value=['git commit'])
++
++
++@pytest.mark.usefixtures('no_memoize')
++@pytest.mark.parametrize('script, stderr', [
++    ('vom file.py', 'vom: not found'),
++    ('fucck', 'fucck: not found'),
++    ('got commit', 'got: command not found')])
++def test_match(script, stderr):
++    assert match(Command(script, stderr=stderr))
+ 
+ 
+ @pytest.mark.usefixtures('no_memoize')
+-def test_match():
+-    assert match(Command(stderr='vom: not found', script='vom file.py'))
+-    assert match(Command(stderr='fucck: not found', script='fucck'))
+-    assert not match(Command(stderr='qweqwe: not found', script='qweqwe'))
+-    assert not match(Command(stderr='some text', script='vom file.py'))
++@pytest.mark.parametrize('script, stderr', [
++    ('qweqwe', 'qweqwe: not found'),
++    ('vom file.py', 'some text')])
++def test_not_match(script, stderr):
++    assert not match(Command(script, stderr=stderr))
+ 
+ 
+ @pytest.mark.usefixtures('no_memoize')
+-def test_get_new_command():
+-    assert get_new_command(
+-        Command(stderr='vom: not found',
+-                script='vom file.py')) == ['vim file.py']
+-    assert get_new_command(
+-        Command(stderr='fucck: not found',
+-                script='fucck')) == ['fsck']
++@pytest.mark.parametrize('script, result', [
++    ('vom file.py', ['vim file.py']),
++    ('fucck', ['fsck']),
++    ('got commit', ['git commit', 'go commit'])])
++def test_get_new_command(script, result):
++    assert get_new_command(Command(script)) == result
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 7207827..4441a8e 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -3,7 +3,8 @@ from mock import Mock
+ import six
+ from thefuck.utils import default_settings, \
+     memoize, get_closest, get_all_executables, replace_argument, \
+-    get_all_matched_commands, is_app, for_app, cache, compatibility_call
++    get_all_matched_commands, is_app, for_app, cache, compatibility_call, \
++    get_valid_history_without_current
+ from tests.utils import Command
+ 
+ 
+@@ -229,3 +230,29 @@ class TestCompatibilityCall(object):
+             return True
+ 
+         assert compatibility_call(side_effect, Command(), Command())
++
++
++class TestGetValidHistoryWithoutCurrent(object):
++    @pytest.fixture(autouse=True)
++    def history(self, mocker):
++        return mocker.patch('thefuck.shells.shell.get_history',
++                            return_value=['le cat', 'fuck', 'ls cat',
++                                          'diff x', 'nocommand x'])
++
++    @pytest.fixture(autouse=True)
++    def alias(self, mocker):
++        return mocker.patch('thefuck.utils.get_alias',
++                            return_value='fuck')
++
++    @pytest.fixture(autouse=True)
++    def callables(self, mocker):
++        return mocker.patch('thefuck.utils.get_all_executables',
++                            return_value=['diff', 'ls'])
++
++    @pytest.mark.parametrize('script, result', [
++        ('le cat', ['ls cat', 'diff x']),
++        ('diff x', ['ls cat']),
++        ('fuck', ['ls cat', 'diff x'])])
++    def test_get_valid_history_without_current(self, script, result):
++        command = Command(script=script)
++        assert get_valid_history_without_current(command) == result
+diff --git a/thefuck/rules/history.py b/thefuck/rules/history.py
+index 96f8450..8294963 100644
+--- a/thefuck/rules/history.py
++++ b/thefuck/rules/history.py
+@@ -1,37 +1,15 @@
+ from difflib import get_close_matches
+-from thefuck.shells import shell
+-from thefuck.utils import get_closest, memoize, get_all_executables, get_alias
+-
+-
+-def _not_corrected(history, tf_alias):
+-    """Returns all lines from history except that comes before `fuck`."""
+-    previous = None
+-    for line in history:
+-        if previous is not None and line != tf_alias:
+-            yield previous
+-        previous = line
+-    if history:
+-        yield history[-1]
+-
+-
+-@memoize
+-def _history_of_exists_without_current(command):
+-    history = shell.get_history()
+-    tf_alias = get_alias()
+-    executables = get_all_executables()
+-    return [line for line in _not_corrected(history, tf_alias)
+-            if not line.startswith(tf_alias) and not line == command.script
+-            and line.split(' ')[0] in executables]
++from thefuck.utils import get_closest, get_valid_history_without_current
+ 
+ 
+ def match(command):
+     return len(get_close_matches(command.script,
+-                                 _history_of_exists_without_current(command)))
++                                 get_valid_history_without_current(command)))
+ 
+ 
+ def get_new_command(command):
+     return get_closest(command.script,
+-                       _history_of_exists_without_current(command))
++                       get_valid_history_without_current(command))
+ 
+ 
+ priority = 9999
+diff --git a/thefuck/rules/no_command.py b/thefuck/rules/no_command.py
+index f67cda5..34b7a4b 100644
+--- a/thefuck/rules/no_command.py
++++ b/thefuck/rules/no_command.py
+@@ -1,5 +1,6 @@
+ from difflib import get_close_matches
+-from thefuck.utils import get_all_executables
++from thefuck.utils import get_all_executables, \
++    get_valid_history_without_current, get_closest
+ from thefuck.specific.sudo import sudo_support
+ 
+ 
+@@ -11,10 +12,29 @@ def match(command):
+                                        get_all_executables())))
+ 
+ 
++def _get_used_executables(command):
++    for script in get_valid_history_without_current(command):
++        yield script.split(' ')[0]
++
++
+ @sudo_support
+ def get_new_command(command):
+     old_command = command.script_parts[0]
+-    new_cmds = get_close_matches(old_command, get_all_executables(), cutoff=0.1)
++
++    # One from history:
++    already_used = get_closest(
++        old_command, _get_used_executables(command),
++        fallback_to_first=False)
++    if already_used:
++        new_cmds = [already_used]
++    else:
++        new_cmds = []
++
++    # Other from all executables:
++    new_cmds += [cmd for cmd in get_close_matches(old_command,
++                                                  get_all_executables())
++                 if cmd not in new_cmds]
++
+     return [' '.join([new_command] + command.script_parts[1:])
+             for new_command in new_cmds]
+ 
+diff --git a/thefuck/utils.py b/thefuck/utils.py
+index 3089661..83079e3 100644
+--- a/thefuck/utils.py
++++ b/thefuck/utils.py
+@@ -269,3 +269,24 @@ def get_installation_info():
+ 
+ def get_alias():
+     return os.environ.get('TF_ALIAS', 'fuck')
++
++
++@memoize
++def get_valid_history_without_current(command):
++    def _not_corrected(history, tf_alias):
++        """Returns all lines from history except that comes before `fuck`."""
++        previous = None
++        for line in history:
++            if previous is not None and line != tf_alias:
++                yield previous
++            previous = line
++        if history:
++            yield history[-1]
++
++    from thefuck.shells import shell
++    history = shell.get_history()
++    tf_alias = get_alias()
++    executables = get_all_executables()
++    return [line for line in _not_corrected(history, tf_alias)
++            if not line.startswith(tf_alias) and not line == command.script
++            and line.split(' ')[0] in executables]

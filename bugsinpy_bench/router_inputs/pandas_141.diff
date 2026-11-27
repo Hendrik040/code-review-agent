@@ -1,0 +1,120 @@
+diff --git a/doc/source/whatsnew/v0.25.0.rst b/doc/source/whatsnew/v0.25.0.rst
+index 83a9044..82e093b 100644
+--- a/doc/source/whatsnew/v0.25.0.rst
++++ b/doc/source/whatsnew/v0.25.0.rst
+@@ -645,6 +645,7 @@ Performance improvements
+   int8/int16/int32 and the searched key is within the integer bounds for the dtype (:issue:`22034`)
+ - Improved performance of :meth:`pandas.core.groupby.GroupBy.quantile` (:issue:`20405`)
+ - Improved performance of slicing and other selected operation on a :class:`RangeIndex` (:issue:`26565`, :issue:`26617`, :issue:`26722`)
++- :class:`RangeIndex` now performs standard lookup without instantiating an actual hashtable, hence saving memory (:issue:`16685`)
+ - Improved performance of :meth:`read_csv` by faster tokenizing and faster parsing of small float numbers (:issue:`25784`)
+ - Improved performance of :meth:`read_csv` by faster parsing of N/A and boolean values (:issue:`25804`)
+ - Improved performance of :attr:`IntervalIndex.is_monotonic`, :attr:`IntervalIndex.is_monotonic_increasing` and :attr:`IntervalIndex.is_monotonic_decreasing` by removing conversion to :class:`MultiIndex` (:issue:`24813`)
+diff --git a/pandas/core/indexes/range.py b/pandas/core/indexes/range.py
+index 47dad17..70ca0b3 100644
+--- a/pandas/core/indexes/range.py
++++ b/pandas/core/indexes/range.py
+@@ -13,8 +13,8 @@ from pandas.util._decorators import Appender, cache_readonly
+ 
+ from pandas.core.dtypes import concat as _concat
+ from pandas.core.dtypes.common import (
+-    ensure_python_int, is_int64_dtype, is_integer, is_scalar,
+-    is_timedelta64_dtype)
++    ensure_platform_int, ensure_python_int, is_int64_dtype, is_integer,
++    is_integer_dtype, is_list_like, is_scalar, is_timedelta64_dtype)
+ from pandas.core.dtypes.generic import (
+     ABCDataFrame, ABCSeries, ABCTimedeltaIndex)
+ 
+@@ -348,6 +348,36 @@ class RangeIndex(Int64Index):
+                 raise KeyError(key)
+         return super().get_loc(key, method=method, tolerance=tolerance)
+ 
++    @Appender(_index_shared_docs['get_indexer'])
++    def get_indexer(self, target, method=None, limit=None, tolerance=None):
++        if not (method is None and tolerance is None and is_list_like(target)):
++            return super().get_indexer(target, method=method,
++                                       tolerance=tolerance)
++
++        if self.step > 0:
++            start, stop, step = self.start, self.stop, self.step
++        else:
++            # Work on reversed range for simplicity:
++            start, stop, step = (self.stop - self.step,
++                                 self.start + 1,
++                                 - self.step)
++
++        target_array = np.asarray(target)
++        if not (is_integer_dtype(target_array) and target_array.ndim == 1):
++            # checks/conversions/roundings are delegated to general method
++            return super().get_indexer(target, method=method,
++                                       tolerance=tolerance)
++
++        locs = target_array - start
++        valid = (locs % step == 0) & (locs >= 0) & (target_array < stop)
++        locs[~valid] = -1
++        locs[valid] = locs[valid] / step
++
++        if step != self.step:
++            # We reversed this range: transform to original locs
++            locs[valid] = len(self) - 1 - locs[valid]
++        return ensure_platform_int(locs)
++
+     def tolist(self):
+         return list(self._range)
+ 
+diff --git a/pandas/tests/indexes/test_base.py b/pandas/tests/indexes/test_base.py
+index 1de20dc..c618b9b 100644
+--- a/pandas/tests/indexes/test_base.py
++++ b/pandas/tests/indexes/test_base.py
+@@ -1439,9 +1439,12 @@ class TestIndex(Base):
+             index.get_indexer(['a', 'b', 'c', 'd'], method='pad',
+                               tolerance=[2, 2, 2, 2])
+ 
+-    def test_get_indexer_numeric_index_boolean_target(self):
++    @pytest.mark.parametrize("idx_class", [Int64Index, RangeIndex,
++                                           Float64Index])
++    def test_get_indexer_numeric_index_boolean_target(self, idx_class):
+         # GH 16877
+-        numeric_index = pd.Index(range(4))
++
++        numeric_index = idx_class(RangeIndex((4)))
+         result = numeric_index.get_indexer([True, False, True])
+         expected = np.array([-1, -1, -1], dtype=np.intp)
+         tm.assert_numpy_array_equal(result, expected)
+diff --git a/pandas/tests/indexes/test_range.py b/pandas/tests/indexes/test_range.py
+index 5f7f10e..e9fe127 100644
+--- a/pandas/tests/indexes/test_range.py
++++ b/pandas/tests/indexes/test_range.py
+@@ -3,6 +3,8 @@ from datetime import datetime
+ import numpy as np
+ import pytest
+ 
++from pandas.core.dtypes.common import ensure_platform_int
++
+ import pandas as pd
+ from pandas import Float64Index, Index, Int64Index, RangeIndex, Series
+ import pandas.util.testing as tm
+@@ -965,3 +967,23 @@ class TestRangeIndex(Numeric):
+             # Append single item rather than list
+             result2 = indices[0].append(indices[1])
+             tm.assert_index_equal(result2, expected, exact=True)
++
++    def test_engineless_lookup(self):
++        # GH 16685
++        # Standard lookup on RangeIndex should not require the engine to be
++        # created
++        idx = RangeIndex(2, 10, 3)
++
++        assert idx.get_loc(5) == 1
++        tm.assert_numpy_array_equal(idx.get_indexer([2, 8]),
++                                    ensure_platform_int(np.array([0, 2])))
++        with pytest.raises(KeyError):
++            idx.get_loc(3)
++
++        assert '_engine' not in idx._cache
++
++        # The engine is still required for lookup of a different dtype scalar:
++        with pytest.raises(KeyError):
++            assert idx.get_loc('a') == -1
++
++        assert '_engine' in idx._cache

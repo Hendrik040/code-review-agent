@@ -1,0 +1,274 @@
+diff --git a/scrapy/http/cookies.py b/scrapy/http/cookies.py
+index b1eb767..740f21d 100644
+--- a/scrapy/http/cookies.py
++++ b/scrapy/http/cookies.py
+@@ -1,6 +1,9 @@
+ import time
+-from cookielib import CookieJar as _CookieJar, DefaultCookiePolicy, IPV4_RE
++from six.moves.http_cookiejar import (
++    CookieJar as _CookieJar, DefaultCookiePolicy, IPV4_RE
++)
+ from scrapy.utils.httpobj import urlparse_cached
++from scrapy.utils.python import to_native_str
+ 
+ 
+ class CookieJar(object):
+@@ -97,6 +100,7 @@ def potential_domain_matches(domain):
+         pass
+     return matches + ['.' + d for d in matches]
+ 
++
+ class _DummyLock(object):
+     def acquire(self):
+         pass
+@@ -133,6 +137,11 @@ class WrappedRequest(object):
+         """
+         return self.request.meta.get('is_unverifiable', False)
+ 
++    # python3 uses request.unverifiable
++    @property
++    def unverifiable(self):
++        return self.is_unverifiable()
++
+     def get_origin_req_host(self):
+         return urlparse_cached(self.request).hostname
+ 
+@@ -140,14 +149,16 @@ class WrappedRequest(object):
+         return name in self.request.headers
+ 
+     def get_header(self, name, default=None):
+-        return self.request.headers.get(name, default)
++        return to_native_str(self.request.headers.get(name, default))
+ 
+     def header_items(self):
+-        return self.request.headers.items()
++        return [
++            (to_native_str(k), [to_native_str(x) for x in v])
++            for k, v in self.request.headers.items()
++        ]
+ 
+     def add_unredirected_header(self, name, value):
+         self.request.headers.appendlist(name, value)
+-        #print 'add_unredirected_header', self.request.headers
+ 
+ 
+ class WrappedResponse(object):
+@@ -158,5 +169,8 @@ class WrappedResponse(object):
+     def info(self):
+         return self
+ 
+-    def getheaders(self, name):
+-        return self.response.headers.getlist(name)
++    # python3 cookiejars calls get_all
++    def get_all(self, name, default=None):
++        return [to_native_str(v) for v in self.response.headers.getlist(name)]
++    # python2 cookiejars calls getheaders
++    getheaders = get_all
+diff --git a/tests/py3-ignores.txt b/tests/py3-ignores.txt
+index 0d4d397..469d2c5 100644
+--- a/tests/py3-ignores.txt
++++ b/tests/py3-ignores.txt
+@@ -11,7 +11,6 @@ tests/test_crawl.py
+ tests/test_crawler.py
+ tests/test_downloader_handlers.py
+ tests/test_downloadermiddleware_ajaxcrawlable.py
+-tests/test_downloadermiddleware_cookies.py
+ tests/test_downloadermiddleware_defaultheaders.py
+ tests/test_downloadermiddleware_downloadtimeout.py
+ tests/test_downloadermiddleware_httpauth.py
+@@ -24,7 +23,6 @@ tests/test_downloadermiddleware_retry.py
+ tests/test_downloadermiddleware_stats.py
+ tests/test_downloadermiddleware_useragent.py
+ tests/test_engine.py
+-tests/test_http_cookies.py
+ tests/test_logformatter.py
+ tests/test_mail.py
+ tests/test_pipeline_files.py
+@@ -51,7 +49,6 @@ scrapy/xlib/tx/endpoints.py
+ scrapy/xlib/tx/client.py
+ scrapy/xlib/tx/_newclient.py
+ scrapy/xlib/tx/__init__.py
+-scrapy/http/cookies.py
+ scrapy/core/downloader/handlers/s3.py
+ scrapy/core/downloader/handlers/http11.py
+ scrapy/core/downloader/handlers/http.py
+diff --git a/tests/test_downloadermiddleware_cookies.py b/tests/test_downloadermiddleware_cookies.py
+index 996b8c3..6174f8c 100644
+--- a/tests/test_downloadermiddleware_cookies.py
++++ b/tests/test_downloadermiddleware_cookies.py
+@@ -9,7 +9,7 @@ from scrapy.downloadermiddlewares.cookies import CookiesMiddleware
+ class CookiesMiddlewareTest(TestCase):
+ 
+     def assertCookieValEqual(self, first, second, msg=None):
+-        cookievaleq = lambda cv: re.split(';\s*', cv)
++        cookievaleq = lambda cv: re.split(';\s*', cv.decode('latin1'))
+         return self.assertEqual(
+             sorted(cookievaleq(first)),
+             sorted(cookievaleq(second)), msg)
+@@ -34,7 +34,7 @@ class CookiesMiddlewareTest(TestCase):
+ 
+         req2 = Request('http://scrapytest.org/sub1/')
+         assert self.mw.process_request(req2, self.spider) is None
+-        self.assertEquals(req2.headers.get('Cookie'), "C1=value1")
++        self.assertEquals(req2.headers.get('Cookie'), b"C1=value1")
+ 
+     def test_dont_merge_cookies(self):
+         # merge some cookies into jar
+@@ -55,12 +55,12 @@ class CookiesMiddlewareTest(TestCase):
+         # check that cookies are merged back
+         req = Request('http://scrapytest.org/mergeme')
+         assert self.mw.process_request(req, self.spider) is None
+-        self.assertEquals(req.headers.get('Cookie'), 'C1=value1')
++        self.assertEquals(req.headers.get('Cookie'), b'C1=value1')
+ 
+         # check that cookies are merged when dont_merge_cookies is passed as 0
+         req = Request('http://scrapytest.org/mergeme', meta={'dont_merge_cookies': 0})
+         assert self.mw.process_request(req, self.spider) is None
+-        self.assertEquals(req.headers.get('Cookie'), 'C1=value1')
++        self.assertEquals(req.headers.get('Cookie'), b'C1=value1')
+ 
+     def test_complex_cookies(self):
+         # merge some cookies into jar
+@@ -76,12 +76,12 @@ class CookiesMiddlewareTest(TestCase):
+         # embed C1 and C3 for scrapytest.org/foo
+         req = Request('http://scrapytest.org/foo')
+         self.mw.process_request(req, self.spider)
+-        assert req.headers.get('Cookie') in ('C1=value1; C3=value3', 'C3=value3; C1=value1')
++        assert req.headers.get('Cookie') in (b'C1=value1; C3=value3', b'C3=value3; C1=value1')
+ 
+         # embed C2 for scrapytest.org/bar
+         req = Request('http://scrapytest.org/bar')
+         self.mw.process_request(req, self.spider)
+-        self.assertEquals(req.headers.get('Cookie'), 'C2=value2')
++        self.assertEquals(req.headers.get('Cookie'), b'C2=value2')
+ 
+         # embed nothing for scrapytest.org/baz
+         req = Request('http://scrapytest.org/baz')
+@@ -91,7 +91,7 @@ class CookiesMiddlewareTest(TestCase):
+     def test_merge_request_cookies(self):
+         req = Request('http://scrapytest.org/', cookies={'galleta': 'salada'})
+         assert self.mw.process_request(req, self.spider) is None
+-        self.assertEquals(req.headers.get('Cookie'), 'galleta=salada')
++        self.assertEquals(req.headers.get('Cookie'), b'galleta=salada')
+ 
+         headers = {'Set-Cookie': 'C1=value1; path=/'}
+         res = Response('http://scrapytest.org/', headers=headers)
+@@ -100,12 +100,12 @@ class CookiesMiddlewareTest(TestCase):
+         req2 = Request('http://scrapytest.org/sub1/')
+         assert self.mw.process_request(req2, self.spider) is None
+ 
+-        self.assertCookieValEqual(req2.headers.get('Cookie'), "C1=value1; galleta=salada")
++        self.assertCookieValEqual(req2.headers.get('Cookie'), b"C1=value1; galleta=salada")
+ 
+     def test_cookiejar_key(self):
+         req = Request('http://scrapytest.org/', cookies={'galleta': 'salada'}, meta={'cookiejar': "store1"})
+         assert self.mw.process_request(req, self.spider) is None
+-        self.assertEquals(req.headers.get('Cookie'), 'galleta=salada')
++        self.assertEquals(req.headers.get('Cookie'), b'galleta=salada')
+ 
+         headers = {'Set-Cookie': 'C1=value1; path=/'}
+         res = Response('http://scrapytest.org/', headers=headers, request=req)
+@@ -113,11 +113,11 @@ class CookiesMiddlewareTest(TestCase):
+ 
+         req2 = Request('http://scrapytest.org/', meta=res.meta)
+         assert self.mw.process_request(req2, self.spider) is None
+-        self.assertCookieValEqual(req2.headers.get('Cookie'),'C1=value1; galleta=salada')
++        self.assertCookieValEqual(req2.headers.get('Cookie'), b'C1=value1; galleta=salada')
+ 
+         req3 = Request('http://scrapytest.org/', cookies={'galleta': 'dulce'}, meta={'cookiejar': "store2"})
+         assert self.mw.process_request(req3, self.spider) is None
+-        self.assertEquals(req3.headers.get('Cookie'), 'galleta=dulce')
++        self.assertEquals(req3.headers.get('Cookie'), b'galleta=dulce')
+ 
+         headers = {'Set-Cookie': 'C2=value2; path=/'}
+         res2 = Response('http://scrapytest.org/', headers=headers, request=req3)
+@@ -125,7 +125,7 @@ class CookiesMiddlewareTest(TestCase):
+ 
+         req4 = Request('http://scrapytest.org/', meta=res2.meta)
+         assert self.mw.process_request(req4, self.spider) is None
+-        self.assertCookieValEqual(req4.headers.get('Cookie'), 'C2=value2; galleta=dulce')
++        self.assertCookieValEqual(req4.headers.get('Cookie'), b'C2=value2; galleta=dulce')
+ 
+         #cookies from hosts with port
+         req5_1 = Request('http://scrapytest.org:1104/')
+@@ -137,11 +137,11 @@ class CookiesMiddlewareTest(TestCase):
+ 
+         req5_2 = Request('http://scrapytest.org:1104/some-redirected-path')
+         assert self.mw.process_request(req5_2, self.spider) is None
+-        self.assertEquals(req5_2.headers.get('Cookie'), 'C1=value1')
++        self.assertEquals(req5_2.headers.get('Cookie'), b'C1=value1')
+ 
+         req5_3 = Request('http://scrapytest.org/some-redirected-path')
+         assert self.mw.process_request(req5_3, self.spider) is None
+-        self.assertEquals(req5_3.headers.get('Cookie'), 'C1=value1')
++        self.assertEquals(req5_3.headers.get('Cookie'), b'C1=value1')
+ 
+         #skip cookie retrieval for not http request
+         req6 = Request('file:///scrapy/sometempfile')
+@@ -152,5 +152,4 @@ class CookiesMiddlewareTest(TestCase):
+         request = Request("http://example-host/", cookies={'currencyCookie': 'USD'})
+         assert self.mw.process_request(request, self.spider) is None
+         self.assertIn('Cookie', request.headers)
+-        self.assertIn('currencyCookie', request.headers['Cookie'])
+-
++        self.assertEqual(b'currencyCookie=USD', request.headers['Cookie'])
+diff --git a/tests/test_http_cookies.py b/tests/test_http_cookies.py
+index 3d69934..d529f60 100644
+--- a/tests/test_http_cookies.py
++++ b/tests/test_http_cookies.py
+@@ -8,8 +8,8 @@ from scrapy.http.cookies import WrappedRequest, WrappedResponse
+ class WrappedRequestTest(TestCase):
+ 
+     def setUp(self):
+-        self.request = Request("http://www.example.com/page.html", \
+-            headers={"Content-Type": "text/html"})
++        self.request = Request("http://www.example.com/page.html",
++                               headers={"Content-Type": "text/html"})
+         self.wrapped = WrappedRequest(self.request)
+ 
+     def test_get_full_url(self):
+@@ -23,10 +23,12 @@ class WrappedRequestTest(TestCase):
+ 
+     def test_is_unverifiable(self):
+         self.assertFalse(self.wrapped.is_unverifiable())
++        self.assertFalse(self.wrapped.unverifiable)
+ 
+     def test_is_unverifiable2(self):
+         self.request.meta['is_unverifiable'] = True
+         self.assertTrue(self.wrapped.is_unverifiable())
++        self.assertTrue(self.wrapped.unverifiable)
+ 
+     def test_get_origin_req_host(self):
+         self.assertEqual(self.wrapped.get_origin_req_host(), 'www.example.com')
+@@ -40,17 +42,19 @@ class WrappedRequestTest(TestCase):
+         self.assertEqual(self.wrapped.get_header('xxxxx', 'def'), 'def')
+ 
+     def test_header_items(self):
+-        self.assertEqual(self.wrapped.header_items(), [('Content-Type', ['text/html'])])
++        self.assertEqual(self.wrapped.header_items(),
++                         [('Content-Type', ['text/html'])])
+ 
+     def test_add_unredirected_header(self):
+         self.wrapped.add_unredirected_header('hello', 'world')
+-        self.assertEqual(self.request.headers['hello'], 'world')
++        self.assertEqual(self.request.headers['hello'], b'world')
++
+ 
+ class WrappedResponseTest(TestCase):
+ 
+     def setUp(self):
+-        self.response = Response("http://www.example.com/page.html", 
+-            headers={"Content-TYpe": "text/html"})
++        self.response = Response("http://www.example.com/page.html",
++                                 headers={"Content-TYpe": "text/html"})
+         self.wrapped = WrappedResponse(self.response)
+ 
+     def test_info(self):
+@@ -58,3 +62,7 @@ class WrappedResponseTest(TestCase):
+ 
+     def test_getheaders(self):
+         self.assertEqual(self.wrapped.getheaders('content-type'), ['text/html'])
++
++    def test_get_all(self):
++        # get_all result must be native string
++        self.assertEqual(self.wrapped.get_all('content-type'), ['text/html'])

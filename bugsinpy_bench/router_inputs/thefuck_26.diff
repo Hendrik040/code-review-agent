@@ -1,0 +1,61 @@
+diff --git a/README.md b/README.md
+index 806b6dc..11378a7 100644
+--- a/README.md
++++ b/README.md
+@@ -192,6 +192,7 @@ using the matched rule and runs it. Rules enabled by default are as follows:
+ * `tsuru_not_command` &ndash; fixes wrong `tsuru` commands like `tsuru shell`;
+ * `tmux` &ndash; fixes `tmux` commands;
+ * `unknown_command` &ndash; fixes hadoop hdfs-style "unknown command" for example adds missing '-' to the command on `hdfs dfs ls`;
++* `vagrant_up` &ndash; starts up the vagrant instance;
+ * `whois` &ndash; fixes `whois` command.
+ 
+ Enabled by default only on specific platforms:
+diff --git a/tests/rules/test_vagrant_up.py b/tests/rules/test_vagrant_up.py
+new file mode 100644
+index 0000000..f3b8e4b
+--- /dev/null
++++ b/tests/rules/test_vagrant_up.py
+@@ -0,0 +1,25 @@
++import pytest
++from thefuck.rules.vagrant_up import match, get_new_command
++from tests.utils import Command
++
++@pytest.mark.parametrize('command', [
++    Command(script='vagrant ssh', stderr='VM must be running to open SSH connection. Run `vagrant up`\nto start the virtual machine.'),
++    Command(script='vagrant ssh devbox', stderr='VM must be running to open SSH connection. Run `vagrant up`\nto start the virtual machine.'),
++    Command(script='vagrant rdp',
++            stderr='VM must be created before running this command. Run `vagrant up` first.'),
++    Command(script='vagrant rdp devbox',
++            stderr='VM must be created before running this command. Run `vagrant up` first.')])
++def test_match(command):
++    assert match(command, None)
++
++
++@pytest.mark.parametrize('command, new_command', [
++    (Command(script='vagrant ssh', stderr='VM must be running to open SSH connection. Run `vagrant up`\nto start the virtual machine.'), 'vagrant up  && vagrant ssh'),
++    (Command(script='vagrant ssh devbox', stderr='VM must be running to open SSH connection. Run `vagrant up`\nto start the virtual machine.'), 'vagrant up devbox && vagrant ssh devbox'),
++    (Command(script='vagrant rdp',
++            stderr='VM must be created before running this command. Run `vagrant up` first.'), 'vagrant up  && vagrant rdp'),
++    (Command(script='vagrant rdp devbox',
++            stderr='VM must be created before running this command. Run `vagrant up` first.'), 'vagrant up devbox && vagrant rdp devbox')])
++def test_get_new_command(command, new_command):
++    assert get_new_command(command, None) == new_command
++
+diff --git a/thefuck/rules/vagrant_up.py b/thefuck/rules/vagrant_up.py
+new file mode 100644
+index 0000000..44954a4
+--- /dev/null
++++ b/thefuck/rules/vagrant_up.py
+@@ -0,0 +1,12 @@
++from thefuck import shells
++
++
++def match(command, settings):
++    return command.script.startswith('vagrant ') and 'run `vagrant up`' in command.stderr.lower()
++
++def get_new_command(command, settings):
++    cmds = command.script.split(' ')
++    machine = ""
++    if len(cmds) >= 3:
++        machine = cmds[2]
++    return "vagrant up " +  machine + " && " + command.script

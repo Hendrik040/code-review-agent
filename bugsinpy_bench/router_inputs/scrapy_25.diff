@@ -1,0 +1,53 @@
+diff --git a/scrapy/http/request/form.py b/scrapy/http/request/form.py
+index 5c639a6..69088c4 100644
+--- a/scrapy/http/request/form.py
++++ b/scrapy/http/request/form.py
+@@ -5,7 +5,7 @@ This module implements the FormRequest class which is a more covenient class
+ See documentation in docs/topics/request-response.rst
+ """
+ 
+-import urllib
++import urllib, urlparse
+ import lxml.html
+ from scrapy.http.request import Request
+ from scrapy.utils.python import unicode_to_str
+@@ -35,10 +35,14 @@ class FormRequest(Request):
+         kwargs.setdefault('encoding', response.encoding)
+         form = _get_form(response, formname, formnumber, formxpath)
+         formdata = _get_inputs(form, formdata, dont_click, clickdata, response)
+-        url = form.action or form.base_url
++        url = _get_form_url(form, kwargs.pop('url', None))
+         method = kwargs.pop('method', form.method)
+-        return cls(url, method=method, formdata=formdata, **kwargs)
++        return cls(url=url, method=method, formdata=formdata, **kwargs)
+ 
++def _get_form_url(form, url):
++    if url is None:
++        return form.action or form.base_url
++    return urlparse.urljoin(form.base_url, url)
+ 
+ def _urlencode(seq, enc):
+     values = [(unicode_to_str(k, enc), unicode_to_str(v, enc))
+diff --git a/scrapy/tests/test_http_request.py b/scrapy/tests/test_http_request.py
+index a1cc162..069b1cd 100644
+--- a/scrapy/tests/test_http_request.py
++++ b/scrapy/tests/test_http_request.py
+@@ -282,6 +282,18 @@ class FormRequestTest(RequestTest):
+         request = FormRequest.from_response(response, method='POST')
+         self.assertEqual(request.method, 'POST')
+ 
++    def test_from_response_override_url(self):
++        response = _buildresponse(
++                '''<html><body>
++                <form action="/app"></form>
++                </body></html>''')
++        request = FormRequest.from_response(response)
++        self.assertEqual(request.url, 'http://example.com/app')
++        request = FormRequest.from_response(response, url='http://foo.bar/absolute')
++        self.assertEqual(request.url, 'http://foo.bar/absolute')
++        request = FormRequest.from_response(response, url='/relative')
++        self.assertEqual(request.url, 'http://example.com/relative')
++
+     def test_from_response_submit_first_clickable(self):
+         response = _buildresponse(
+             """<form action="get.php" method="GET">

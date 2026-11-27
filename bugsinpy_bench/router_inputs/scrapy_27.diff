@@ -1,0 +1,69 @@
+diff --git a/docs/topics/downloader-middleware.rst b/docs/topics/downloader-middleware.rst
+index a6a2f7d..6d986bb 100644
+--- a/docs/topics/downloader-middleware.rst
++++ b/docs/topics/downloader-middleware.rst
+@@ -715,6 +715,15 @@ settings (see the settings documentation for more info):
+ If :attr:`Request.meta <scrapy.http.Request.meta>` has ``dont_redirect``
+ key set to True, the request will be ignored by this middleware.
+ 
++If you want to handle some redirect status codes in your spider, you can
++specify these in the ``handle_httpstatus_list`` spider attribute.
++
++For example, if you want the redirect middleware to ignore 301 and 302
++responses (and pass them through to your spider) you can do this::
++
++    class MySpider(CrawlSpider):
++        handle_httpstatus_list = [301, 302]
++
+ 
+ RedirectMiddleware settings
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+diff --git a/scrapy/downloadermiddlewares/redirect.py b/scrapy/downloadermiddlewares/redirect.py
+index f439f43..363e56c 100644
+--- a/scrapy/downloadermiddlewares/redirect.py
++++ b/scrapy/downloadermiddlewares/redirect.py
+@@ -54,7 +54,8 @@ class RedirectMiddleware(BaseRedirectMiddleware):
+     """Handle redirection of requests based on response status and meta-refresh html tag"""
+ 
+     def process_response(self, request, response, spider):
+-        if request.meta.get('dont_redirect', False):
++        if (request.meta.get('dont_redirect', False) or
++               response.status in getattr(spider, 'handle_httpstatus_list', [])):
+             return response
+ 
+         if request.method == 'HEAD':
+diff --git a/tests/test_downloadermiddleware_redirect.py b/tests/test_downloadermiddleware_redirect.py
+index 7e88e71..be5bfcc 100644
+--- a/tests/test_downloadermiddleware_redirect.py
++++ b/tests/test_downloadermiddleware_redirect.py
+@@ -10,9 +10,9 @@ from scrapy.utils.test import get_crawler
+ class RedirectMiddlewareTest(unittest.TestCase):
+ 
+     def setUp(self):
+-        crawler = get_crawler(Spider)
+-        self.spider = crawler._create_spider('foo')
+-        self.mw = RedirectMiddleware.from_crawler(crawler)
++        self.crawler = get_crawler(Spider)
++        self.spider = self.crawler._create_spider('foo')
++        self.mw = RedirectMiddleware.from_crawler(self.crawler)
+ 
+     def test_priority_adjust(self):
+         req = Request('http://a.com')
+@@ -129,6 +129,17 @@ class RedirectMiddlewareTest(unittest.TestCase):
+         self.assertEqual(req3.url, 'http://scrapytest.org/redirected2')
+         self.assertEqual(req3.meta['redirect_urls'], ['http://scrapytest.org/first', 'http://scrapytest.org/redirected'])
+ 
++    def test_spider_handling(self):
++        smartspider = self.crawler._create_spider('smarty')
++        smartspider.handle_httpstatus_list = [404, 301, 302]
++        url = 'http://www.example.com/301'
++        url2 = 'http://www.example.com/redirected'
++        req = Request(url, meta={'dont_redirect': True})
++        rsp = Response(url, headers={'Location': url2}, status=301)
++        r = self.mw.process_response(req, rsp, smartspider)
++        self.assertIs(r, rsp)
++
++
+ class MetaRefreshMiddlewareTest(unittest.TestCase):
+ 
+     def setUp(self):

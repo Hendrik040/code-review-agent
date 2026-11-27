@@ -1,0 +1,113 @@
+diff --git a/doc/source/whatsnew/v0.25.1.rst b/doc/source/whatsnew/v0.25.1.rst
+index dfa216b..21f1fa7 100644
+--- a/doc/source/whatsnew/v0.25.1.rst
++++ b/doc/source/whatsnew/v0.25.1.rst
+@@ -83,7 +83,7 @@ Indexing
+ ^^^^^^^^
+ 
+ - Bug in partial-string indexing returning a NumPy array rather than a ``Series`` when indexing with a scalar like ``.loc['2015']`` (:issue:`27516`)
+-- Break reference cycle involving :class:`Index` to allow garbage collection of :class:`Index` objects without running the GC. (:issue:`27585`)
++- Break reference cycle involving :class:`Index` and other index classes to allow garbage collection of index objects without running the GC. (:issue:`27585`, :issue:`27840`)
+ - Fix regression in assigning values to a single column of a DataFrame with a ``MultiIndex`` columns (:issue:`27841`).
+ -
+ 
+diff --git a/pandas/core/indexes/base.py b/pandas/core/indexes/base.py
+index 7272d4e..d13e41e 100644
+--- a/pandas/core/indexes/base.py
++++ b/pandas/core/indexes/base.py
+@@ -665,7 +665,7 @@ class Index(IndexOpsMixin, PandasObject):
+     def _engine(self):
+         # property, for now, slow to look up
+ 
+-        # to avoid a refernce cycle, bind `_ndarray_values` to a local variable, so
++        # to avoid a reference cycle, bind `_ndarray_values` to a local variable, so
+         # `self` is not passed into the lambda.
+         _ndarray_values = self._ndarray_values
+         return self._engine_type(lambda: _ndarray_values, len(self))
+diff --git a/pandas/core/indexes/category.py b/pandas/core/indexes/category.py
+index 8bfa7e8..82806c7 100644
+--- a/pandas/core/indexes/category.py
++++ b/pandas/core/indexes/category.py
+@@ -446,9 +446,11 @@ class CategoricalIndex(Index, accessor.PandasDelegate):
+ 
+     @cache_readonly
+     def _engine(self):
+-
+-        # we are going to look things up with the codes themselves
+-        return self._engine_type(lambda: self.codes, len(self))
++        # we are going to look things up with the codes themselves.
++        # To avoid a reference cycle, bind `codes` to a local variable, so
++        # `self` is not passed into the lambda.
++        codes = self.codes
++        return self._engine_type(lambda: codes, len(self))
+ 
+     # introspection
+     @cache_readonly
+diff --git a/pandas/core/indexes/period.py b/pandas/core/indexes/period.py
+index b0cc386..5a2ca10 100644
+--- a/pandas/core/indexes/period.py
++++ b/pandas/core/indexes/period.py
+@@ -1,5 +1,6 @@
+ from datetime import datetime, timedelta
+ import warnings
++import weakref
+ 
+ import numpy as np
+ 
+@@ -441,7 +442,9 @@ class PeriodIndex(DatetimeIndexOpsMixin, Int64Index, PeriodDelegateMixin):
+ 
+     @cache_readonly
+     def _engine(self):
+-        return self._engine_type(lambda: self, len(self))
++        # To avoid a reference cycle, pass a weakref of self to _engine_type.
++        period = weakref.ref(self)
++        return self._engine_type(period, len(self))
+ 
+     @Appender(_index_shared_docs["contains"])
+     def __contains__(self, key):
+diff --git a/pandas/tests/indexes/common.py b/pandas/tests/indexes/common.py
+index 9459069..0e74c87 100644
+--- a/pandas/tests/indexes/common.py
++++ b/pandas/tests/indexes/common.py
+@@ -1,3 +1,5 @@
++import gc
++
+ import numpy as np
+ import pytest
+ 
+@@ -908,3 +910,10 @@ class Base:
+         # multiple NA should not be unique
+         index_na_dup = index_na.insert(0, np.nan)
+         assert index_na_dup.is_unique is False
++
++    def test_engine_reference_cycle(self):
++        # GH27585
++        index = self.create_index()
++        nrefs_pre = len(gc.get_referrers(index))
++        index._engine
++        assert len(gc.get_referrers(index)) == nrefs_pre
+diff --git a/pandas/tests/indexes/test_base.py b/pandas/tests/indexes/test_base.py
+index fe1eb96..d1ed791 100644
+--- a/pandas/tests/indexes/test_base.py
++++ b/pandas/tests/indexes/test_base.py
+@@ -1,6 +1,5 @@
+ from collections import defaultdict
+ from datetime import datetime, timedelta
+-import gc
+ from io import StringIO
+ import math
+ import operator
+@@ -2425,13 +2424,6 @@ Index(['a', 'bb', 'ccc', 'a', 'bb', 'ccc', 'a', 'bb', 'ccc', 'a',
+             with tm.assert_produces_warning(FutureWarning):
+                 index.contains(1)
+ 
+-    def test_engine_reference_cycle(self):
+-        # https://github.com/pandas-dev/pandas/issues/27585
+-        index = pd.Index([1, 2, 3])
+-        nrefs_pre = len(gc.get_referrers(index))
+-        index._engine
+-        assert len(gc.get_referrers(index)) == nrefs_pre
+-
+ 
+ class TestMixedIntIndex(Base):
+     # Mostly the tests from common.py for which the results differ

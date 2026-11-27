@@ -1,0 +1,226 @@
+diff --git a/scrapy/extensions/feedexport.py b/scrapy/extensions/feedexport.py
+index 5f133fb..70c302f 100644
+--- a/scrapy/extensions/feedexport.py
++++ b/scrapy/extensions/feedexport.py
+@@ -21,7 +21,7 @@ from w3lib.url import file_uri_to_path
+ from scrapy import signals
+ from scrapy.utils.ftp import ftp_makedirs_cwd
+ from scrapy.exceptions import NotConfigured
+-from scrapy.utils.misc import load_object
++from scrapy.utils.misc import create_instance, load_object
+ from scrapy.utils.log import failure_to_exc_info
+ from scrapy.utils.python import without_none_values
+ from scrapy.utils.boto import is_botocore
+@@ -181,6 +181,7 @@ class FeedExporter(object):
+     @classmethod
+     def from_crawler(cls, crawler):
+         o = cls(crawler.settings)
++        o.crawler = crawler
+         crawler.signals.connect(o.open_spider, signals.spider_opened)
+         crawler.signals.connect(o.close_spider, signals.spider_closed)
+         crawler.signals.connect(o.item_scraped, signals.item_scraped)
+@@ -253,11 +254,16 @@ class FeedExporter(object):
+             logger.error("Unknown feed storage scheme: %(scheme)s",
+                          {'scheme': scheme})
+ 
++    def _get_instance(self, objcls, *args, **kwargs):
++        return create_instance(
++            objcls, self.settings, getattr(self, 'crawler', None),
++            *args, **kwargs)
++
+     def _get_exporter(self, *args, **kwargs):
+-        return self.exporters[self.format](*args, **kwargs)
++        return self._get_instance(self.exporters[self.format], *args, **kwargs)
+ 
+     def _get_storage(self, uri):
+-        return self.storages[urlparse(uri).scheme](uri)
++        return self._get_instance(self.storages[urlparse(uri).scheme], uri)
+ 
+     def _get_uri_params(self, spider):
+         params = {}
+diff --git a/scrapy/middleware.py b/scrapy/middleware.py
+index be36f97..f224098 100644
+--- a/scrapy/middleware.py
++++ b/scrapy/middleware.py
+@@ -3,7 +3,7 @@ import logging
+ import pprint
+ 
+ from scrapy.exceptions import NotConfigured
+-from scrapy.utils.misc import load_object
++from scrapy.utils.misc import create_instance, load_object
+ from scrapy.utils.defer import process_parallel, process_chain, process_chain_both
+ 
+ logger = logging.getLogger(__name__)
+@@ -32,12 +32,7 @@ class MiddlewareManager(object):
+         for clspath in mwlist:
+             try:
+                 mwcls = load_object(clspath)
+-                if crawler and hasattr(mwcls, 'from_crawler'):
+-                    mw = mwcls.from_crawler(crawler)
+-                elif hasattr(mwcls, 'from_settings'):
+-                    mw = mwcls.from_settings(settings)
+-                else:
+-                    mw = mwcls()
++                mw = create_instance(mwcls, settings, crawler)
+                 middlewares.append(mw)
+                 enabled.append(clspath)
+             except NotConfigured as e:
+diff --git a/scrapy/utils/misc.py b/scrapy/utils/misc.py
+index 35f8550..8eb1aab 100644
+--- a/scrapy/utils/misc.py
++++ b/scrapy/utils/misc.py
+@@ -117,3 +117,27 @@ def md5sum(file):
+ def rel_has_nofollow(rel):
+     """Return True if link rel attribute has nofollow type"""
+     return True if rel is not None and 'nofollow' in rel.split() else False
++
++def create_instance(objcls, settings, crawler, *args, **kwargs):
++    """Construct a class instance using its ``from_crawler`` or
++    ``from_settings`` constructors, if available.
++
++    At least one of ``settings`` and ``crawler`` needs to be different from
++    ``None``. If ``settings `` is ``None``, ``crawler.settings`` will be used.
++    If ``crawler`` is ``None``, only the ``from_settings`` constructor will be
++    tried.
++
++    ``*args`` and ``**kwargs`` are forwarded to the constructors.
++
++    Raises ``ValueError`` if both ``settings`` and ``crawler`` are ``None``.
++    """
++    if settings is None:
++        if crawler is None:
++            raise ValueError("Specifiy at least one of settings and crawler.")
++        settings = crawler.settings
++    if crawler and hasattr(objcls, 'from_crawler'):
++        return objcls.from_crawler(crawler, *args, **kwargs)
++    elif hasattr(objcls, 'from_settings'):
++        return objcls.from_settings(settings, *args, **kwargs)
++    else:
++        return objcls(*args, **kwargs)
+diff --git a/tests/test_feedexport.py b/tests/test_feedexport.py
+index f559271..08f7e4d 100644
+--- a/tests/test_feedexport.py
++++ b/tests/test_feedexport.py
+@@ -16,6 +16,7 @@ from tests.mockserver import MockServer
+ from w3lib.url import path_to_file_uri
+ 
+ import scrapy
++from scrapy.exporters import CsvItemExporter
+ from scrapy.extensions.feedexport import (
+     IFeedStorage, FileFeedStorage, FTPFeedStorage,
+     S3FeedStorage, StdoutFeedStorage,
+@@ -159,6 +160,23 @@ class StdoutFeedStorageTest(unittest.TestCase):
+         self.assertEqual(out.getvalue(), b"content")
+ 
+ 
++class FromCrawlerMixin(object):
++    init_with_crawler = False
++
++    @classmethod
++    def from_crawler(cls, crawler, *args, **kwargs):
++        cls.init_with_crawler = True
++        return cls(*args, **kwargs)
++
++
++class FromCrawlerCsvItemExporter(CsvItemExporter, FromCrawlerMixin):
++    pass
++
++
++class FromCrawlerFileFeedStorage(FileFeedStorage, FromCrawlerMixin):
++    pass
++
++
+ class FeedExportTest(unittest.TestCase):
+ 
+     class MyItem(scrapy.Item):
+@@ -599,3 +617,15 @@ class FeedExportTest(unittest.TestCase):
+             data = yield self.exported_data(items, settings)
+             print(row['format'], row['indent'])
+             self.assertEqual(row['expected'], data)
++
++    @defer.inlineCallbacks
++    def test_init_exporters_storages_with_crawler(self):
++        settings = {
++            'FEED_EXPORTERS': {'csv': 'tests.test_feedexport.'
++                                      'FromCrawlerCsvItemExporter'},
++            'FEED_STORAGES': {'file': 'tests.test_feedexport.'
++                                      'FromCrawlerFileFeedStorage'},
++        }
++        yield self.exported_data({}, settings)
++        self.assertTrue(FromCrawlerCsvItemExporter.init_with_crawler)
++        self.assertTrue(FromCrawlerFileFeedStorage.init_with_crawler)
+diff --git a/tests/test_utils_misc/__init__.py b/tests/test_utils_misc/__init__.py
+index 01460a1..b95bba5 100644
+--- a/tests/test_utils_misc/__init__.py
++++ b/tests/test_utils_misc/__init__.py
+@@ -3,7 +3,9 @@ import os
+ import unittest
+ 
+ from scrapy.item import Item, Field
+-from scrapy.utils.misc import load_object, arg_to_iter, walk_modules
++from scrapy.utils.misc import arg_to_iter, create_instance, load_object, walk_modules
++
++from tests import mock
+ 
+ __doctests__ = ['scrapy.utils.misc']
+ 
+@@ -74,5 +76,59 @@ class UtilsMiscTestCase(unittest.TestCase):
+         self.assertEqual(list(arg_to_iter({'a':1})), [{'a': 1}])
+         self.assertEqual(list(arg_to_iter(TestItem(name="john"))), [TestItem(name="john")])
+ 
++    def test_create_instance(self):
++        settings = mock.MagicMock()
++        crawler = mock.MagicMock(spec_set=['settings'])
++        args = (True, 100.)
++        kwargs = {'key': 'val'}
++
++        def _test_with_settings(mock, settings):
++            create_instance(mock, settings, None, *args, **kwargs)
++            if hasattr(mock, 'from_crawler'):
++                self.assertEqual(mock.from_crawler.call_count, 0)
++            if hasattr(mock, 'from_settings'):
++                mock.from_settings.assert_called_once_with(settings, *args,
++                                                           **kwargs)
++                self.assertEqual(mock.call_count, 0)
++            else:
++                mock.assert_called_once_with(*args, **kwargs)
++
++        def _test_with_crawler(mock, settings, crawler):
++            create_instance(mock, settings, crawler, *args, **kwargs)
++            if hasattr(mock, 'from_crawler'):
++                mock.from_crawler.assert_called_once_with(crawler, *args,
++                                                          **kwargs)
++                if hasattr(mock, 'from_settings'):
++                    self.assertEqual(mock.from_settings.call_count, 0)
++                self.assertEqual(mock.call_count, 0)
++            elif hasattr(mock, 'from_settings'):
++                mock.from_settings.assert_called_once_with(settings, *args,
++                                                           **kwargs)
++                self.assertEqual(mock.call_count, 0)
++            else:
++                mock.assert_called_once_with(*args, **kwargs)
++
++        # Check usage of correct constructor using four mocks:
++        #   1. with no alternative constructors
++        #   2. with from_settings() constructor
++        #   3. with from_crawler() constructor
++        #   4. with from_settings() and from_crawler() constructor
++        spec_sets = ([], ['from_settings'], ['from_crawler'],
++                     ['from_settings', 'from_crawler'])
++        for specs in spec_sets:
++            m = mock.MagicMock(spec_set=specs)
++            _test_with_settings(m, settings)
++            m.reset_mock()
++            _test_with_crawler(m, settings, crawler)
++
++        # Check adoption of crawler settings
++        m = mock.MagicMock(spec_set=['from_settings'])
++        create_instance(m, None, crawler, *args, **kwargs)
++        m.from_settings.assert_called_once_with(crawler.settings, *args,
++                                                **kwargs)
++
++        with self.assertRaises(ValueError):
++            create_instance(m, None, None)
++
+ if __name__ == "__main__":
+     unittest.main()

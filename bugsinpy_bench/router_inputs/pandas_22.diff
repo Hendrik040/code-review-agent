@@ -1,0 +1,117 @@
+diff --git a/doc/source/whatsnew/v1.1.0.rst b/doc/source/whatsnew/v1.1.0.rst
+index 570a5e3..dffb2fd 100644
+--- a/doc/source/whatsnew/v1.1.0.rst
++++ b/doc/source/whatsnew/v1.1.0.rst
+@@ -85,6 +85,7 @@ Other API changes
+ - Added :meth:`DataFrame.value_counts` (:issue:`5377`)
+ - :meth:`Groupby.groups` now returns an abbreviated representation when called on large dataframes (:issue:`1135`)
+ - ``loc`` lookups with an object-dtype :class:`Index` and an integer key will now raise ``KeyError`` instead of ``TypeError`` when key is missing (:issue:`31905`)
++- Using a :func:`pandas.api.indexers.BaseIndexer` with ``min``, ``max``, ``std``, ``var``, ``count``, ``skew``, ``cov``, ``corr`` will now raise a ``NotImplementedError`` (:issue:`32865`)
+ -
+ 
+ Backwards incompatible API changes
+diff --git a/pandas/core/window/common.py b/pandas/core/window/common.py
+index fcde494..8abc478 100644
+--- a/pandas/core/window/common.py
++++ b/pandas/core/window/common.py
+@@ -323,3 +323,13 @@ def get_weighted_roll_func(cfunc: Callable) -> Callable:
+         return cfunc(arg, window, min_periods)
+ 
+     return func
++
++
++def validate_baseindexer_support(func_name: Optional[str]) -> None:
++    # GH 32865: These functions work correctly with a BaseIndexer subclass
++    BASEINDEXER_WHITELIST = {"mean", "sum", "median", "kurt", "quantile"}
++    if isinstance(func_name, str) and func_name not in BASEINDEXER_WHITELIST:
++        raise NotImplementedError(
++            f"{func_name} is not supported with using a BaseIndexer "
++            f"subclasses. You can use .apply() with {func_name}."
++        )
+diff --git a/pandas/core/window/rolling.py b/pandas/core/window/rolling.py
+index aeab511..dc8cf83 100644
+--- a/pandas/core/window/rolling.py
++++ b/pandas/core/window/rolling.py
+@@ -46,6 +46,7 @@ from pandas.core.window.common import (
+     calculate_center_offset,
+     calculate_min_periods,
+     get_weighted_roll_func,
++    validate_baseindexer_support,
+     zsqrt,
+ )
+ from pandas.core.window.indexers import (
+@@ -391,11 +392,12 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
+             return self._get_roll_func(f"{func}_variable")
+         return partial(self._get_roll_func(f"{func}_fixed"), win=self._get_window())
+ 
+-    def _get_window_indexer(self, window: int) -> BaseIndexer:
++    def _get_window_indexer(self, window: int, func_name: Optional[str]) -> BaseIndexer:
+         """
+         Return an indexer class that will compute the window start and end bounds
+         """
+         if isinstance(self.window, BaseIndexer):
++            validate_baseindexer_support(func_name)
+             return self.window
+         if self.is_freq_type:
+             return VariableWindowIndexer(index_array=self._on.asi8, window_size=window)
+@@ -441,7 +443,7 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
+ 
+         blocks, obj = self._create_blocks()
+         block_list = list(blocks)
+-        window_indexer = self._get_window_indexer(window)
++        window_indexer = self._get_window_indexer(window, name)
+ 
+         results = []
+         exclude: List[Scalar] = []
+@@ -1173,6 +1175,8 @@ class _Rolling_and_Expanding(_Rolling):
+     )
+ 
+     def count(self):
++        if isinstance(self.window, BaseIndexer):
++            validate_baseindexer_support("count")
+ 
+         blocks, obj = self._create_blocks()
+         results = []
+@@ -1627,6 +1631,9 @@ class _Rolling_and_Expanding(_Rolling):
+     """
+ 
+     def cov(self, other=None, pairwise=None, ddof=1, **kwargs):
++        if isinstance(self.window, BaseIndexer):
++            validate_baseindexer_support("cov")
++
+         if other is None:
+             other = self._selected_obj
+             # only default unset
+@@ -1770,6 +1777,9 @@ class _Rolling_and_Expanding(_Rolling):
+     )
+ 
+     def corr(self, other=None, pairwise=None, **kwargs):
++        if isinstance(self.window, BaseIndexer):
++            validate_baseindexer_support("corr")
++
+         if other is None:
+             other = self._selected_obj
+             # only default unset
+diff --git a/pandas/tests/window/test_base_indexer.py b/pandas/tests/window/test_base_indexer.py
+index 606520c..e9190df 100644
+--- a/pandas/tests/window/test_base_indexer.py
++++ b/pandas/tests/window/test_base_indexer.py
+@@ -80,3 +80,18 @@ def test_win_type_not_implemented():
+     indexer = CustomIndexer()
+     with pytest.raises(NotImplementedError, match="BaseIndexer subclasses not"):
+         df.rolling(indexer, win_type="boxcar")
++
++
++@pytest.mark.parametrize(
++    "func", ["min", "max", "std", "var", "count", "skew", "cov", "corr"]
++)
++def test_notimplemented_functions(func):
++    # GH 32865
++    class CustomIndexer(BaseIndexer):
++        def get_window_bounds(self, num_values, min_periods, center, closed):
++            return np.array([0, 1]), np.array([1, 2])
++
++    df = DataFrame({"values": range(2)})
++    indexer = CustomIndexer()
++    with pytest.raises(NotImplementedError, match=f"{func} is not supported"):
++        getattr(df.rolling(indexer), func)()

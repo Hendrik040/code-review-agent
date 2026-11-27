@@ -1,0 +1,163 @@
+diff --git a/keras/engine/training.py b/keras/engine/training.py
+index b761def..e6944fd 100644
+--- a/keras/engine/training.py
++++ b/keras/engine/training.py
+@@ -1969,7 +1969,8 @@ class Model(Container):
+                 If unspecified, `max_queue_size` will default to 10.
+             workers: Integer. Maximum number of processes to spin up
+                 when using process based threading.
+-                If unspecified, `workers` will default to 1.
++                If unspecified, `workers` will default to 1. If 0, will
++                execute the generator on the main thread.
+             use_multiprocessing: Boolean. If True, use process based threading.
+                 If unspecified, `workers` will default to False.
+                 Note that because
+@@ -2091,16 +2092,19 @@ class Model(Container):
+         enqueuer = None
+ 
+         try:
+-            if is_sequence:
+-                enqueuer = OrderedEnqueuer(generator,
+-                                           use_multiprocessing=use_multiprocessing,
+-                                           shuffle=shuffle)
++            if workers > 0:
++                if is_sequence:
++                    enqueuer = OrderedEnqueuer(generator,
++                                               use_multiprocessing=use_multiprocessing,
++                                               shuffle=shuffle)
++                else:
++                    enqueuer = GeneratorEnqueuer(generator,
++                                                 use_multiprocessing=use_multiprocessing,
++                                                 wait_time=wait_time)
++                enqueuer.start(workers=workers, max_queue_size=max_queue_size)
++                output_generator = enqueuer.get()
+             else:
+-                enqueuer = GeneratorEnqueuer(generator,
+-                                             use_multiprocessing=use_multiprocessing,
+-                                             wait_time=wait_time)
+-            enqueuer.start(workers=workers, max_queue_size=max_queue_size)
+-            output_generator = enqueuer.get()
++                output_generator = generator
+ 
+             callback_model.stop_training = False
+             while epoch < epochs:
+@@ -2213,8 +2217,10 @@ class Model(Container):
+                 Optional for `Sequence`: if unspecified, will use
+                 the `len(generator)` as a number of steps.
+             max_queue_size: maximum size for the generator queue
+-            workers: maximum number of processes to spin up
+-                when using process based threading
++            workers: Integer. Maximum number of processes to spin up
++                when using process based threading.
++                If unspecified, `workers` will default to 1. If 0, will
++                execute the generator on the main thread.
+             use_multiprocessing: if True, use process based threading.
+                 Note that because
+                 this implementation relies on multiprocessing,
+@@ -2257,15 +2263,18 @@ class Model(Container):
+         enqueuer = None
+ 
+         try:
+-            if is_sequence:
+-                enqueuer = OrderedEnqueuer(generator,
+-                                           use_multiprocessing=use_multiprocessing)
++            if workers > 0:
++                if is_sequence:
++                    enqueuer = OrderedEnqueuer(generator,
++                                               use_multiprocessing=use_multiprocessing)
++                else:
++                    enqueuer = GeneratorEnqueuer(generator,
++                                                 use_multiprocessing=use_multiprocessing,
++                                                 wait_time=wait_time)
++                enqueuer.start(workers=workers, max_queue_size=max_queue_size)
++                output_generator = enqueuer.get()
+             else:
+-                enqueuer = GeneratorEnqueuer(generator,
+-                                             use_multiprocessing=use_multiprocessing,
+-                                             wait_time=wait_time)
+-            enqueuer.start(workers=workers, max_queue_size=max_queue_size)
+-            output_generator = enqueuer.get()
++                output_generator = generator
+ 
+             while steps_done < steps:
+                 generator_output = next(output_generator)
+@@ -2335,8 +2344,10 @@ class Model(Container):
+                 Optional for `Sequence`: if unspecified, will use
+                 the `len(generator)` as a number of steps.
+             max_queue_size: Maximum size for the generator queue.
+-            workers: Maximum number of processes to spin up
+-                when using process based threading
++            workers: Integer. Maximum number of processes to spin up
++                when using process based threading.
++                If unspecified, `workers` will default to 1. If 0, will
++                execute the generator on the main thread.
+             use_multiprocessing: If `True`, use process based threading.
+                 Note that because
+                 this implementation relies on multiprocessing,
+@@ -2376,15 +2387,18 @@ class Model(Container):
+         enqueuer = None
+ 
+         try:
+-            if is_sequence:
+-                enqueuer = OrderedEnqueuer(generator,
+-                                           use_multiprocessing=use_multiprocessing)
++            if workers > 0:
++                if is_sequence:
++                    enqueuer = OrderedEnqueuer(generator,
++                                               use_multiprocessing=use_multiprocessing)
++                else:
++                    enqueuer = GeneratorEnqueuer(generator,
++                                                 use_multiprocessing=use_multiprocessing,
++                                                 wait_time=wait_time)
++                enqueuer.start(workers=workers, max_queue_size=max_queue_size)
++                output_generator = enqueuer.get()
+             else:
+-                enqueuer = GeneratorEnqueuer(generator,
+-                                             use_multiprocessing=use_multiprocessing,
+-                                             wait_time=wait_time)
+-            enqueuer.start(workers=workers, max_queue_size=max_queue_size)
+-            output_generator = enqueuer.get()
++                output_generator = generator
+ 
+             if verbose == 1:
+                 progbar = Progbar(target=steps)
+diff --git a/tests/test_multiprocessing.py b/tests/test_multiprocessing.py
+index 5a923cd..235c26a 100644
+--- a/tests/test_multiprocessing.py
++++ b/tests/test_multiprocessing.py
+@@ -72,6 +72,12 @@ def test_multiprocessing_training():
+                         validation_data=custom_generator(True),
+                         validation_steps=1)
+ 
++    model.fit_generator(custom_generator(True),
++                        steps_per_epoch=5,
++                        validation_data=custom_generator(True),
++                        validation_steps=1,
++                        workers=0)
++
+     # Test invalid use cases
+     def invalid_generator():
+         while True:
+@@ -173,6 +179,10 @@ def test_multiprocessing_predicting():
+                             steps=5,
+                             max_queue_size=10,
+                             use_multiprocessing=False)
++    model.predict_generator(custom_generator(),
++                            steps=5,
++                            max_queue_size=10,
++                            workers=0)
+ 
+ 
+ @keras_test
+@@ -206,6 +216,11 @@ def test_multiprocessing_evaluating():
+                              steps=5,
+                              max_queue_size=10,
+                              use_multiprocessing=False)
++    model.evaluate_generator(custom_generator(),
++                             steps=5,
++                             max_queue_size=10,
++                             use_multiprocessing=False,
++                             workers=0)
+ 
+ 
+ @keras_test

@@ -1,0 +1,137 @@
+diff --git a/doc/source/whatsnew/v0.24.0.txt b/doc/source/whatsnew/v0.24.0.txt
+index 3e22084..e70f3f0 100644
+--- a/doc/source/whatsnew/v0.24.0.txt
++++ b/doc/source/whatsnew/v0.24.0.txt
+@@ -663,6 +663,7 @@ Indexing
+ - Fixed ``DataFrame[np.nan]`` when columns are non-unique (:issue:`21428`)
+ - Bug when indexing :class:`DatetimeIndex` with nanosecond resolution dates and timezones (:issue:`11679`)
+ - Bug where indexing with a Numpy array containing negative values would mutate the indexer (:issue:`21867`)
++- Bug where mixed indexes wouldn't allow integers for ``.at`` (:issue:`19860`)
+ - ``Float64Index.get_loc`` now raises ``KeyError`` when boolean key passed. (:issue:`19087`)
+ 
+ Missing
+diff --git a/pandas/core/indexes/base.py b/pandas/core/indexes/base.py
+index 2a0f164..7b7fb96 100644
+--- a/pandas/core/indexes/base.py
++++ b/pandas/core/indexes/base.py
+@@ -3125,8 +3125,8 @@ class Index(IndexOpsMixin, PandasObject):
+                 iloc = self.get_loc(key)
+                 return s[iloc]
+             except KeyError:
+-                if (len(self) > 0 and
+-                        self.inferred_type in ['integer', 'boolean']):
++                if (len(self) > 0
++                        and (self.holds_integer() or self.is_boolean())):
+                     raise
+                 elif is_integer(key):
+                     return s[key]
+@@ -3139,7 +3139,7 @@ class Index(IndexOpsMixin, PandasObject):
+             return self._engine.get_value(s, k,
+                                           tz=getattr(series.dtype, 'tz', None))
+         except KeyError as e1:
+-            if len(self) > 0 and self.inferred_type in ['integer', 'boolean']:
++            if len(self) > 0 and (self.holds_integer() or self.is_boolean()):
+                 raise
+ 
+             try:
+diff --git a/pandas/core/indexing.py b/pandas/core/indexing.py
+index 80b3d57..a245ecf 100755
+--- a/pandas/core/indexing.py
++++ b/pandas/core/indexing.py
+@@ -2354,7 +2354,7 @@ class _AtIndexer(_ScalarAccessIndexer):
+                     raise ValueError("At based indexing on an integer index "
+                                      "can only have integer indexers")
+             else:
+-                if is_integer(i):
++                if is_integer(i) and not ax.holds_integer():
+                     raise ValueError("At based indexing on an non-integer "
+                                      "index can only have non-integer "
+                                      "indexers")
+diff --git a/pandas/tests/indexing/test_indexing.py b/pandas/tests/indexing/test_indexing.py
+index 9c99277..f64c506 100644
+--- a/pandas/tests/indexing/test_indexing.py
++++ b/pandas/tests/indexing/test_indexing.py
+@@ -610,6 +610,22 @@ class TestFancy(Base):
+     def test_index_not_contains(self, index, val):
+         assert val not in index
+ 
++    @pytest.mark.parametrize("index,val", [
++        (Index([0, 1, '2']), 0),
++        (Index([0, 1, '2']), '2'),
++    ])
++    def test_mixed_index_contains(self, index, val):
++        # GH 19860
++        assert val in index
++
++    @pytest.mark.parametrize("index,val", [
++        (Index([0, 1, '2']), '1'),
++        (Index([0, 1, '2']), 2),
++    ])
++    def test_mixed_index_not_contains(self, index, val):
++        # GH 19860
++        assert val not in index
++
+     def test_index_type_coercion(self):
+ 
+         with catch_warnings(record=True):
+@@ -710,6 +726,22 @@ class TestMisc(Base):
+         for i in range(len(s)):
+             assert s.iat[i] == i + 1
+ 
++    def test_mixed_index_assignment(self):
++        # GH 19860
++        s = Series([1, 2, 3, 4, 5], index=['a', 'b', 'c', 1, 2])
++        s.at['a'] = 11
++        assert s.iat[0] == 11
++        s.at[1] = 22
++        assert s.iat[3] == 22
++
++    def test_mixed_index_no_fallback(self):
++        # GH 19860
++        s = Series([1, 2, 3, 4, 5], index=['a', 'b', 'c', 1, 2])
++        with pytest.raises(KeyError):
++            s.at[0]
++        with pytest.raises(KeyError):
++            s.at[4]
++
+     def test_rhs_alignment(self):
+         # GH8258, tests that both rows & columns are aligned to what is
+         # assigned to. covers both uniform data-type & multi-type cases
+diff --git a/pandas/tests/indexing/test_scalar.py b/pandas/tests/indexing/test_scalar.py
+index 7314ff6..91f006e 100644
+--- a/pandas/tests/indexing/test_scalar.py
++++ b/pandas/tests/indexing/test_scalar.py
+@@ -170,3 +170,33 @@ class TestScalar(Base):
+ 
+         result = df.at[0, 'date']
+         assert result == expected
++
++    def test_mixed_index_at_iat_loc_iloc_series(self):
++        # GH 19860
++        s = Series([1, 2, 3, 4, 5], index=['a', 'b', 'c', 1, 2])
++        for el, item in s.iteritems():
++            assert s.at[el] == s.loc[el] == item
++        for i in range(len(s)):
++            assert s.iat[i] == s.iloc[i] == i + 1
++
++        with pytest.raises(KeyError):
++            s.at[4]
++        with pytest.raises(KeyError):
++            s.loc[4]
++
++    def test_mixed_index_at_iat_loc_iloc_dataframe(self):
++        # GH 19860
++        df = DataFrame([[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]],
++                       columns=['a', 'b', 'c', 1, 2])
++        for rowIdx, row in df.iterrows():
++            for el, item in row.iteritems():
++                assert df.at[rowIdx, el] == df.loc[rowIdx, el] == item
++
++        for row in range(2):
++            for i in range(5):
++                assert df.iat[row, i] == df.iloc[row, i] == row * 5 + i
++
++        with pytest.raises(KeyError):
++            df.at[0, 3]
++        with pytest.raises(KeyError):
++            df.loc[0, 3]

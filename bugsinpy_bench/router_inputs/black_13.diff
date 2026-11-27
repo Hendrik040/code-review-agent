@@ -1,0 +1,269 @@
+diff --git a/README.md b/README.md
+index a124429..1b83308 100644
+--- a/README.md
++++ b/README.md
+@@ -261,6 +261,10 @@ More details can be found in [CONTRIBUTING](CONTRIBUTING.md).
+ 
+ * added ability to pipe formatting from stdin to stdin (#25)
+ 
++* restored ability to format code with legacy usage of `async` as
++  a name (#20, #42)
++
++
+ ### 18.3a2
+ 
+ * changed positioning of binary operators to occur at beginning of lines
+diff --git a/black.py b/black.py
+index 6bfef50..74329d2 100644
+--- a/black.py
++++ b/black.py
+@@ -486,8 +486,7 @@ class Line:
+         return (
+             (first_leaf.type == token.NAME and first_leaf.value == 'def')
+             or (
+-                first_leaf.type == token.NAME
+-                and first_leaf.value == 'async'
++                first_leaf.type == token.ASYNC
+                 and second_leaf is not None
+                 and second_leaf.type == token.NAME
+                 and second_leaf.value == 'def'
+@@ -816,7 +815,7 @@ class LineGenerator(Visitor[Line]):
+         for child in children:
+             yield from self.visit(child)
+ 
+-            if child.type == token.NAME and child.value == 'async':  # type: ignore
++            if child.type == token.ASYNC:
+                 break
+ 
+         internal_stmt = next(children)
+diff --git a/blib2to3/Grammar.txt b/blib2to3/Grammar.txt
+index b19b4a2..4905c91 100644
+--- a/blib2to3/Grammar.txt
++++ b/blib2to3/Grammar.txt
+@@ -15,7 +15,7 @@ eval_input: testlist NEWLINE* ENDMARKER
+ decorator: '@' dotted_name [ '(' [arglist] ')' ] NEWLINE
+ decorators: decorator+
+ decorated: decorators (classdef | funcdef | async_funcdef)
+-async_funcdef: 'async' funcdef
++async_funcdef: ASYNC funcdef
+ funcdef: 'def' NAME parameters ['->' test] ':' suite
+ parameters: '(' [typedargslist] ')'
+ typedargslist: ((tfpdef ['=' test] ',')*
+@@ -66,7 +66,7 @@ exec_stmt: 'exec' expr ['in' test [',' test]]
+ assert_stmt: 'assert' test [',' test]
+ 
+ compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | with_stmt | funcdef | classdef | decorated | async_stmt
+-async_stmt: 'async' (funcdef | with_stmt | for_stmt)
++async_stmt: ASYNC (funcdef | with_stmt | for_stmt)
+ if_stmt: 'if' test ':' suite ('elif' test ':' suite)* ['else' ':' suite]
+ while_stmt: 'while' test ':' suite ['else' ':' suite]
+ for_stmt: 'for' exprlist 'in' testlist ':' suite ['else' ':' suite]
+@@ -105,7 +105,7 @@ shift_expr: arith_expr (('<<'|'>>') arith_expr)*
+ arith_expr: term (('+'|'-') term)*
+ term: factor (('*'|'@'|'/'|'%'|'//') factor)*
+ factor: ('+'|'-'|'~') factor | power
+-power: ['await'] atom trailer* ['**' factor]
++power: [AWAIT] atom trailer* ['**' factor]
+ atom: ('(' [yield_expr|testlist_gexp] ')' |
+        '[' [listmaker] ']' |
+        '{' [dictsetmaker] '}' |
+@@ -142,7 +142,7 @@ argument: ( test [comp_for] |
+ 	    star_expr )
+ 
+ comp_iter: comp_for | comp_if
+-comp_for: ['async'] 'for' exprlist 'in' or_test [comp_iter]
++comp_for: [ASYNC] 'for' exprlist 'in' or_test [comp_iter]
+ comp_if: 'if' old_test [comp_iter]
+ 
+ # As noted above, testlist_safe extends the syntax allowed in list
+@@ -161,7 +161,7 @@ comp_if: 'if' old_test [comp_iter]
+ #
+ # See https://bugs.python.org/issue27494
+ old_comp_iter: old_comp_for | old_comp_if
+-old_comp_for: ['async'] 'for' exprlist 'in' testlist_safe [old_comp_iter]
++old_comp_for: [ASYNC] 'for' exprlist 'in' testlist_safe [old_comp_iter]
+ old_comp_if: 'if' old_test [old_comp_iter]
+ 
+ testlist1: test (',' test)*
+diff --git a/blib2to3/Grammar3.6.4.final.0.pickle b/blib2to3/Grammar3.6.4.final.0.pickle
+index da22814..4d1922b 100644
+Binary files a/blib2to3/Grammar3.6.4.final.0.pickle and b/blib2to3/Grammar3.6.4.final.0.pickle differ
+diff --git a/blib2to3/README b/blib2to3/README
+index 9a9cf61..773aaf6 100644
+--- a/blib2to3/README
++++ b/blib2to3/README
+@@ -5,5 +5,7 @@ Reasons for forking:
+ - consistent handling of f-strings for users of Python < 3.6.2
+ - backport of BPO-33064 that fixes parsing files with trailing commas after
+   *args and **kwargs
++- backport of GH-6143 that restores the ability to reformat legacy usage of
++  `async`
+ - better ability to debug (better reprs for starters)
+ - ability to Cythonize
+diff --git a/blib2to3/pgen2/token.py b/blib2to3/pgen2/token.py
+index 7599396..1a67955 100755
+--- a/blib2to3/pgen2/token.py
++++ b/blib2to3/pgen2/token.py
+@@ -62,8 +62,10 @@ OP = 52
+ COMMENT = 53
+ NL = 54
+ RARROW = 55
+-ERRORTOKEN = 56
+-N_TOKENS = 57
++AWAIT = 56
++ASYNC = 57
++ERRORTOKEN = 58
++N_TOKENS = 59
+ NT_OFFSET = 256
+ #--end constants--
+ 
+diff --git a/blib2to3/pgen2/tokenize.py b/blib2to3/pgen2/tokenize.py
+index 14560e4..45afc5f 100644
+--- a/blib2to3/pgen2/tokenize.py
++++ b/blib2to3/pgen2/tokenize.py
+@@ -234,7 +234,7 @@ class Untokenizer:
+         for tok in iterable:
+             toknum, tokval = tok[:2]
+ 
+-            if toknum in (NAME, NUMBER):
++            if toknum in (NAME, NUMBER, ASYNC, AWAIT):
+                 tokval += ' '
+ 
+             if toknum == INDENT:
+@@ -380,6 +380,12 @@ def generate_tokens(readline):
+     contline = None
+     indents = [0]
+ 
++    # 'stashed' and 'async_*' are used for async/await parsing
++    stashed = None
++    async_def = False
++    async_def_indent = 0
++    async_def_nl = False
++
+     while 1:                                   # loop over lines in stream
+         try:
+             line = readline()
+@@ -420,6 +426,10 @@ def generate_tokens(readline):
+                 pos = pos + 1
+             if pos == max: break
+ 
++            if stashed:
++                yield stashed
++                stashed = None
++
+             if line[pos] in '#\r\n':           # skip comments or blank lines
+                 if line[pos] == '#':
+                     comment_token = line[pos:].rstrip('\r\n')
+@@ -443,8 +453,18 @@ def generate_tokens(readline):
+                         ("<tokenize>", lnum, pos, line))
+                 indents = indents[:-1]
+ 
++                if async_def and async_def_indent >= indents[-1]:
++                    async_def = False
++                    async_def_nl = False
++                    async_def_indent = 0
++
+                 yield (DEDENT, '', (lnum, pos), (lnum, pos), line)
+ 
++            if async_def and async_def_nl and async_def_indent >= indents[-1]:
++                async_def = False
++                async_def_nl = False
++                async_def_indent = 0
++
+         else:                                  # continued statement
+             if not line:
+                 raise TokenError("EOF in multi-line statement", (lnum, 0))
+@@ -464,10 +484,18 @@ def generate_tokens(readline):
+                     newline = NEWLINE
+                     if parenlev > 0:
+                         newline = NL
++                    elif async_def:
++                        async_def_nl = True
++                    if stashed:
++                        yield stashed
++                        stashed = None
+                     yield (newline, token, spos, epos, line)
+ 
+                 elif initial == '#':
+                     assert not token.endswith("\n")
++                    if stashed:
++                        yield stashed
++                        stashed = None
+                     yield (COMMENT, token, spos, epos, line)
+                 elif token in triple_quoted:
+                     endprog = endprogs[token]
+@@ -475,6 +503,9 @@ def generate_tokens(readline):
+                     if endmatch:                           # all on one line
+                         pos = endmatch.end(0)
+                         token = line[start:pos]
++                        if stashed:
++                            yield stashed
++                            stashed = None
+                         yield (STRING, token, spos, (lnum, pos), line)
+                     else:
+                         strstart = (lnum, start)           # multiple lines
+@@ -492,22 +523,63 @@ def generate_tokens(readline):
+                         contline = line
+                         break
+                     else:                                  # ordinary string
++                        if stashed:
++                            yield stashed
++                            stashed = None
+                         yield (STRING, token, spos, epos, line)
+                 elif initial in namechars:                 # ordinary name
+-                    yield (NAME, token, spos, epos, line)
++                    if token in ('async', 'await'):
++                        if async_def:
++                            yield (ASYNC if token == 'async' else AWAIT,
++                                   token, spos, epos, line)
++                            continue
++
++                    tok = (NAME, token, spos, epos, line)
++                    if token == 'async' and not stashed:
++                        stashed = tok
++                        continue
++
++                    if token == 'def':
++                        if (stashed
++                                and stashed[0] == NAME
++                                and stashed[1] == 'async'):
++
++                            async_def = True
++                            async_def_indent = indents[-1]
++
++                            yield (ASYNC, stashed[1],
++                                   stashed[2], stashed[3],
++                                   stashed[4])
++                            stashed = None
++
++                    if stashed:
++                        yield stashed
++                        stashed = None
++
++                    yield tok
+                 elif initial == '\\':                      # continued stmt
+                     # This yield is new; needed for better idempotency:
++                    if stashed:
++                        yield stashed
++                        stashed = None
+                     yield (NL, token, spos, (lnum, pos), line)
+                     continued = 1
+                 else:
+                     if initial in '([{': parenlev = parenlev + 1
+                     elif initial in ')]}': parenlev = parenlev - 1
++                    if stashed:
++                        yield stashed
++                        stashed = None
+                     yield (OP, token, spos, epos, line)
+             else:
+                 yield (ERRORTOKEN, line[pos],
+                            (lnum, pos), (lnum, pos+1), line)
+                 pos = pos + 1
+ 
++    if stashed:
++        yield stashed
++        stashed = None
++
+     for indent in indents[1:]:                 # pop remaining indent levels
+         yield (DEDENT, '', (lnum, 0), (lnum, 0), '')
+     yield (ENDMARKER, '', (lnum, 0), (lnum, 0), '')
