@@ -91,7 +91,11 @@ Per block, as `items`:
 
 Per PR (one call, state = title + per-file line counts + all block records):
 
-8. `no_behavior_change` (noul): every changed line is docs, comments, tests, type hints, log text or config values
+8. `change_kind` (score, ordered; the criteria describe the change, never a model, and code maps levels to tiers):
+   - 0: only docs, comments, tests or type hints change; no runtime behavior change
+   - 1: runtime change that cannot alter control flow or results (log text, messages, constants, config defaults)
+   - 2: a small logic change a reader can verify from the changed lines alone
+   - 3: a logic change whose correctness depends on edge cases, state, error paths or code outside the diff
 9. `beyond_title` (noul): behavior changes the title does not describe
 10. `tests_exercise_change` (noul): changed tests exercise the changed behavior and its edge cases
 11. `high_stakes` (noul): unchanged from the current router
@@ -104,9 +108,11 @@ results.
 Computed in code from Jev's probabilities:
 
 - `block_risk` = max over blocks of max(Q1-Q5) and P(top level of Q7).
-- Light (Haiku): P(Q8) >= 0.85 and P(Q11) < 0.5.
-- Deep (Opus): P(Q11) >= 0.5, or `block_risk` >= T.
-- Otherwise standard (Sonnet).
+- Deep (Opus): P(Q11) >= 0.5, or `block_risk` >= T. The block questions
+  override Q8 upward, because the line between Q8 levels 2 and 3 is where the
+  current router failed.
+- Otherwise, from Q8 (the old router's cumulative rule): light (Haiku) if
+  P(level >= 2) <= 0.15; standard (Sonnet) if P(level 3) <= 0.15; else deep (Opus).
 - Reported at T = 0.5, plus a sweep of T from 0 to 1 as a curve.
 
 ### 4. Evaluation
