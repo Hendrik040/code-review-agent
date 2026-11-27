@@ -38,6 +38,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 6 | 2026-11-27 00:45-01:40 | Full benchmark: all three models on the other 70 BugsInPy bugs and Martian's 10 PRs, six sweeps in parallel | Triage matches all-Opus 5.5 (42/100) for 13% less |
 | 7 | 2026-11-27 | Trace analysis of Opus 5.5's misses; alternative routings scored from stored results | Opus 5.5 often sees the bug and decides not to report it; triage + Haiku second pass: 48/100 for $14.66 |
 | 8 | 2026-11-27 17:00-17:35 | Opus 5.5 high on Martian with a prompt addendum asking it to file what it would drop | Recall 9 → 14 of 31, precision unchanged, F1 0.359 → 0.459 for $3.07 |
+| 9 | 2026-11-27 | Sonnet 5.5 high on Martian with the same addendum; Jev routing compared with random routing | Sonnet F1 0.510 → 0.464 (no gain); Jev's tier picks beat random same-mix routing by about 2 bugs |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -307,6 +308,30 @@ Its precision stays well below Sonnet's and Opus 4.7's, so its F1 is still below
 both. This is one run on 10 PRs; Sonnet was not rerun with the addendum, so the
 comparison mixes prompts. BugsInPy was not rerun.
 
+## Step 9. Sonnet with the same addendum, and Jev against random routing
+
+**Sonnet 5.5 high on Martian with `file_considered`**
+(`sweep_2026-11-27_martian_sonnet55_high_fileconsidered`, traces 734-743). It ran on
+the newer CLI, like the Opus 5.5 runs; step 6's Sonnet sweep used the bundled CLI
+plus a newer-CLI tail for greptile#1.
+
+| Setup | Goldens matched | Findings | Recall | Precision | F1 | Cost |
+|---|---:|---:|---:|---:|---:|---:|
+| Sonnet 5.5 high, original prompt (step 6) | 13/31 | 20 | 0.419 | 0.650 | 0.510 | $1.06 |
+| Sonnet 5.5 high, file_considered | 12/31 | 19 | 0.387 | 0.579 | 0.464 | $1.17 |
+
+The addendum does not change Sonnet's behaviour: it filed about as many findings as
+before, and the difference is within single-run noise. Sonnet was not dropping issues
+the way Opus 5.5 was.
+
+**Jev against random routing.** Assigning BugsInPy's 100 bugs to tiers at random, with
+Jev's mix (2 light, 26 standard, 72 deep), over 20,000 shuffles of the stored results:
+mean 40.1 bugs found (5th-95th percentile 38-42), mean cost $13.22. Jev's routing
+found 42 for $14.15; 15% of random assignments do at least as well. Jev's choice of
+which bugs go deep is worth about 2 bugs over chance on this benchmark; most of
+triage's saving against all-Opus 5.5 comes from sending 28% of bugs to cheaper tiers
+at all.
+
 ## Spend
 
 | Step | Cost |
@@ -317,7 +342,8 @@ comparison mixes prompts. BugsInPy was not rerun.
 | 6 Stopped sequential start (two Opus 5.5 bugs, cost not recorded) | about $0.30 |
 | 7 Trace analysis (no API calls) | $0 |
 | 8 Martian sweep ($3.07), judging ($0.30), discarded first attempt ($0.27) | $3.64 |
-| **Total** | **about $32.97** |
+| 9 Sonnet sweep ($1.17), judging ($0.19) | $1.36 |
+| **Total** | **about $34.33** |
 
 Jev's own cost is not measured.
 

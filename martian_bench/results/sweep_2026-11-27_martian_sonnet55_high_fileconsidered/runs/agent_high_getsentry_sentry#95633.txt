@@ -1,0 +1,59 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_sonnet55_high_fileconsidered
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 0c4648ca50fbfbe608f644212c612a622913e304
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-11-27T18:36:11+00:00
+# finished: 2026-11-27T18:37:22+00:00
+# duration_s: 71.7
+# cost_usd: 0.1041
+# num_turns: 8
+# num_findings: 2
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 742
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 8
+# cost (USD, harness-reported): 0.104142
+# cost (USD, public Opus 4 rate): 0.977207
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 16481, 'cache_read_input_tokens': 261519, 'output_tokens': 3676, 'output_tokens_details': {'thinking_tokens': 1354}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16481}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 414, 'cache_read_input_tokens': 44606, 'cache_creation_input_tokens': 2417, 'cache_creation': {'ephemeral_5m_input_tokens': 2417, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 330,
+    "category": "resource",
+    "severity": "high",
+    "summary": "The shared FixedQueuePool is shut down whenever a strategy is closed or terminated, e.g. on a rebalance, and is never recreated, so later messages are dropped and their offsets committed.",
+    "detail": "The FixedQueuePool is created once in ResultsStrategyFactory.__init__ and shared by every SimpleQueueProcessingStrategy that create_thread_queue_parallel_worker builds. Arroyo creates a new strategy for each partition assignment and calls close()/terminate() on the old one at each rebalance. SimpleQueueProcessingStrategy.close() and terminate() both call self.queue_pool.shutdown(). That sets worker.shutdown=True on every worker, calls queue.shutdown() on every queue, and joins the workers. The factory still holds the same dead pool and hands it to the next strategy. In that strategy, submit() calls queue_pool.submit() -> work_queue.put(), which raises queue.ShutDown. The broad `except Exception` in SimpleQueueProcessingStrategy.submit logs the error, then calls add_offset and complete_offset, so the offset counts as processed. The commit loop then commits it, and every message after the first rebalance is silently lost with its offset committed. The shared OffsetTracker is also not reset or pruned for revoked partitions, so old state carries over and the commit loop can commit offsets for partitions this consumer no longer owns. The pool should only be shut down from ResultsStrategyFactory.shutdown(), not from the per-assignment strategy.",
+    "line_end": null,
+    "suggested_fix": "In SimpleQueueProcessingStrategy.close()/terminate(), stop only the commit thread and do not call self.queue_pool.shutdown(). Leave pool shutdown to ResultsStrategyFactory.shutdown(). Optionally wait for in-flight items and do a final commit in close(), and clear the offset tracker state for revoked partitions."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 186,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Queue routing uses the built-in hash() on a str, which is salted per process, so group-to-queue assignment is not stable across processes or restarts.",
+    "detail": "get_queue_for_group uses hash(group_key) % num_queues. Python salts str hashes per interpreter via PYTHONHASHSEED. Ordering holds within one process, but the same group can map to different queues after a restart. It can also map differently across multiple consumer processes. The class docstring promises consistent assignment of a group to the same queue. The practical impact is limited, because Kafka partition ownership is exclusive and in-flight work is lost on restart anyway. I am unsure whether this matters in production.",
+    "line_end": null,
+    "suggested_fix": "Use a stable hash, e.g. zlib.crc32(group_key.encode()) % num_queues."
+  }
+]

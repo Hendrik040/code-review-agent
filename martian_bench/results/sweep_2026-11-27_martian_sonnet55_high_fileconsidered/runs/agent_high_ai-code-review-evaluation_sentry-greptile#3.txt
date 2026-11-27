@@ -1,0 +1,59 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_sonnet55_high_fileconsidered
+# pr: ai-code-review-evaluation_sentry-greptile#3
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/3
+# original_upstream_url: https://github.com/getsentry/sentry/pull/94376
+# pr_title: feat(upsampling) - Support upsampled error count with performance optimizations
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 0c4648ca50fbfbe608f644212c612a622913e304
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 6ad6fe3899f630ccf922ce7ac681147dc7987435
+# n_goldens: 3
+# started: 2026-11-27T18:28:59+00:00
+# finished: 2026-11-27T18:30:37+00:00
+# duration_s: 97.3
+# cost_usd: 0.1116
+# num_turns: 9
+# num_findings: 2
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 736
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 9
+# cost (USD, harness-reported): 0.111615
+# cost (USD, public Opus 4 rate): 1.097789
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 16985, 'cache_read_input_tokens': 347567, 'output_tokens': 3436, 'output_tokens_details': {'thinking_tokens': 842}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16985}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 388, 'cache_read_input_tokens': 46008, 'cache_creation_input_tokens': 1519, 'cache_creation': {'ephemeral_5m_input_tokens': 1519, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 28,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The allowlist eligibility result is cached for 60s, but nothing ever invalidates the cache when the allowlist changes.",
+    "detail": "`is_errors_query_for_error_upsampled_projects` caches `_are_all_projects_error_upsampled` under a key built from the org id and a hash of the project ids. `invalidate_upsampling_cache` is added but has no callers anywhere in src or tests, and no hook runs when the `issues.client_error_sampling.project_allowlist` option changes. After an allowlist change, queries keep the old upsampling decision for up to 60s. A project removed from the allowlist can still be queried with `upsampled_count()`, which sums `sample_weight`. A newly added project is not upsampled. Tests that mock `options` for the same org and projects within 60s can also read a stale cached value, which makes them order-dependent. The cache key also uses Python's `hash()` of a tuple, so distinct project sets can collide and share an entry. A collision is unlikely, but the key could simply be the joined sorted ids. The docstring on `_are_all_projects_error_upsampled` says the config is read fresh \"to ensure we always have the latest configuration state\", which the new cache contradicts.",
+    "line_end": null,
+    "suggested_fix": "Call `invalidate_upsampling_cache` wherever the allowlist option is updated, or drop the cache. Build the key from the sorted project ids joined with commas instead of `hash()`."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_events_stats.py",
+    "line": 232,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The `Cannot group by timestamp` ParseError check was removed from the top-events path.",
+    "detail": "The old code computed `raw_groupby = self.get_field_list(...)` and raised `ParseError(\"Cannot group by timestamp\")` when `timestamp` was in it. The new code drops that check and calls `get_field_list` inline in both the RPC and non-RPC calls. A request with `topEvents>0` and `field=timestamp` is no longer rejected with a 400. It now reaches the query layer, where it can return an invalid grouping or a 500. This is unrelated to the upsampling change. The same edit also narrows `use_rpc` from `dataset in RPC_DATASETS` to `{spans_rpc, ourlogs}`, so any other RPC dataset falls back to the non-RPC path. The commit looks like a regression bundled in from a mismatched base.",
+    "line_end": null,
+    "suggested_fix": "Restore the `raw_groupby` variable and the `if \"timestamp\" in raw_groupby: raise ParseError(...)` check. Restore `use_rpc = dataset in RPC_DATASETS`."
+  }
+]

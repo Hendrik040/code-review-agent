@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_sonnet55_high_fileconsidered
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 0c4648ca50fbfbe608f644212c612a622913e304
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T18:27:41+00:00
+# finished: 2026-11-27T18:28:59+00:00
+# duration_s: 78.6
+# cost_usd: 0.1021
+# num_turns: 7
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 735
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 7
+# cost (USD, harness-reported): 0.102093
+# cost (USD, public Opus 4 rate): 0.964502
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 15747, 'cache_read_input_tokens': 265074, 'output_tokens': 3619, 'output_tokens_details': {'thinking_tokens': 731}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 15747}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 703, 'cache_read_input_tokens': 44816, 'cache_creation_input_tokens': 1473, 'cache_creation': {'ephemeral_5m_input_tokens': 1473, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 834,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator uses numeric get_item_key/value_from_cursor, which break on the audit log's datetime key.",
+    "detail": "The audit log endpoint passes order_by='-datetime' to OptimizedCursorPaginator. DateTimePaginator converts datetimes to epoch-ms in get_item_key and back to a datetime in value_from_cursor. The new class does neither. get_item_key calls math.floor/ceil on a datetime, which raises TypeError. value_from_cursor returns the raw numeric cursor value, so build_queryset filters a datetime column with a number. Any request with optimized_pagination=true by an admin or superuser therefore fails with a 500 (or builds wrong cursors/filters) instead of returning results.",
+    "line_end": null,
+    "suggested_fix": "Subclass DateTimePaginator, or reuse its get_item_key/value_from_cursor."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 876,
+    "category": "security",
+    "severity": "high",
+    "summary": "Negative cursor offsets are passed straight into queryset slicing, and the access is described as reaching 'data beyond normal pagination bounds'.",
+    "detail": "Cursor.from_string accepts a client-supplied negative offset. With enable_advanced_features, `queryset[cursor.offset:stop]` is called with a negative start. Django querysets assert on negative indexing, so this raises AssertionError and returns a 500 on user input. The BasePaginator change has the same problem when cursor.is_prev is true: the offset is no longer clamped, so a negative offset reaches slicing. The comment's claim that 'permissions are checked at the queryset level' does not make the behavior safe. If the slice did work, it would change which rows are returned relative to the cursor.",
+    "line_end": null,
+    "suggested_fix": "Reject negative offsets when parsing the cursor, or clamp with max(0, offset) in all cases. Remove the negative-offset path."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "other",
+    "severity": "medium",
+    "summary": "The new paginator is exposed via a user-controlled query param, gated by an access check that includes superuser and global-access members.",
+    "detail": "`optimized_pagination=true` selects an experimental paginator for any superuser or any member with global access. This puts the unsafe negative-offset and datetime-key behavior on a user-facing audit log endpoint, with no flag or rollout control.",
+    "line_end": null,
+    "suggested_fix": "Remove the opt-in path, or put it behind a feature flag once the paginator is correct."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 30,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The redirect-chain limit was cut from 10000 to 1000 with no justification.",
+    "detail": "Segment trees deeper than 1000 are now silently not joined, and the explanatory comment was removed. The change is unrelated to the zset migration.",
+    "line_end": null,
+    "suggested_fix": "Restore the 10000 limit."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 62,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The segment is capped in Lua with zpopmin, which silently drops spans, and the Python span-count guard was removed.",
+    "detail": "When span_count exceeds 1000, zpopmin deletes the lowest-scored (earliest-ending) spans without any metric or log. The previous behavior skipped oversized segments and emitted spans.buffer.flush_segments.segment_span_count_exceeded. The max_segment_spans setting is no longer enforced in buffer.py. Also, zunionstore defaults to SUM aggregation, so duplicate payloads get their scores summed, which skews the ordering used for eviction. Existing span-buf keys written as plain sets will cause WRONGTYPE errors on zcard/zscan after deploy.",
+    "line_end": null,
+    "suggested_fix": "Keep the max_segment_spans check and metric. Use AGGREGATE MAX or MIN in zunionstore."
+  }
+]
