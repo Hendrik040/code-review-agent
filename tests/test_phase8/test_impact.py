@@ -86,3 +86,12 @@ def test_summary_shape():
     c.doc = "Does f."
     assert impact.summary(c) == {"role": "callee", "file": "a.py", "line": 1, "symbol": "f",
                                  "line_text": "def f():", "docstring_first_line": "Does f."}
+
+
+def test_signature_line_names_the_symbol_for_callers():
+    a = SimpleNamespace(role="caller", file="r.py", line=10, symbol="call to match",
+                        line_text="return match('x') and get_new_command('x')")
+    b = SimpleNamespace(role="caller", file="r.py", line=10, symbol="call to get_new_command",
+                        line_text=a.line_text)
+    assert impact.signature_line(a) != impact.signature_line(b)
+    assert impact.signature_line(a).startswith("r.py:10  [match]  return")

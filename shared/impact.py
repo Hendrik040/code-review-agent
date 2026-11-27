@@ -144,7 +144,9 @@ def not_shown_note(cands: list, tiers: dict[str, str], *, ranked: bool) -> str:
 
 
 def signature_line(c: Any) -> str:
-    """`file:line  <source line>` on one line, at most 200 characters,
+    """`file:line  [name]  <source line>` (name for callers only) on one line, at most 200 characters,
     with `<` escaped so repository text cannot close a context tag."""
     text = re.sub(r"\s+", " ", c.line_text or "").strip().replace("<", "&lt;")
-    return f"{c.file}:{c.line}  {text}"[:_SIGNATURE_MAX]
+    # A caller line can call several changed names; say which one this is.
+    tag = f"[{_bare_symbol(c)}]  " if getattr(c, "role", "") == "caller" else ""
+    return f"{c.file}:{c.line}  {tag}{text}"[:_SIGNATURE_MAX]

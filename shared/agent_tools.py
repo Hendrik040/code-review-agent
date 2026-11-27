@@ -15,7 +15,10 @@ MCP server.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
+import secrets
 import shlex
 from typing import Any
 
@@ -193,7 +196,16 @@ def write_file(repo: Repo, path: str, content: str) -> str:
     return f"Wrote {len(content):,} chars to {path}"
 
 
-def build_review_context(repo: Repo, base_ref: str, head_ref: str) -> str:
+def _odis_error(result: Any) -> str:
+    return (
+        f"Error: build_review_context failed (exit {result.exit_code}): "
+        f"{result.stderr.strip() or '(no stderr)'}"
+    )
+
+
+def build_review_context(
+    repo: Repo, base_ref: str, head_ref: str, *, jev_client: Any = None,
+) -> str:
     """ODIS-as-a-tool: same algorithm as `shared.odis.build_context`,
     exposed for the agent to call when it wants the curated slice.
 
@@ -202,22 +214,43 @@ def build_review_context(repo: Repo, base_ref: str, head_ref: str) -> str:
     uploads the files in `_HOST_SHARED_FILES` to /home/daytona/code-review-agent
     with PYTHONPATH set; LocalRepo seeds the same env in `exec`.
 
+    Phase 8 bounds the "Impact Code" section: the CLI collects the
+    caller/callee candidates, the host decides how much of each to show
+    (Jev when configured, a fixed order otherwise; see
+    shared/impact_select.py), and the CLI renders the result. With
+    IMPACT_SELECT=off, or when everything fits, the output is unchanged.
+    `jev_client` is a test seam.
+
     Recommended as the first investigation step — 1-5 KB of context
     surfaces most boundary bugs immediately.
     """
-    cmd = (
-        f"python -m shared.odis_cli "
-        f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
-    )
+    from shared import impact_select  # host only: talks to Jev
+
+    rng = f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
     # NB: the ".." in BASE..HEAD must NOT be quoted; that's why we
     # quote each ref individually.
-    result = repo.exec(cmd, timeout=_ODIS_TIMEOUT_S)
+    cfg = impact_select.load_config()
+    if cfg.mode == "off":
+        result = repo.exec(f"python -m shared.odis_cli {rng}", timeout=_ODIS_TIMEOUT_S)
+        return result.stdout if result.ok else _odis_error(result)
+
+    token = secrets.token_hex(8)
+    result = repo.exec(f"python -m shared.odis_cli collect {token} {rng}", timeout=_ODIS_TIMEOUT_S)
     if not result.ok:
-        return (
-            f"Error: build_review_context failed (exit {result.exit_code}): "
-            f"{result.stderr.strip() or '(no stderr)'}"
-        )
-    return result.stdout
+        return _odis_error(result)
+    doc = json.loads(result.stdout)
+    try:
+        decisions, _ = impact_select.decide(doc, cfg, client=jev_client)
+    except Exception:  # noqa: BLE001 — selection must never fail the review
+        logging.getLogger("shared.impact_select").exception("impact_select failed; retrying in cap mode")
+        try:
+            decisions, _ = impact_select.decide(doc, dataclasses.replace(cfg, mode="cap"))
+        except Exception:  # noqa: BLE001
+            logging.getLogger("shared.impact_select").exception("cap mode failed; full context")
+            decisions = {"tiers": None, "note": "", "drop_changed": False}
+    repo.upload_bytes(json.dumps(decisions).encode("utf-8"), f".git/odis/{token}.decisions.json")
+    result = repo.exec(f"python -m shared.odis_cli render {token}", timeout=_ODIS_TIMEOUT_S)
+    return result.stdout if result.ok else _odis_error(result)
 
 
 # --------------------------------------------------------------------------- #
