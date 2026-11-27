@@ -53,6 +53,7 @@ _HOST_SHARED_FILES = [
     "shared/__init__.py",
     "shared/odis.py",
     "shared/odis_cli.py",
+    "shared/impact.py",
 ]
 
 
