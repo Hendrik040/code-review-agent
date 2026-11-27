@@ -47,3 +47,26 @@ def git(repo: LocalRepo, cmd: str) -> None:
     """Run a git command with a throwaway identity; assert it worked."""
     res = repo.exec(f"{_GIT} {cmd}", timeout=60)
     assert res.ok, res.stderr
+
+
+class FakeJev:
+    """Stands in for typesafe-sdk's client via shared.jev.ask(client=...).
+    Answers every question with `probs.get(id, 0.03)`, except ids in
+    `drop`; `error` raises; `delay` sleeps before answering."""
+
+    def __init__(self, probs=None, error=None, drop=(), delay=0.0):
+        self.probs, self.error, self.drop, self.delay = probs or {}, error, set(drop), delay
+        self.calls: list[tuple[dict, dict]] = []
+
+    def system_one(self, state, questions):
+        import time
+        from types import SimpleNamespace
+
+        self.calls.append((state, questions))
+        time.sleep(self.delay)
+        if self.error:
+            raise self.error
+        return SimpleNamespace(nouls={
+            q: SimpleNamespace(noul=self.probs.get(q, 0.03))
+            for q in questions if q not in self.drop
+        })
