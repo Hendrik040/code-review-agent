@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_verify_opus55_high_rest90_resume
+# bug: tornado#4
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_resume_opus.json
+# prepared_sha256_16: 700f2fd6541062ca
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: 1f45fc827a386b53530b3d2e1c3a70747c6e1189
+# fixed_commit: db529031a1e1a6e951826aba0b7d0b18f05cd4c7
+# base_ref: 1f45fc827a386b53530b3d2e1c3a70747c6e1189^
+# head_ref: 1f45fc827a386b53530b3d2e1c3a70747c6e1189
+# started: 2026-11-27T17:45:37+00:00
+# finished: 2026-11-27T17:46:17+00:00
+# duration_s: 40.4
+# cost_usd: 0.2019
+# num_turns: 8
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 1010
+# repo: LocalRepo
+# refs: 1f45fc827a386b53530b3d2e1c3a70747c6e1189^..1f45fc827a386b53530b3d2e1c3a70747c6e1189
+# turns: 8
+# cost (USD, harness-reported): 0.201882
+# cost (USD, public Opus 4 rate): 0.961700
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 14419, 'cache_read_input_tokens': 272856, 'output_tokens': 3758, 'output_tokens_details': {'thinking_tokens': 1546}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 14419}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 480, 'cache_read_input_tokens': 43381, 'cache_creation_input_tokens': 1357, 'cache_creation': {'ephemeral_5m_input_tokens': 1357, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/web.py",
+    "line": 1828,
+    "category": "logic",
+    "severity": "low",
+    "summary": "A suffix range longer than the file (e.g. `bytes=-100` on a 26-byte file) leaves `start` negative, so `file.seek` fails and the request returns a 500 instead of the whole file.",
+    "detail": "`_parse_request_range(\"bytes=-100\")` returns (-100, None). The new satisfiability check (`start >= size or end == 0`) does not catch this. At web.py:1828-1829, `start += size` then gives -74. `get_content` calls `file.seek(-74)`, which raises OSError/IOError (EINVAL), so the client gets a 500. RFC 2616 14.35.1 says that when the suffix length is larger than the entity, the whole entity is served. This bug predates the PR, but the PR rewrote this exact block to follow that RFC section and left the case unhandled.",
+    "line_end": 1829,
+    "suggested_fix": "             if start is not None and start < 0:\n                 start += size\n+                if start < 0:\n+                    start = 0"
+  },
+  {
+    "file": "tornado/web.py",
+    "line": 1834,
+    "category": "logic",
+    "severity": "low",
+    "summary": "A last-byte-pos past the end of the file (e.g. `bytes=0-100` on a 26-byte file) is not clamped to the file size, so `get_content` hits `assert remaining == 0` and the request errors.",
+    "detail": "`_parse_request_range(\"bytes=0-100\")` returns (0, 101). The new 416 check only looks at `start`, so `end` stays 101. The handler returns a 206 with an invalid `Content-Range: bytes 0-100/26`, and `get_content` computes remaining=101. After reading 26 bytes it reaches EOF with remaining=75, so `assert remaining == 0` fails partway through the response. RFC 2616 14.35.1 says that a last-byte-pos at or beyond the entity length is treated as entity length - 1. This also predates the PR, but sits in the range-satisfiability logic the PR reworked.",
+    "line_end": 1837,
+    "suggested_fix": "+            if end is not None and end > size:\n+                end = size"
+  }
+]

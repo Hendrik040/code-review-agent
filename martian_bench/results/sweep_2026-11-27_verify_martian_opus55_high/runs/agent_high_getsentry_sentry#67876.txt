@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_verify_martian_opus55_high
+# pr: getsentry_sentry#67876
+# pr_url: https://github.com/getsentry/sentry/pull/67876
+# original_upstream_url: 
+# pr_title: GitHub OAuth Security Enhancement
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: 344aa102e7818606e29426ebe69d5a680d8727c6
+# head_sha: bb75657fc8f13923c1d7983f422290908a1e7310
+# n_goldens: 3
+# started: 2026-11-27T16:59:36+00:00
+# finished: 2026-11-27T17:00:48+00:00
+# duration_s: 71.7
+# cost_usd: 0.2704
+# num_turns: 6
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 806
+# repo: LocalRepo
+# refs: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+# turns: 6
+# cost (USD, harness-reported): 0.270368
+# cost (USD, public Opus 4 rate): 1.183507
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 26463, 'cache_read_input_tokens': 226167, 'output_tokens': 4639, 'output_tokens_details': {'thinking_tokens': 1482}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 26463}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 789, 'cache_read_input_tokens': 54949, 'cache_creation_input_tokens': 1833, 'cache_creation': {'ephemeral_5m_input_tokens': 1833, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 503,
+    "category": "error",
+    "severity": "high",
+    "summary": "`integration.metadata[\"sender\"][\"login\"]` raises KeyError for integrations whose metadata has no `sender`, crashing the install pipeline with a 500.",
+    "detail": "`build_integration` adds `metadata[\"sender\"]` only when `state.get(\"sender\")` is set (integration.py:376-377). Only the webhook path supplies it (webhook.py:204). Integrations created through the normal pipeline, and older integrations, have no `sender` key. `installation.py:44` already checks for a missing `sender`, so the key really can be absent. When an Integration row exists with no OrganizationIntegration (for example after an org uninstalls and reinstalls, or when an install is re-linked), `GitHubInstallation.dispatch` reaches this comparison and raises KeyError. The user gets an unhandled server error instead of the error page.",
+    "line_end": 504,
+    "suggested_fix": "-        if (\n-            pipeline.fetch_state(\"github_authenticated_user\")\n-            != integration.metadata[\"sender\"][\"login\"]\n-        ):\n+        sender_login = integration.metadata.get(\"sender\", {}).get(\"login\")\n+        if sender_login is None or pipeline.fetch_state(\"github_authenticated_user\") != sender_login:\n             return error(request, self.active_organization)"
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 424,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Failures in the OAuth token exchange or the GitHub `/user` lookup are not handled, so they surface as 500s instead of the integration error page.",
+    "detail": "`safe_urlopen(...)` is called outside the try block, so a network, timeout or blocked-IP error raises straight out of `dispatch`. `get_user_info` calls `resp.raise_for_status()` (identity/github/provider.py:16) and parses JSON with no handling. A revoked or expired token, a GitHub 5xx or a rate limit raises HTTPError out of `OAuthLoginView.dispatch`. The code already has an `error()` path for a missing `access_token`, but these transient failures crash the setup popup and the user never gets the error message.",
+    "line_end": 435,
+    "suggested_fix": "Wrap `safe_urlopen` and `get_user_info` in try/except Exception and return `error(request, self.active_organization)` when they fail."
+  },
+  {
+    "file": "src/sentry/replays/usecases/ingest/__init__.py",
+    "line": 161,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The `is_replay_video` guard was removed, so replay-video initial segments are now billed with an ACCEPTED REPLAY outcome.",
+    "detail": "The diff removes the `# Replay videos are not billed for now.` guard. It also drops the `is_replay_video` plumbing from `recording_buffered.py` and from `_ingest_recording`. Every initial segment, including replay videos, now emits `track_outcome(outcome=ACCEPTED, category=REPLAY)`, and that outcome counts toward billing. The PR is about the GitHub integration, so this looks like an accidental revert from a stale branch. It changes billing for customers who send replay videos.",
+    "line_end": 171,
+    "suggested_fix": "Restore the `is_replay_video` parameter and the `if not is_replay_video:` guard around `track_outcome`, along with the related TypedDict and consumer changes."
+  },
+  {
+    "file": "src/sentry/monitors/tasks/detect_broken_monitor_envs.py",
+    "line": 38,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`NUM_DAYS_MUTED_PERIOD` changed from 1 to 14, so broken monitor environments are auto-muted 14 days after the user is notified instead of 1 day.",
+    "detail": "Line 184 compares `user_notified_timestamp + timedelta(days=NUM_DAYS_MUTED_PERIOD)`, so the muting delay is counted from notification, not from detection as the new comment says. Setting the value to 14 makes auto-mute happen about 14 days later than before. The test was also edited to match. This looks like an unrelated revert in a GitHub-integration PR.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/search/events/datasets/spans_indexed.py",
+    "line": 41,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The diff removes case-insensitive filtering for `span.op` and `span.description`, so mixed-case queries no longer match the stored lower-case values.",
+    "detail": "The `lowercase_search` converter and its test were deleted. A query such as `span.op:\"ThIs Is a TraNSActiON\"` now returns no results, which is a regression in the spansIndexed dataset that looks like an accidental revert.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

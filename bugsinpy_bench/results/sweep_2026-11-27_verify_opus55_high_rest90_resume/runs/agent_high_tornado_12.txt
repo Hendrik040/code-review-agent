@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_verify_opus55_high_rest90_resume
+# bug: tornado#12
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_resume_opus.json
+# prepared_sha256_16: 700f2fd6541062ca
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: 617d41f216ae195d630897d89cdf2fc9fc6fe91b
+# fixed_commit: 301f52b532c071a0d2fec1eb7c23f2714bb38567
+# base_ref: 617d41f216ae195d630897d89cdf2fc9fc6fe91b^
+# head_ref: 617d41f216ae195d630897d89cdf2fc9fc6fe91b
+# started: 2026-11-27T18:17:02+00:00
+# finished: 2026-11-27T18:17:32+00:00
+# duration_s: 30.2
+# cost_usd: 0.1739
+# num_turns: 4
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 1108
+# repo: LocalRepo
+# refs: 617d41f216ae195d630897d89cdf2fc9fc6fe91b^..617d41f216ae195d630897d89cdf2fc9fc6fe91b
+# turns: 4
+# cost (USD, harness-reported): 0.173915
+# cost (USD, public Opus 4 rate): 0.769267
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 16892, 'cache_read_input_tokens': 156115, 'output_tokens': 2910, 'output_tokens_details': {'thinking_tokens': 937}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16892}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 628, 'cache_read_input_tokens': 45972, 'cache_creation_input_tokens': 1239, 'cache_creation': {'ephemeral_5m_input_tokens': 1239, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/auth.py",
+    "line": 664,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "oauth2_request binds self._on_facebook_request, which this diff deletes, so every call fails with AttributeError.",
+    "detail": "The body of the new `OAuth2Mixin.oauth2_request` was copied from `facebook_request` and still does `functools.partial(self._on_facebook_request, callback)`. The diff deletes `FacebookGraphMixin._on_facebook_request` and adds `_on_oauth2_request` in its place. Grep finds no remaining definition of `_on_facebook_request` anywhere in `tornado/`. So every call to `oauth2_request` raises AttributeError before any HTTP request is sent. That includes calls through `FacebookGraphMixin.facebook_request` and from Google users following the new docs. The error is caught by `_auth_return_future` and set on the returned future. A caller using the callback style gets nothing: `_auth_future_to_callback` only catches AuthError, so the AttributeError escapes before the callback runs. A caller yielding the future gets the AttributeError raised.",
+    "line_end": null,
+    "suggested_fix": "-        callback = functools.partial(self._on_facebook_request, callback)\n+        callback = functools.partial(self._on_oauth2_request, callback)"
+  },
+  {
+    "file": "tornado/auth.py",
+    "line": 1060,
+    "category": "logic",
+    "severity": "high",
+    "summary": "facebook_request passes its callback, which the decorator has already turned into a Future, as the callback of the decorated oauth2_request, so the outer Future never resolves correctly.",
+    "detail": "`facebook_request` is decorated with `@_auth_return_future`, so inside its body `callback` is the outer TracebackFuture, not a callable. It passes that Future positionally as `callback` to `oauth2_request`, which is also decorated with `@_auth_return_future`. The inner wrapper treats the Future as a user callback and registers `functools.partial(_auth_future_to_callback, outer_future)`. When the inner request finishes, `_auth_future_to_callback` runs `outer_future(result)` and raises TypeError ('Future' object is not callable). The outer future returned by `facebook_request` is never resolved, so `yield self.facebook_request(...)` hangs and legacy callbacks are never called. The inner future returned by `oauth2_request` is thrown away. This bug applies even once the `_on_facebook_request` name is fixed.",
+    "line_end": 1061,
+    "suggested_fix": "-        return self.oauth2_request(url, callback, access_token,\n-                                   post_args, **args)\n+        oauth_future = self.oauth2_request(url, access_token=access_token,\n+                                           post_args=post_args, **args)\n+        chain_future(oauth_future, callback)"
+  }
+]

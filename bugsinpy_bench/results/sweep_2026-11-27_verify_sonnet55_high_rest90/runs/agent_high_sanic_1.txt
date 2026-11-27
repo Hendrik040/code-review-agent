@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_verify_sonnet55_high_rest90
+# bug: sanic#1
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_rest90.json
+# prepared_sha256_16: 872e47145edb8917
+# upstream_repo: huge-success/sanic
+# introducing_commit: a6077a179067812766293f9ab4391b5e1499a9c6
+# fixed_commit: 44973125c15304b4262c51c78b5a86bd1daafa86
+# base_ref: a6077a179067812766293f9ab4391b5e1499a9c6^
+# head_ref: a6077a179067812766293f9ab4391b5e1499a9c6
+# started: 2026-11-27T16:59:47+00:00
+# finished: 2026-11-27T17:00:19+00:00
+# duration_s: 32.0
+# cost_usd: 0.1256
+# num_turns: 6
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 805
+# repo: LocalRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 6
+# cost (USD, harness-reported): 0.125630
+# cost (USD, public Opus 4 rate): 1.147551
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 26060, 'cache_read_input_tokens': 273764, 'output_tokens': 3308, 'output_tokens_details': {'thinking_tokens': 1357}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 26060}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 184, 'cache_read_input_tokens': 54949, 'cache_creation_input_tokens': 1546, 'cache_creation': {'ephemeral_5m_input_tokens': 1546, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "sanic/app.py",
+    "line": 217,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "The `route`/`websocket` decorators now return `(routes, handler)`, so every `@app.route`/`@app.get` use rebinds the decorated name to a tuple.",
+    "detail": "The inner decorator in `Sanic.route` (sanic/app.py:217) and `Sanic.websocket` (sanic/app.py:527) now return `routes, handler` instead of `handler`. Because `@app.get('/')` is `self.route(...)` and the decorator's return value replaces the function name, `async def handler(request)` becomes a tuple at module level. Calling the function directly, importing it, stacking another decorator above or below (for example two `@app.route` lines on one function), or using it in `add_route` or `url_for`-style helpers then fails with `TypeError: 'tuple' object is not callable` or similar. This also breaks the public decorator contract, since the return value is only meant to be consumed internally by `Blueprint.register`. The same applies to `app.static` and the shorthand methods that return `self.route(...)`. A safer design keeps returning `handler` and exposes the routes some other way.",
+    "line_end": null,
+    "suggested_fix": "Keep `return handler` in the decorators and have `Blueprint.register` obtain the routes separately, for example by calling `app.router.add` directly or via an internal helper such as `app._route(...)` that returns `(routes, handler)`."
+  },
+  {
+    "file": "sanic/router.py",
+    "line": 148,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "`Router.add` can return `None` entries when `host` is a list, which makes `Blueprint.register` crash on `route.name`.",
+    "detail": "`Router._add` returns `None` when `host` is a non-string iterable. It recurses through `self.add(...)` and then does a bare `return`. `Router.add` now does `routes.append(self._add(...))`, so `routes` becomes `[None]`. `Blueprint.register` builds `route_names = [route.name for route in routes]`, which raises `AttributeError: 'NoneType' object has no attribute 'name'`. A blueprint route declared with `host=[...]` therefore fails to register. The recursive `self.add` calls also return route lists that are discarded, so middleware would not be attached to those host-specific routes even if the crash were avoided.",
+    "line_end": null,
+    "suggested_fix": "In `_add`, collect and return the routes from the recursive `self.add(...)` calls for each host. In `Router.add`, extend `routes` with them and filter out `None`."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 940,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The router lookup now happens before request middleware, so app-level request middleware no longer runs for 404 or 405 requests.",
+    "detail": "`self.router.get(request)` was moved ahead of `_run_request_middleware`. When no route matches, it raises `NotFound` or `MethodNotSupported`, and the middleware loop never runs. Before this change, global `@app.middleware('request')` handlers such as logging, CORS or auth ran for every request, including unmatched ones. Response middleware still runs in `finally`, so request and response middleware are now asymmetric for error responses. The same change also affects any request middleware that sets state which response middleware expects.",
+    "line_end": null,
+    "suggested_fix": "Wrap `router.get` in its own try/except. On a routing exception, run the app-level request middleware with `request_name=None` first, then re-raise the exception so it is handled as before."
+  }
+]

@@ -113,3 +113,45 @@ context errors only in the old setup.
 
 Spend for the follow-up: $14.25 in reviews (rep 1 $7.38, rep 2 $6.87), plus judge calls.
 Total for this experiment: $26.72 in reviews of the $30 approved.
+
+## Full benchmark with the prompt fix
+
+`run_verify_full.sh` (+ `resume_verify_full.sh`, `score_verify_full.py` →
+`verify_full_scores.json`): Jev impact selection + `REVIEW_PROMPT_VARIANT=verify` on all
+of BugsInPy and Martian, Sonnet 5.5 high and Opus 5.5 high, one run. The 90 bugs not in
+the 10-bug test ran here; the other 10 use the promptfix verify runs (r1, with r2 as a
+second estimate). The first pass stopped when the API account ran out of credit (every
+call after that crashed at $0 and the judge failed too); the crashed entries were rerun
+with a key from a funded organization and every sweep was re-judged. Sonnet's resume hit
+its $4 cap, so 8 bugs have no verify review; all setups are compared on the same 92.
+All runs used Claude Code 2.1.332 (earlier Sonnet sweeps used the SDK's bundled CLI).
+
+| | Old context | New context | New + prompt fix |
+|---|---|---|---|
+| Opus, bugs found of 100 | 42 | 42 | 42 (second estimate 43) |
+| Sonnet, bugs found of 92 | 32 | 30 | 30 (30) |
+| Opus, Martian F1 (recall / precision) | 0.359 (0.29 / 0.47) | 0.399 (0.36 / 0.46) | 0.420 (0.39 / 0.46) |
+| Sonnet, Martian F1 | 0.510 (0.42 / 0.65) | 0.412 (0.32 / 0.57) | 0.385 (0.32 / 0.48) |
+| Context errors, BugsInPy / Martian | 10 / 6 | 0 / 3 | 0 / 2 |
+
+**Reading.**
+1. **The prompt fix does no harm.** On the 84 bugs (78 for Sonnet) whose context did
+   not change, Opus goes 33 → 34 and Sonnet 24 → 24, with a few bugs swapped each way.
+   Findings rise about 10% (Opus 103 → 112, Sonnet 65 → 73) and the judge rates the
+   same share as real (94% / 95%).
+2. **It does not produce an overall gain.** Over the whole benchmark the three setups
+   are within one bug of each other for Opus and two for Sonnet. The 10-bug win
+   (Opus 4.5 vs 3.0) does not carry over to a visible difference in 100.
+3. **Martian splits by model again:** Opus improves step by step (F1 0.36 → 0.40 → 0.42),
+   Sonnet drops (0.51 → 0.41 → 0.39, mostly precision). With 31 golden comments, one
+   comment is 3 points of recall, so neither direction is established.
+4. **Sonnet cost rose** about 20% with the prompt fix on BugsInPy ($5.12 → $6.34 on 92
+   bugs); part of that may be the newer CLI. Opus cost is flat.
+
+**Where this leaves the context builder:** it is a reliability fix (no more context
+errors, flat cost) with no measurable effect on bugs found, with or without the prompt
+change. On this benchmark the agent compensates for a missing context with its own
+tools, so a better context cannot show up as more bugs found. Testing an accuracy
+claim needs cases where exploring is not enough.
+
+Spend for this run: $23.86 in reviews (approved $25), plus judge calls.

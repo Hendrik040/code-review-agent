@@ -1,0 +1,59 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_verify_martian_sonnet55_high
+# pr: ai-code-review-evaluation_sentry-greptile#3
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/3
+# original_upstream_url: https://github.com/getsentry/sentry/pull/94376
+# pr_title: feat(upsampling) - Support upsampled error count with performance optimizations
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 6ad6fe3899f630ccf922ce7ac681147dc7987435
+# n_goldens: 3
+# started: 2026-11-27T16:56:28+00:00
+# finished: 2026-11-27T16:58:05+00:00
+# duration_s: 97.7
+# cost_usd: 0.1148
+# num_turns: 9
+# num_findings: 2
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 789
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 9
+# cost (USD, harness-reported): 0.114784
+# cost (USD, public Opus 4 rate): 1.126334
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 18226, 'cache_read_input_tokens': 353934, 'output_tokens': 3379, 'output_tokens_details': {'thinking_tokens': 777}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 18226}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 465, 'cache_read_input_tokens': 47369, 'cache_creation_input_tokens': 1292, 'cache_creation': {'ephemeral_5m_input_tokens': 1292, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/search/events/datasets/discover.py",
+    "line": 1048,
+    "category": "logic",
+    "severity": "high",
+    "summary": "upsampled_count dropped the ifNull(sample_weight, 1) fallback, so events with NULL sample_weight are no longer counted.",
+    "detail": "The aggregation changed from sum(ifNull(sample_weight, 1)) to sum(sample_weight). ClickHouse's sum() skips NULLs, so events in allowlisted projects without a sample_weight are silently dropped from the count. These are events ingested before upsampling was enabled, or events that were never sampled. Counts are under-reported, and sum() over only-NULL rows gives 0, so a time bucket can show a count of 0 when events exist. The commit justifies the removal with an unverified claim that the schema guarantees the column is populated. Nothing in the repo enforces that: sample_weight is a nullable Snuba column. The same commit also removes upsampled_eps/upsampled_epm and their key-conversion helpers, so rate functions are no longer upsampled.",
+    "line_end": null,
+    "suggested_fix": "-    [Function(\"sum\", [Column(\"sample_weight\")])],\n+    [Function(\"sum\", [Function(\"ifNull\", [Column(\"sample_weight\"), 1])])],"
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 28,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The 60-second eligibility cache is never invalidated, so allowlist changes take up to 60s to apply.",
+    "detail": "is_errors_query_for_error_upsampled_projects caches the allowlist check for 60 seconds. invalidate_upsampling_cache is defined but nothing calls it, so the allowlist option change path doesn't clear the cache. After a project is removed from the allowlist, queries keep rewriting count() to sum(sample_weight) for up to a minute. After a project is added, they keep returning plain counts. The docstring on _are_all_projects_error_upsampled says it reads the config fresh to always have the latest state, which the cache contradicts. The cache key also uses Python's hash() of the project-id tuple, so two different project sets that collide would share an entry. Tests that mock `options` can also leak cached results across test cases, because the default cache persists.",
+    "line_end": null,
+    "suggested_fix": "Remove the cache, or call invalidate_upsampling_cache wherever issues.client_error_sampling.project_allowlist is updated. Build the cache key from the joined sorted project ids instead of hash()."
+  }
+]

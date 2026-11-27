@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 1093
+# repo: LocalRepo
+# refs: 68dedf54cb27847f6d035099b61aa06226549fad^..68dedf54cb27847f6d035099b61aa06226549fad
+# turns: 5
+# cost (USD, harness-reported): 0.238250
+# cost (USD, public Opus 4 rate): 1.017964
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 22886, 'cache_read_input_tokens': 166038, 'output_tokens': 4529, 'output_tokens_details': {'thinking_tokens': 2436}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 22886}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 680, 'cache_read_input_tokens': 51574, 'cache_creation_input_tokens': 1631, 'cache_creation': {'ephemeral_5m_input_tokens': 1631, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "scrapy/utils/url.py",
+    "line": 46,
+    "category": "error",
+    "severity": "medium",
+    "summary": "canonicalize_url now runs the whole netloc (userinfo and port included) through the 'idna' codec, which raises UnicodeError on URLs that used to canonicalize fine.",
+    "detail": "`_safe_ParseResult` calls `parts.netloc.encode('idna')` on the full netloc, which can include `user:pass@` and `:port`. The idna codec splits on dots and rejects any label that is empty or longer than 63 characters. Two inputs that now fail with `UnicodeError: label empty or too long` (checked in the sandbox): `http://user:<70-char token>@example.com/` and `http://www..example.com/`. canonicalize_url catches the UnicodeError, but the retry with encoding='utf8' runs the same idna encoding on the netloc again, so the error is raised anyway. The old code never encoded the netloc, so these URLs used to work. canonicalize_url is called by `scrapy/utils/request.py:53` (request_fingerprint), so any request to such a URL (for example basic-auth URLs with long API tokens) now fails during fingerprinting and dupe filtering. Non-ASCII credentials are also wrongly punycoded.",
+    "line_end": null,
+    "suggested_fix": "Apply IDNA only to the hostname, and only when it contains non-ASCII characters; keep userinfo and port as they are. Catch UnicodeError from the idna step and fall back to the original netloc."
+  },
+  {
+    "file": "scrapy/utils/url.py",
+    "line": 159,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "In Python 2, parse_url now decodes byte-string URLs strictly as UTF-8, so non-UTF-8 byte URLs raise UnicodeDecodeError.",
+    "detail": "parse_url changed from `urlparse(to_native_str(url, encoding))` to `urlparse(to_unicode(url, encoding))`. On Python 2, to_native_str returned str/bytes URLs unchanged. to_unicode calls `.decode('utf-8', 'strict')`. A Python 2 byte URL holding raw latin-1 bytes (for example `'http://example.com/caf\\xe9'`) passed to url_is_from_any_domain, url_has_any_extension, or canonicalize_url now raises UnicodeDecodeError where it used to work. The return type also changes from str to unicode for Python 2 callers.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

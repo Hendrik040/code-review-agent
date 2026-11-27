@@ -1,0 +1,52 @@
+# Agent SDK reviewer run 787
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 9
+# cost (USD, harness-reported): 0.269425
+# cost (USD, public Opus 4 rate): 1.255260
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 19782, 'cache_read_input_tokens': 326555, 'output_tokens': 5257, 'output_tokens_details': {'thinking_tokens': 1736}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 19782}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 666, 'cache_read_input_tokens': 48483, 'cache_creation_input_tokens': 1618, 'cache_creation': {'ephemeral_5m_input_tokens': 1618, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "error",
+    "severity": "high",
+    "summary": "`organization_context.member.has_global_access` is evaluated unconditionally and crashes when member is None.",
+    "detail": "`enable_advanced` is computed for every request, even when `optimized_pagination` isn't requested. `RpcUserOrganizationContext.member` is Optional (model.py:344-346: 'member can be None when the given user_id does not have membership'). Any non-superuser caller who passes OrganizationAuditPermission without an org membership gets AttributeError ('NoneType' has no attribute 'has_global_access') and a 500. Examples are staff users, org auth tokens/API keys, or a user-less context. This breaks the plain audit-log listing, not only the new path.",
+    "line_end": null,
+    "suggested_fix": "-        enable_advanced = request.user.is_superuser or organization_context.member.has_global_access\n+        member = organization_context.member\n+        enable_advanced = is_active_superuser(request) or (member is not None and member.has_global_access)\n(and only evaluate it when use_optimized is true)"
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 838,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator treats the key as numeric, but the audit log orders by a DateTimeField, so math.floor(datetime) raises TypeError.",
+    "detail": "OptimizedCursorPaginator copies Paginator's numeric `get_item_key` (`math.floor(getattr(item, key))`) and `value_from_cursor` (raw cursor.value). The only caller uses `order_by=\"-datetime\"` on AuditLogEntry. When there are results, `build_cursor` calls `get_item_key` on a datetime and gets TypeError, so every optimized request returns a 500. Requests with a cursor value would also filter `datetime__lte=<int>` instead of a datetime. DateTimePaginator exists for exactly this conversion (strftime * multiplier / fromtimestamp).",
+    "line_end": 843,
+    "suggested_fix": "Subclass DateTimePaginator (or reuse its get_item_key/value_from_cursor) instead of copying Paginator's numeric versions."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 877,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Negative cursor offsets are sliced directly into a Django QuerySet, which raises instead of paginating.",
+    "detail": "When enable_advanced_features is set and cursor.offset < 0 (any client can send cursor like '0:-10:0'), the code runs `queryset[start_offset:stop]` with a negative start. Django QuerySets don't support negative indexing and raise ValueError/AssertionError, so the request fails with a 500. The comment says 'Django ORM properly handles negative slicing automatically', which is wrong. The intent stated in the comments, 'access to data beyond normal pagination bounds', is also a security smell. The same unclamped negative offset is still passed through in BasePaginator for is_prev cursors (line ~182). Offsets should be clamped or rejected.",
+    "line_end": 883,
+    "suggested_fix": "start_offset = max(0, cursor.offset)  # always clamp; reject negative offsets in Cursor parsing"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "security",
+    "severity": "low",
+    "summary": "The superuser check uses the raw `request.user.is_superuser` flag instead of an active superuser session.",
+    "detail": "Sentry gates superuser privileges on `is_active_superuser(request)`, which requires an active, sudo-validated superuser session. Checking the `is_superuser` DB flag directly turns on the 'advanced' paginator, with its unclamped offsets, for any account that has the flag, even without an elevated session. That bypasses the usual superuser session controls.",
+    "line_end": null,
+    "suggested_fix": "Use `from sentry.auth.superuser import is_active_superuser` and `is_active_superuser(request)`."
+  }
+]

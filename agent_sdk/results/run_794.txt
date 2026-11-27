@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 794
+# repo: LocalRepo
+# refs: 4c01c0c4d77348416fff70e00ed6c25955c33ef6^..4c01c0c4d77348416fff70e00ed6c25955c33ef6
+# turns: 4
+# cost (USD, harness-reported): 0.177761
+# cost (USD, public Opus 4 rate): 0.784126
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 17282, 'cache_read_input_tokens': 156696, 'output_tokens': 2999, 'output_tokens_details': {'thinking_tokens': 1113}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 17282}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 612, 'cache_read_input_tokens': 46497, 'cache_creation_input_tokens': 1104, 'cache_creation': {'ephemeral_5m_input_tokens': 1104, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/callbacks.py",
+    "line": 629,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "ReduceLROnPlateau never resets `wait` after reducing the LR, so with cooldown=0 (the default) it reduces the LR again on every following epoch without improvement.",
+    "detail": "After a reduction the code only sets `self.cooldown_counter = self.cooldown` and then runs `self.wait += 1`. `wait` is only zeroed when the metric improves or while cooldown is active. With the default cooldown=0, `wait` stays >= patience after the first reduction, so every later non-improving epoch triggers another reduction. The LR drops geometrically (lr*factor^k) until it reaches min_lr, instead of waiting `patience` epochs between reductions as documented. Example: with patience=10 and factor=0.1, after 10 stagnant epochs the LR falls 10x on each epoch after that.",
+    "line_end": 638,
+    "suggested_fix": "                        self.cooldown_counter = self.cooldown\n+                       self.wait = 0\n                self.wait += 1\n(or reset wait to 0 after the reduction and skip the increment in that case)"
+  },
+  {
+    "file": "keras/callbacks.py",
+    "line": 674,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "CSVLogger keeps its csv.DictWriter across training runs, so a second `fit()` with the same instance writes to the file that was already closed.",
+    "detail": "`on_train_begin` opens a new `self.csv_file` on every call, but `self.writer` is only created when it is falsy. `on_train_end` closes the file and leaves `self.writer` set. When the same CSVLogger is passed to a second `fit`/`fit_generator` call (common when resuming training, and the `append=True` option is meant for this), `on_epoch_end` reuses the old DictWriter bound to the closed file object and raises `ValueError: I/O operation on closed file`. The header is also never written for the new file.",
+    "line_end": 680,
+    "suggested_fix": "In on_train_begin, reset `self.writer = None` and `self.keys = None` after opening the file (and skip writing the header when appending to a non-empty file)."
+  },
+  {
+    "file": "keras/callbacks.py",
+    "line": 665,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`handle_value` treats strings as iterables, so any string value in logs gets written as a list of its characters.",
+    "detail": "`isinstance(k, Iterable)` is True for str/unicode, so a log value such as 'abc' is written as \"[a, b, c]\". This contradicts the docstring's claim that the logger supports all values that can be represented as a string. Because the function returns an already-quoted string, csv also double-quotes it, which mangles iterable values further.",
+    "line_end": 670,
+    "suggested_fix": "if isinstance(k, Iterable) and not is_zero_dim_ndarray and not isinstance(k, six.string_types):"
+  }
+]

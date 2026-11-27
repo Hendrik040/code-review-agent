@@ -1,0 +1,79 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_verify_martian_sonnet55_high
+# pr: ai-code-review-evaluation_sentry-greptile#1
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/1
+# original_upstream_url: 
+# pr_title: Enhanced Pagination Performance for High-Volume Audit Logs
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T16:53:34+00:00
+# finished: 2026-11-27T16:55:30+00:00
+# duration_s: 115.9
+# cost_usd: 0.0978
+# num_turns: 9
+# num_findings: 4
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 771
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 9
+# cost (USD, harness-reported): 0.097761
+# cost (USD, public Opus 4 rate): 0.954587
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 13793, 'cache_read_input_tokens': 295169, 'output_tokens': 3373, 'output_tokens_details': {'thinking_tokens': 455}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 13793}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 598, 'cache_read_input_tokens': 42717, 'cache_creation_input_tokens': 1511, 'cache_creation': {'ephemeral_5m_input_tokens': 1511, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 68,
+    "category": "logic",
+    "severity": "high",
+    "summary": "The audit log endpoint no longer supports the start/end/statsPeriod date filters, so those params are silently ignored.",
+    "detail": "The diff removes `start`, `end` and `statsPeriod` from `AuditLogQueryParamSerializer`. It also removes the `get_date_range_from_stats_period` filtering and its import. This is unrelated to the pagination optimization described in the commit message. Existing clients that pass `statsPeriod` or `start`/`end` now get the full unfiltered audit log back. They get no error, because DRF ignores unknown fields. This is a functional regression, and it can return more data than the caller asked for.",
+    "line_end": null,
+    "suggested_fix": "Restore the three serializer fields and the date-range filtering block before pagination."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 877,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator slices the queryset with a negative offset, which Django does not support.",
+    "detail": "When `enable_advanced_features` is on and `cursor.offset < 0`, the code runs `queryset[cursor.offset:stop]`. Django querysets raise `AssertionError: Negative indexing is not supported` for negative start or stop. The comment saying the ORM handles negative slicing is wrong. Anyone who passes `?optimized_pagination=true` and a cursor like `0:-5:0` gets a 500. If a Django version did allow it, the negative offset would let the caller read rows outside the intended page window, because the start becomes relative to the end of the queryset. The comment's claim that permissions are checked at the queryset level doesn't make that safe. The cursor offset is attacker-controlled input, and the endpoint only checks for admin access.",
+    "line_end": null,
+    "suggested_fix": "Remove the negative-offset branch. Clamp the offset with `start_offset = max(0, offset)` and reject negative cursor offsets with a 400."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 179,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The change to BasePaginator.get_result leaves negative offsets unsafe on the `is_prev` path and alters shared pagination behavior for all endpoints.",
+    "detail": "`start_offset = max(0, offset) if not cursor.is_prev else offset` clamps negative offsets only for non-prev cursors. For `is_prev` cursors the negative offset still reaches `queryset[offset:stop]` and raises an AssertionError. This is shared code used by every paginator, so a crafted cursor can still trigger a 500 on every endpoint. The change also makes the later check `len(results) == offset + limit + extra` inconsistent with the clamped `start_offset`. The `OptimizedCursorPaginator` copy has the same mismatch, because that check uses `offset` rather than `start_offset`.",
+    "line_end": null,
+    "suggested_fix": "Validate and clamp the offset for all cursor types (`offset = max(0, cursor.offset)`) and use the same value in the trailing-row check."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "error",
+    "severity": "low",
+    "summary": "The `enable_advanced` check dereferences `organization_context.member`, which can be None.",
+    "detail": "`request.user.is_superuser or organization_context.member.has_global_access` raises AttributeError when the requester is not a superuser and `member` is None. That can happen for a user with org access through a non-member path, such as an API token. The result is a 500 whenever the endpoint is called, even without `optimized_pagination`, because the expression is evaluated unconditionally.",
+    "line_end": null,
+    "suggested_fix": "Evaluate it only when `use_optimized` is set, and guard against a missing member: `member = organization_context.member; enable_advanced = request.user.is_superuser or (member is not None and member.has_global_access)`."
+  }
+]

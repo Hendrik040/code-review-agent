@@ -1,0 +1,80 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_verify_opus55_high_rest90_resume
+# bug: tornado#11
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_resume_opus.json
+# prepared_sha256_16: 700f2fd6541062ca
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-11-27T18:15:46+00:00
+# finished: 2026-11-27T18:17:02+00:00
+# duration_s: 76.3
+# cost_usd: 0.3920
+# num_turns: 11
+# num_findings: 4
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 1107
+# repo: LocalRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 11
+# cost (USD, harness-reported): 0.392039
+# cost (USD, public Opus 4 rate): 1.841363
+# usage: {'input_tokens': 22, 'cache_creation_input_tokens': 28228, 'cache_read_input_tokens': 494955, 'output_tokens': 7591, 'output_tokens_details': {'thinking_tokens': 3871}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 28228}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 681, 'cache_read_input_tokens': 55464, 'cache_creation_input_tokens': 3083, 'cache_creation': {'ephemeral_5m_input_tokens': 3083, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 93,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "After a 1xx response, the recursive _process_message call is not followed by a return, so the outer call reads a body for the 1xx response and calls delegate.finish() a second time.",
+    "detail": "In client mode, a 1xx response (e.g. 100 Continue) triggers `yield self._process_message(...)`, which reads the final response completely, calls delegate.finish(), and waits for _finish_future (resolved when the client closes the stream). Execution then falls through in the outer frame. skip_body is False and the 1xx headers have neither Content-Length nor chunked encoding, so `_read_body_until_close` runs on the closed stream. It returns the leftover buffer (b''), and `delegate.finish()` runs again. _HTTPConnection.finish is not idempotent: for a 301/302/303/307 final response it calls `self.client.fetch(new_request, ...)` again, which issues a duplicate redirected request. It also flushes the decompressor a second time and repeats the response handling. The old code re-read the headers and returned.",
+    "line_end": 94,
+    "suggested_fix": "-                if code >= 100 and code < 200:\n-                    yield self._process_message(delegate, is_client, method=method)\n+                if code >= 100 and code < 200:\n+                    ret = yield self._process_message(delegate, is_client, method=method)\n+                    raise gen.Return(ret)"
+  },
+  {
+    "file": "tornado/httpserver.py",
+    "line": 193,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "The server now reads chunked request bodies and calls data_received once per chunk, but _ServerRequestProcessor.data_received asserts that it is called only once.",
+    "detail": "HTTP1Connection._read_body now sends `Transfer-Encoding: chunked` requests to _read_chunked_body for server connections too, and that calls delegate.data_received for every chunk. _ServerRequestProcessor.data_received runs `assert not self.request.body` and then sets the body. A chunked request with two or more non-empty chunks therefore raises AssertionError. _process_requests only catches StreamClosedError, so the coroutine dies with the error logged, the connection is never closed or finished, and the client hangs. Even with a single chunk the body is stored as one piece, but any real multi-chunk upload breaks.",
+    "line_end": 195,
+    "suggested_fix": "Accumulate the chunks in _ServerRequestProcessor.data_received (e.g. append to a list and join them in finish()) rather than asserting a single call."
+  },
+  {
+    "file": "tornado/http1connection.py",
+    "line": 104,
+    "category": "error",
+    "severity": "medium",
+    "summary": "On the client path, a BadRequestException (malformed response headers or Content-Length over max_buffer_size) is swallowed and the connection is closed, so the HTTP client's final_callback is never called until the request timeout.",
+    "detail": "_process_message catches BadRequestException, logs 'Malformed HTTP request', closes the stream and returns False. When it is used through process_response by simple_httpclient, nothing reaches the client's ExceptionStackContext. HTTP1Connection.__init__ also replaces the stream's close callback (`self.stream.set_close_callback(self._on_connection_close)`), so _HTTPConnection._on_close, which used to raise HTTPError(599) on close, no longer runs. A server that returns malformed headers or a Content-Length larger than max_buffer_size leaves the fetch hanging until request_timeout fires, or forever if no timeout is set. Before this change, these cases failed right away with a 599 error.",
+    "line_end": 108,
+    "suggested_fix": "For is_client, re-raise the exception (or turn it into an HTTPError) so it reaches the client's stack context, or forward the connection close to the client delegate."
+  },
+  {
+    "file": "tornado/http1connection.py",
+    "line": 225,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Client responses with status 204 (and 1xx) are read until the connection closes because no body-less check exists for them.",
+    "detail": "The old client called _on_body(b'') right away for 1xx and 204 responses. Now only HEAD and 304 set skip_body. A 204 response with no Content-Length and no chunked encoding falls into `_read_body_until_close`. If the caller set `Connection: keep-alive` (the client only defaults to `Connection: close` when the header is absent), or the server keeps the connection open anyway, the fetch hangs until request_timeout instead of finishing right away.",
+    "line_end": 227,
+    "suggested_fix": "In _process_message for is_client, also set skip_body = True when code == 204 or 100 <= code < 200."
+  }
+]

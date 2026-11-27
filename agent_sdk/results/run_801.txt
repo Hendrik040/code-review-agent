@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 801
+# repo: LocalRepo
+# refs: be88a318dce06254a66303a1c398ec28f89c60d7^..be88a318dce06254a66303a1c398ec28f89c60d7
+# turns: 5
+# cost (USD, harness-reported): 0.215830
+# cost (USD, public Opus 4 rate): 0.964911
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 20354, 'cache_read_input_tokens': 207399, 'output_tokens': 3627, 'output_tokens_details': {'thinking_tokens': 1261}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20354}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 717, 'cache_read_input_tokens': 49059, 'cache_creation_input_tokens': 1614, 'cache_creation': {'ephemeral_5m_input_tokens': 1614, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/util.py",
+    "line": 143,
+    "category": "logic",
+    "severity": "high",
+    "summary": "@delegates' Wrapped subclass defines a default `subtasks()` returning [], which overrides the user's `subtasks()`, so delegate tasks are never used.",
+    "detail": "`Wrapped` subclasses `task_that_delegates`, so its `subtasks` method takes precedence over the one the user wrote on the decorated class. Wrapped.deps(), Wrapped.run() and the user's own run() (via self.subtasks()) all hit the stub and get []. The result is that subtasks' dependencies are never scheduled, subtasks are never run, and user code that calls methods on its subtasks receives an empty list. The default from CompositionTask was copied into a subclass, where it acts as an override rather than a fallback. The new SubtaskTest only passes because of this: it references `F(1), F(2)` (the wrong class), and that code is never executed.",
+    "line_end": 147,
+    "suggested_fix": "Remove the `subtasks` method from Wrapped, or define the default only when it's missing:\n-        def subtasks(self):\n-            return []  # default impl\n+    if not hasattr(task_that_delegates, 'subtasks'):\n+        task_that_delegates.subtasks = lambda self: []"
+  },
+  {
+    "file": "luigi/util.py",
+    "line": 68,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The decorators register several Task classes that all share one name, so `Register.get_reg()` marks the decorated task as AMBIGUOUS and it can't be run by name from the command line.",
+    "detail": "`Register.__new__` adds every Task subclass with a real `run` to `_reg` (luigi/task.py:68-69). Each decorator creates a new `Wrapped` subclass, and `_cleanup_wrapper` then copies the original `__name__` onto it. After `@inherits(X) class Y`, both the original Y and the Wrapped class are in `_reg` with task_family 'Y'. `@requires` registers three such classes and `@copies` registers four. `get_reg()` (task.py:117-125) sees different classes under the same name and sets reg['Y'] = AMBIGUOUS_CLASS. Command-line runs (interface.py:247-249, 328-333) then fail with an ambiguous-task error for every decorated task, e.g. `luigi --module m PCopy --date ...`.",
+    "line_end": 74,
+    "suggested_fix": "Avoid registering several classes under one name: e.g. add the methods to the decorated class with setattr instead of subclassing, or remove the intermediate/original classes from Register._reg after wrapping."
+  },
+  {
+    "file": "luigi/task.py",
+    "line": 277,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`clone()` now silently drops keyword arguments that aren't parameters of the target class, where it used to raise.",
+    "detail": "Before this change, `clone(foo=1)` passed every kwarg to the constructor, so a typo or unknown parameter name raised an error. Now new_k copies only the names in `cls.get_nonglobal_params()`, and any other override is discarded with no warning. The clone comes back with default values, and the caller never learns the override was ignored, e.g. `clone_parent(dat=...)` when they meant `date`.",
+    "line_end": 282,
+    "suggested_fix": "Raise for keys in `kwargs` (the explicit overrides) that aren't parameters of `cls`; keep inherited values from self.param_kwargs filtered as they are now."
+  }
+]

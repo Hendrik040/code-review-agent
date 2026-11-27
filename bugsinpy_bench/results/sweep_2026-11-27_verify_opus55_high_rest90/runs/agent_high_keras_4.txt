@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_verify_opus55_high_rest90
+# bug: keras#4
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_rest90.json
+# prepared_sha256_16: 872e47145edb8917
+# upstream_repo: keras-team/keras
+# introducing_commit: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# fixed_commit: 4185cbb50bfcae9cc30b0fc7b67e81d67a50a8ac
+# base_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^
+# head_ref: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# started: 2026-11-27T16:57:03+00:00
+# finished: 2026-11-27T16:57:33+00:00
+# duration_s: 30.4
+# cost_usd: 0.1769
+# num_turns: 7
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 790
+# repo: LocalRepo
+# refs: 650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3^..650c2c8cf9d711d35ab0ca7d1653ef53cbedaab3
+# turns: 7
+# cost (USD, harness-reported): 0.176943
+# cost (USD, public Opus 4 rate): 0.834219
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 14324, 'cache_read_input_tokens': 227576, 'output_tokens': 2988, 'output_tokens_details': {'thinking_tokens': 596}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 14324}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 662, 'cache_read_input_tokens': 43443, 'cache_creation_input_tokens': 1200, 'cache_creation': {'ephemeral_5m_input_tokens': 1200, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/optimizers.py",
+    "line": 580,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "`iterations` goes up by 2 on every training step, because both `K.update_add` and `apply_gradients(global_step=...)` increment it.",
+    "detail": "`TFOptimizer.get_updates` adds `K.update_add(self.iterations, 1)` to the updates. It also passes `global_step=self.iterations` to `tf.train.Optimizer.apply_gradients`, which itself runs `assign_add(global_step, 1)` when the gradients are applied. So each training batch increments `self.iterations` twice. Anything that reads the step counter gets the wrong value: TF learning-rate schedules tied to `global_step` (e.g. `exponential_decay`), summaries, and checkpoints. With exponential decay, for example, the learning rate decays twice as fast as intended.",
+    "line_end": 582,
+    "suggested_fix": "-        self.updates.append(K.update_add(self.iterations, 1))\n         opt_update = self.optimizer.apply_gradients(\n             grads, global_step=self.iterations)"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 62,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Calling `save_model` (or a `ModelCheckpoint` that saves the full model) on a model compiled with a TF optimizer crashes and leaves a partly written HDF5 file open.",
+    "detail": "Optimizers wrapped by `optimizers.get` now become `TFOptimizer`, and `TFOptimizer.get_config` and the `weights` property both raise `NotImplementedError`. `save_model` opens the h5py file, writes the model config and weights, and then calls `model.optimizer.get_config()` at models.py:62 with no try/finally. The exception escapes and `f.close()` never runs, so the file stays open and is left without a training config. This affects any user who compiles with `tf.train.XxxOptimizer` and then calls `model.save()` or uses `ModelCheckpoint(save_weights_only=False)`. Training can crash mid-run, possibly after hours. The old optimizer-state helpers `get_state`/`set_state` were also removed in this diff.",
+    "line_end": null,
+    "suggested_fix": "In save_model, skip the training config and optimizer weights when the optimizer is a `TFOptimizer` (log a warning instead), or wrap the h5py file handling in try/finally so the file is always closed."
+  },
+  {
+    "file": "keras/optimizers.py",
+    "line": 580,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`get_updates` adds to `self.updates` instead of resetting it, so calling it a second time (e.g. recompiling) keeps the old update ops.",
+    "detail": "The other Keras optimizers rebuild `self.updates` from scratch in `get_updates`. `TFOptimizer` keeps appending to the list it created in `__init__`. If `get_updates` runs more than once on the same instance, for example when the model is compiled again with the same optimizer object, the returned list still holds the earlier `iterations` increment and the earlier `apply_gradients` op for the old loss. The training function then runs stale and duplicated updates on every step.",
+    "line_end": 584,
+    "suggested_fix": "Start get_updates with `self.updates = []`."
+  }
+]

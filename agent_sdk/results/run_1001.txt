@@ -1,0 +1,52 @@
+# Agent SDK reviewer run 1001
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 8
+# cost (USD, harness-reported): 0.239015
+# cost (USD, public Opus 4 rate): 1.104580
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 17580, 'cache_read_input_tokens': 277697, 'output_tokens': 4776, 'output_tokens_details': {'thinking_tokens': 1357}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 17580}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 722, 'cache_read_input_tokens': 45954, 'cache_creation_input_tokens': 1945, 'cache_creation': {'ephemeral_5m_input_tokens': 1945, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 335,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Strategy close()/join()/terminate() shut down the factory-owned shared FixedQueuePool, so after any rebalance every new message is dropped and its offset committed.",
+    "detail": "`ResultsStrategyFactory` builds one `FixedQueuePool` in `__init__` and passes that same pool to every strategy made by `create_thread_queue_parallel_worker`. On partition revocation, arroyo calls `close()` and `join()` on the current strategy and later calls `create_with_partitions` again. `SimpleQueueProcessingStrategy.close()` calls `self.queue_pool.shutdown()`, which sets `worker.shutdown = True`, shuts down every queue and joins the workers. The next strategy gets the same dead pool. In `submit`, `work_queue.put` now raises `queue.ShutDown`. The broad `except Exception` catches it, logs it, and calls add_offset/complete_offset, so the commit loop commits offsets for messages that were never processed. After the first rebalance, all uptime results are lost without any visible failure. Only the factory should own the pool's lifecycle, and it already shuts the pool down in `ResultsStrategyFactory.shutdown`.",
+    "line_end": 345,
+    "suggested_fix": "In SimpleQueueProcessingStrategy.close()/terminate(), only stop the commit thread (optionally wait for the queues to drain and do a final commit). Do not call queue_pool.shutdown(). Leave pool shutdown to ResultsStrategyFactory.shutdown()."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 287,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "The arroyo `commit` callback runs from a background thread, and offsets of revoked partitions are never removed from the tracker.",
+    "detail": "`_commit_loop` runs on its own daemon thread and calls `commit_function`, which wraps arroyo's `Commit` callable. Arroyo's StreamProcessor expects commits from the processing thread, inside submit/poll. Its commit bookkeeping and consumer offset staging are not synchronized, so this races with the main loop. Also, `OffsetTracker` is shared across strategies and is never cleared when partitions are revoked. After a rebalance, the new strategy's commit loop can commit stale offsets for partitions this consumer no longer owns. That can fail in arroyo or overwrite progress made by the new owner.",
+    "line_end": null,
+    "suggested_fix": "Compute committable offsets in a background thread if needed, but call `commit` from `poll()` on the main thread. Clear OffsetTracker state for the partitions when the strategy closes or is recreated."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 186,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "The queues are unbounded and poll() never applies backpressure, so memory grows without limit when processing is slower than consumption.",
+    "detail": "`queue.Queue()` is created with no maxsize. `submit` never raises MessageRejected, and `poll` only emits a gauge. The docstring promises 'Natural backpressure when queues fill up', but none exists. If result processing (DB writes etc.) falls behind Kafka consumption, the consumer keeps pulling messages and holds each full Message plus decoded result in memory until it OOMs. The OffsetTracker's all_offsets sets also grow along with the backlog.",
+    "line_end": null,
+    "suggested_fix": "Give each queue a maxsize. In submit, use put_nowait and raise arroyo's MessageRejected when it is full (or check total_items before accepting the message), so arroyo pauses consumption."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 88,
+    "category": "logic",
+    "severity": "low",
+    "summary": "get_committable_offsets assumes Kafka offsets are contiguous, so any offset gap stops commits for that partition permanently.",
+    "detail": "The loop walks `range(start, max_offset + 1)` and breaks at the first integer that is not in `all_offsets`. Kafka offsets are not guaranteed to be contiguous: transactional control markers, compacted topics, and messages arroyo filters out all leave gaps. Once a gap appears after last_committed, `highest_committable` never advances past it. The partition stops committing for good, `all_offsets` grows without limit, and a restart replays everything since the gap.",
+    "line_end": 92,
+    "suggested_fix": "Iterate over sorted(o for o in all_offsets if o > last_committed) and stop at the first offset that is still outstanding, instead of iterating over every integer in the range."
+  }
+]

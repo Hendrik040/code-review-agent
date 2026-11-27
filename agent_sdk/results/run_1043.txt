@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 1043
+# repo: LocalRepo
+# refs: 875bc59ecfd0c2e53de0fd136f8f705f700d49d1^..875bc59ecfd0c2e53de0fd136f8f705f700d49d1
+# turns: 4
+# cost (USD, harness-reported): 0.149590
+# cost (USD, public Opus 4 rate): 0.674596
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 14195, 'cache_read_input_tokens': 151513, 'output_tokens': 2414, 'output_tokens_details': {'thinking_tokens': 742}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 14195}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 595, 'cache_read_input_tokens': 43600, 'cache_creation_input_tokens': 914, 'cache_creation': {'ephemeral_5m_input_tokens': 914, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/backend/tensorflow_backend.py",
+    "line": 1950,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "elu() (alpha != 1) and random_binomial() call 3-argument tf.where, which fails on TF < 1.0 (including the TF 0.12.1 used in CI) unless rnn() happened to run earlier.",
+    "detail": "Before TF 1.0, tf.where(input, name=None) takes one argument and returns indices; the 3-argument select form was tf.select. The diff changes elu (line 1950) and random_binomial (line 2437) to call tf.where(cond, x, y). The only tf.select fallback is the `tf.where = tf.select` alias inside rnn() (line 1705-1706), and that alias only exists after rnn() has run. On TF 0.12.1 (the version .travis.yml now installs), K.elu(x, alpha=0.5) or K.random_binomial(...) raise TypeError, or call the wrong op. K.random_binomial is used by things like Dropout-style noise layers, so this affects common workflows.",
+    "line_end": null,
+    "suggested_fix": "Define a module-level helper once, e.g.\n+def _where(c, x, y):\n+    if hasattr(tf, 'select'):\n+        return tf.select(c, x, y)\n+    return tf.where(c, x, y)\nand use _where(...) in rnn, elu and random_binomial instead of reassigning tf.where."
+  },
+  {
+    "file": "keras/backend/tensorflow_backend.py",
+    "line": 1706,
+    "category": "other",
+    "severity": "medium",
+    "summary": "rnn() globally monkey-patches tf.where = tf.select, which breaks the 1-argument tf.where(cond) for all TensorFlow users in the process.",
+    "detail": "On TF versions that still have tf.select (< 1.0), the first call to K.rnn replaces the global tf.where with tf.select. tf.select needs 3 arguments, so any later user code or TF-internal code that calls tf.where(condition) to get indices of true elements will fail or misbehave. Whether it breaks depends on whether an RNN was built first, so the failure is order-dependent and hard to diagnose.",
+    "line_end": null,
+    "suggested_fix": "Do not reassign tf.where; use a local helper that dispatches to tf.select or tf.where."
+  }
+]

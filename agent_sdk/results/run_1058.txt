@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 1058
+# repo: LocalRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 5
+# cost (USD, harness-reported): 0.138763
+# cost (USD, public Opus 4 rate): 0.685596
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 5824, 'cache_read_input_tokens': 220314, 'output_tokens': 3277, 'output_tokens_details': {'thinking_tokens': 1758}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 5824}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 558, 'cache_read_input_tokens': 48934, 'cache_creation_input_tokens': 1435, 'cache_creation': {'ephemeral_5m_input_tokens': 1435, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 250,
+    "category": "logic",
+    "severity": "low",
+    "summary": "re_enable now routes through set_status(FAILED), so it records a new failure and can disable the task again straight away.",
+    "detail": "Before this change, re_enable only cleared the disable time and failures and set status = FAILED. The new SimpleTaskState.re_enable(task, config) clears the failures and then calls self.set_status(task, FAILED, config). Because task.scheduler_disable_time is now None, set_status reaches its `new_status == FAILED and task.can_disable()` branch and calls task.add_failure(). It then checks has_excessive_failures(). If disable_failures is 1, the count is already over the limit, so the task gets a fresh scheduler_disable_time, goes back to DISABLED and the 'DISABLED due to excessive failures' email is sent again. The failures.clear() that runs afterwards does not undo the status change. As a result, the re_enable_task API call and the automatic re-enable in prune() do nothing for that config, and each attempt sends a spurious email. With larger disable_failures values the extra add_failure is wiped by the second clear(), so the problem is limited to disable_failures <= 1.",
+    "line_end": 255,
+    "suggested_fix": "In re_enable, change the status without going through the failure-counting logic, e.g.:\n-        if config:\n-            self.set_status(task, FAILED, config)\n-            task.failures.clear()\n+        if config:\n+            self._status_tasks[task.status].pop(task.id)\n+            self._status_tasks[FAILED][task.id] = task\n+            task.status = FAILED"
+  }
+]

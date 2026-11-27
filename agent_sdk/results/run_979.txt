@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 979
+# repo: LocalRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 4
+# cost (USD, harness-reported): 0.223941
+# cost (USD, public Opus 4 rate): 0.968159
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 25247, 'cache_read_input_tokens': 171172, 'output_tokens': 3172, 'output_tokens_details': {'thinking_tokens': 1509}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 25247}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 507, 'cache_read_input_tokens': 54221, 'cache_creation_input_tokens': 1345, 'cache_creation': {'ephemeral_5m_input_tokens': 1345, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 255,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Unhealthy flusher processes are never killed: spawn-context processes aren't instances of multiprocessing.Process, so the kill is skipped before a replacement starts.",
+    "detail": "The restart path now runs `process.kill()` only when `isinstance(process, multiprocessing.Process)` is true. The processes come from `multiprocessing.get_context(\"spawn\").Process`, which is `SpawnProcess`. That class derives from `BaseProcess`, not `multiprocessing.Process`, and `issubclass(get_context('spawn').Process, multiprocessing.Process)` returns False. So when a flusher hangs (cause \"hang\"), the code never kills the old process and goes straight to `_create_process_for_shards`. The old process keeps running and still holds the same shared `stopped`/`current_drift`/`backpressure_since`/`healthy_since` Values. If it recovers, two flushers work the same shards: they flush and produce the same segments twice and race on the shared health and backpressure values. Each restart also leaks a process, up to MAX_PROCESS_RESTARTS per process group. Before this change, `kill()` was called on every process type, guarded only by try/except. The same isinstance check in `join()` means `terminate()` is never called there either.",
+    "line_end": 259,
+    "suggested_fix": "-                if isinstance(process, multiprocessing.Process):\n-                    process.kill()\n+                if isinstance(process, multiprocessing.process.BaseProcess):\n+                    process.kill()"
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 337,
+    "category": "resource",
+    "severity": "low",
+    "summary": "join() breaks out of the loop once the deadline passes, so later processes are never terminated.",
+    "detail": "The old code always terminated its process after waiting. The new loop does `break` when `remaining_time <= 0`, which skips the terminate step for every process that comes later in the list. On shutdown or rebalance with a timeout, flusher processes that are still running are left alive. Combined with the isinstance check that never matches spawn processes, terminate is effectively never reached.",
+    "line_end": 347,
+    "suggested_fix": "Don't break. Always run the terminate step for each process (checking against BaseProcess) and only skip the wait once the deadline has passed."
+  }
+]

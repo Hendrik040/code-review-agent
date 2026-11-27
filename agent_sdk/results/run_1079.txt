@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 1079
+# repo: LocalRepo
+# refs: 08c65973643b73e877133d1a7391de7092f4b267^..08c65973643b73e877133d1a7391de7092f4b267
+# turns: 7
+# cost (USD, harness-reported): 0.237631
+# cost (USD, public Opus 4 rate): 1.112650
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 19780, 'cache_read_input_tokens': 295377, 'output_tokens': 3980, 'output_tokens_details': {'thinking_tokens': 1068}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 19780}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 739, 'cache_read_input_tokens': 48485, 'cache_creation_input_tokens': 1614, 'cache_creation': {'ephemeral_5m_input_tokens': 1614, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/_testing.py",
+    "line": 1156,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "check_exact=True now passes ExtensionArray `_values` (e.g. IntegerArray, BooleanArray, SparseArray) to assert_numpy_array_equal, which requires ndarray, so numeric extension-dtype Series fail spuriously.",
+    "detail": "Before this change, `_internal_get_values()` went through `ExtensionBlock.get_values`, which calls `np.asarray(self.values)` (blocks.py:1820-1825), so `assert_numpy_array_equal` always got an ndarray. The new code passes `left._values` / `right._values`. For extension dtypes those are ExtensionArrays. `is_numeric_dtype` returns True for numeric extension dtypes such as Int64, boolean and Sparse[float], so they get past the new guard. `assert_numpy_array_equal` then calls `_check_isinstance(left, right, np.ndarray)` and raises \"Expected type ndarray, found IntegerArray\". So `tm.assert_series_equal(s, s, check_exact=True)` on an Int64 Series fails, and so does `assert_frame_equal(..., check_exact=True)` on frames with such columns, because it forwards check_exact to assert_series_equal for each column.",
+    "line_end": 1161,
+    "suggested_fix": "Route extension arrays through assert_extension_array_equal (e.g. `if is_extension_array_dtype(left.dtype) or is_extension_array_dtype(right.dtype): assert_extension_array_equal(left._values, right._values, check_exact=True) else: assert_numpy_array_equal(...)`), or keep using np.asarray(left._values)."
+  },
+  {
+    "file": "pandas/_testing.py",
+    "line": 1156,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "check_exact=True now raises for every non-numeric Series, and this also breaks assert_frame_equal(check_exact=True) on any frame with a string, datetime, categorical or object column.",
+    "detail": "The new guard `if not is_numeric_dtype(left.dtype): raise AssertionError(\"check_exact may only be used with numeric Series\")` rejects comparisons that used to be valid: exact comparison of object, string and datetime64 values worked fine through assert_numpy_array_equal. assert_frame_equal forwards `check_exact` to assert_series_equal for each column (_testing.py:1376-1386), so any mixed-dtype DataFrame compared with check_exact=True now fails with a misleading AssertionError even when the frames are identical. This is a public API (pandas.testing), so downstream users' test suites break.",
+    "line_end": 1157,
+    "suggested_fix": "Drop the guard, or only skip exact comparison for non-numeric dtypes instead of raising."
+  },
+  {
+    "file": "pandas/_testing.py",
+    "line": 1063,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "The public `check_series_type` keyword was removed from pandas.testing.assert_series_equal without a deprecation period, so existing callers now get a TypeError.",
+    "detail": "assert_series_equal is exposed through the public `pandas.testing` module. Any external code that passes `check_series_type=...` (in-repo this was test_store.py, which was updated) now fails with `TypeError: unexpected keyword argument 'check_series_type'`. Also, check_series_type=False used to skip the isinstance check, but that check is now unconditional.",
+    "line_end": 1075,
+    "suggested_fix": "Keep the `check_series_type` parameter and emit a FutureWarning when it is passed, rather than removing it outright."
+  }
+]

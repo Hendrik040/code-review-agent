@@ -1,0 +1,59 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_verify_martian_opus55_high_resume
+# pr: ai-code-review-evaluation_sentry-greptile#5
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/5
+# original_upstream_url: 
+# pr_title: Replays Self-Serve Bulk Delete System
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_resume_martian_opus.json
+# prepared_sha256_16: 3a1371e2740181ea
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 49a275847631e231672d01b5dcd66558c069d25b
+# head_sha: ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# n_goldens: 3
+# started: 2026-11-27T17:39:04+00:00
+# finished: 2026-11-27T17:40:40+00:00
+# duration_s: 96.3
+# cost_usd: 0.3083
+# num_turns: 13
+# num_findings: 2
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 972
+# repo: LocalRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 13
+# cost (USD, harness-reported): 0.308330
+# cost (USD, public Opus 4 rate): 1.575190
+# usage: {'input_tokens': 26, 'cache_creation_input_tokens': 22901, 'cache_read_input_tokens': 558604, 'output_tokens': 4100, 'output_tokens_details': {'thinking_tokens': 917}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 22901}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 663, 'cache_read_input_tokens': 52183, 'cache_creation_input_tokens': 1037, 'cache_creation': {'ephemeral_5m_input_tokens': 1037, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 126,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "fetch_error_details pairs error_ids with nodestore.get_multi(...).values() by position, but get_multi's result order and length don't match the input list.",
+    "detail": "nodestore.backend.get_multi (src/sentry/nodestore/base.py:174-210) removes duplicate ids. It also builds its result from uncached ids first and then appends the cached items with items.update(cache_items), so the dict order is not the request order whenever only some ids are cached. Its result can also leave out ids that aren't found. The new code calls zip(error_ids, events.values()), so in any of these cases an error's id gets attached to another event's title, message and timestamp, or real errors are dropped. That puts wrong error context into the replay summary. The fix is to look up each node id directly instead of zipping by position.",
+    "line_end": 129,
+    "suggested_fix": "node_ids = {eid: Event.generate_node_id(project_id, event_id=eid) for eid in error_ids}\nevents = nodestore.backend.get_multi(list(node_ids.values()))\nreturn [ErrorEvent(category=\"error\", id=eid, title=data.get(\"title\", \"\"), timestamp=data.get(\"timestamp\", 0.0), message=data.get(\"message\", \"\")) for eid, nid in node_ids.items() if (data := events.get(nid)) is not None]"
+  },
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 160,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Error timestamps (seconds) are compared with rrweb replay event timestamps (milliseconds), so every error is placed before all breadcrumbs.",
+    "detail": "gen_request_data interleaves errors with replay events using `error_events[idx][\"timestamp\"] < event.get(\"timestamp\", 0)`. Error timestamps come from the nodestore event payload, where `timestamp` is a float in epoch seconds (about 1.7e9). Top-level rrweb recording events use epoch milliseconds (about 1.7e12). The comparison is therefore true for every real error, so all errors are emitted before the first breadcrumb and the 'chronological order' the code promises never happens. The new tests don't catch this because their fixture replay events use timestamps in seconds. The fix is to convert to the same unit before comparing (multiply the error timestamp by 1000, or divide the event timestamp by 1000).",
+    "line_end": 163,
+    "suggested_fix": "while error_idx < len(error_events) and error_events[error_idx][\"timestamp\"] * 1000 < event.get(\"timestamp\", 0):"
+  }
+]

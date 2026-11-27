@@ -1,0 +1,553 @@
+=== Agent SDK reviewer run 972 ===
+repo: LocalRepo
+refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+started: 2026-11-27T17:39:47.818475+00:00
+use_oauth: False
+
+--- system prompt (6011 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding. A mismatch you can
+   point to in the code, such as a condition that admits inputs the
+   code after it does not handle, is not speculative: report it, at
+   low severity if its impact is narrow.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. The context is a trimmed selection: <callees> and <callers>
+show only the code judged relevant, and a <not_shown> note says what
+was left out. Do not drop a suspected bug only because the context
+does not prove it; confirm or reject it with the smallest code read. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (433 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-opus-5-5
+│ cwd  : /Users/hendrikkrack/Desktop/build-vs-buy-coderabbit/code-review-agent
+│ /impact-exp
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=4940 cache_r=30319 out=32
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "49a275847631e231672d01b5dcd66558c069d25b", "head_ref":
+│  "ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_01TwcYC1NYzxWRg7gsHBV3v3
+│ chars: 1,690
+│
+│ preview:
+│   Error: result (254,635 characters across 6,339 lines) exceeds maximum allo
+│ wed tokens. Output has been saved to /Users/hendrikkrack/Desktop/build-vs-bu
+│ y-coderabbit/code-review-agent/impact-exp/bench_impact/claude-config-empty/p
+│ rojects/-Users-hendrikkrack-Desktop-build-vs-buy-coderabbit-code-review-agen
+│ t-impact-exp/9038ede0-eb9d-4683-9fad-7ed3e3c9f482/tool-results/mcp-reviewer-
+│ build_review_context-1795801198068-x2woeu.txt.
+│   Format: Plain text
+│   - For targeted searches (find a line, locate a string): use grep on the fi
+│ le directly.
+│   - For analysis or summarization that requires reading the full conten
+│   … (+1,090 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=893 cache_r=35259 out=40
+│
+│ text:
+│   Let me look at the diff stats directly.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff --stat 49a275847631e231672d01b5dcd66558c069d25
+│ b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9 | tail -50; git log --oneline 49
+│ a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2
+│ a7a9 | head"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01Sg1Z8TJSJb3tcm7ysGs2Yn
+│ chars: 3,221
+│
+│ preview:
+│    .../contexts/pageParamsContext/visualizes.tsx      |  29 +--
+│    .../app/views/explore/hooks/useAddToDashboard.tsx  |   7 +-
+│    static/app/views/explore/hooks/useAnalytics.tsx    |  12 +-
+│    .../explore/hooks/useExploreAggregatesTable.tsx    |   8 +-
+│    .../views/explore/hooks/useExploreTimeseries.tsx   |   8 +-
+│    .../explore/hooks/useGetTraceItemAttributeKeys.tsx | 133 ++++++++++++++
+│    ...tsx => useGetTraceItemAttributeValues.spec.tsx} |  10 +-
+│    ...lues.tsx => useGetTraceItemAttributeValues.tsx} |  18 +-
+│    static/app/views/explore/hooks/useTopEvents.tsx    |   8 +-
+│    .../explore/hooks/useTraceItemAttribu
+│   … (+2,621 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1786 cache_r=36152 out=6
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git show --stat ea188e2d | head -30; git diff --stat 49
+│ a275847631e231672d01b5dcd66558c069d25b..ea188e2d -- src | head -60"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01VkvYASqubhKucKB6qVKVrA
+│ chars: 3,152
+│
+│ preview:
+│   commit ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+│   Author: Colton Allen <colton.allen@sentry.io>
+│   Date:   Fri Jun 20 15:36:01 2025 -0500
+│   
+│       fix(replay): Add handling for null max_segment_id (#93989)
+│       
+│       When the max segment ID is null the process fails. We should exit earl
+│ y
+│       since if there aren't any segments to delete there's nothing to do.
+│   
+│    .artifacts/README                                  |     1 +
+│   … (+2,552 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1482 cache_r=37938 out=6
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 49a275847631e231672d01b5dcd66558c069d25b..ea18
+│ 8e2d -- src/sentry/replays src/sentry/grouping src/sentry/constants.py src/s
+│ entry/feedback src/sentry/hybridcloud"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_019msx4j9mpih3fs3gUybHrj
+│ chars: 8,036
+│
+│ preview:
+│   diff --git a/src/sentry/constants.py b/src/sentry/constants.py
+│   index c5374e1d..d2ef563c 100644
+│   --- a/src/sentry/constants.py
+│   +++ b/src/sentry/constants.py
+│   @@ -721,7 +721,7 @@ UPTIME_AUTODETECTION = True
+│    TARGET_SAMPLE_RATE_DEFAULT = 1.0
+│    SAMPLING_MODE_DEFAULT = "organization"
+│    ROLLBACK_ENABLED_DEFAULT = True
+│   -DEFAULT_AUTOFIX_AUTOMATION_TUNING_DEFAULT = "low"
+│   +DEFAULT_AUTOFIX_AUTOMATION_TUNING_DEFAULT = "off"
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3589 cache_r=39420 out=24
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 49a275847631e231672d01b5dcd66558c069d25b..ea18
+│ 8e2d -- src/sentry/replays | sed -n 60,400p"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_018YJYYmXKQhYs85GQDVR4JR
+│ chars: 6,015
+│
+│ preview:
+│    
+│   +        filter_params = self.get_filter_params(request, project)
+│   +
+│   +        # Fetch the replay's error IDs from the replay_id.
+│   +        snuba_response = query_replay_instance(
+│   +            project_id=project.id,
+│   +            replay_id=replay_id,
+│   +            start=filter_params["start"],
+│   +            end=filter_params["end"],
+│   +            organization=project.organization,
+│   … (+5,415 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=2395 cache_r=43009 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -n \"def get_multi\" -A40 src/sentry/services/node
+│ store/base.py | head -80; grep -n \"timestamp\" src/sentry/replays/usecases/
+│ ingest/event_parser.py | head -30"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01NXkYtShW1R8barFsxzfuaC
+│ chars: 1,527
+│
+│ preview:
+│   32:    timestamp: int
+│   39:    timestamp: float
+│   182:    timestamp = event.get("timestamp", 0.0)
+│   186:            return f"User clicked on {event["data"]["payload"]["messag
+│ e"]} at {timestamp}"
+│   188:            return f"User clicked on {event["data"]["payload"]["messag
+│ e"]} but the triggered action was slow to complete at {timestamp}"
+│   190:            return f"User rage clicked on {event["data"]["payload"]["m
+│ essage"]} but the triggered action was slow to complete at {timestamp}"
+│   192:            return f"User navigated to: {event["data"]["payload"]["dat
+│ a"]["to"]} at {timestamp}"
+│   194:            return 
+│   … (+927 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 14  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1109 cache_r=45404 out=24
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "f=$(grep -rln \"def get_multi\" src/sentry/nodestore 2>
+│ /dev/null); echo $f; grep -n \"def get_multi\" -A40 src/sentry/nodestore/bas
+│ e.py | head -70; sed -n 175,185p src/sentry/replays/usecases/ingest/event_pa
+│ rser.py"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 15  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_015hrhfFTwdZ4Babufs6HyMZ
+│ chars: 2,254
+│
+│ preview:
+│   src/sentry/nodestore/base.py
+│   174:    def get_multi(self, id_list: list[str], subkey: str | None = None)
+│  -> dict[str, Any | None]:
+│   175-        """
+│   176-        >>> nodestore.get_multi(['key1', 'key2')
+│   177-        {
+│   178-            "key1": {"message": "hello world"},
+│   179-            "key2": {"message": "hello world"}
+│   180-        }
+│   181-        """
+│   182-        with sentry_sdk.start_span(op="nodestore.get_multi") as span:
+│   … (+1,654 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 16  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=995 cache_r=46513 out=6
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Found two likely bugs in the new replay error-merging code. Next I'm check
+│ ing the test timestamps to confirm the seconds-vs-milliseconds mismatch.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -n \"timestamp\" tests/sentry/replays/endpoints/te
+│ st_project_replay_summarize_breadcrumbs.py | head -30"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 17  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01QuesyHRYUZ1dHSajNbUgoq
+│ chars: 123
+│
+│ preview:
+│   --- stderr ---
+│   grep: tests/sentry/replays/endpoints/test_project_replay_summarize_breadcr
+│ umbs.py: No such file or directory
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 18  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=477 cache_r=47508 out=24
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "f=$(git ls-files | grep test_project_replay_summarize_b
+│ readcrumbs); grep -n \"timestamp\" $f | head -30"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 19  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_0134Vg4VdJt6KNvG7DsfPEFw
+│ chars: 541
+│
+│ preview:
+│   66:                "timestamp": 0.0,
+│   74:                "timestamp": 0.0,
+│   149:        error_timestamp = now.timestamp() - 1
+│   153:                "timestamp": error_timestamp,
+│   188:                "timestamp": float(now.timestamp()),
+│   224:        error_timestamp = now.timestamp() - 1
+│   228:                "timestamp": error_timestamp,
+│   254:                "timestamp": float(now.timestamp()),
+│   290:                        "timestamp": 1.5,
+│   298:                        "timestamp": 2.0,
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 20  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=309 cache_r=47985 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -rn \"1000\" src/sentry/replays/usecases/ingest/ev
+│ ent_parser.py | head; grep -rn \"\\\"timestamp\\\"\" src/sentry/replays/usec
+│ ases/ingest/event_parser.py | head"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 21  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01N6A2H4vguaVrwYmbDGkSqt
+│ chars: 311
+│
+│ preview:
+│   src/sentry/replays/usecases/ingest/event_parser.py:182:    timestamp = eve
+│ nt.get("timestamp", 0.0)
+│   src/sentry/replays/usecases/ingest/event_parser.py:312:        timestamp =
+│  event["data"]["payload"]["timestamp"]
+│   src/sentry/replays/usecases/ingest/event_parser.py:387:        timestamp=i
+│ nt(payload["timestamp"]),
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 22  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=326 cache_r=48294 out=8
+│
+│ thinking: (omitted)
+│
+│ text:
+│   Both replay bugs are confirmed. Now a quick scan of the remaining backend 
+│ changes before submitting.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "git diff 49a275847631e231672d01b5dcd66558c069d25b..ea18
+│ 8e2d -- src/sentry/workflow_engine src/sentry/integrations src/sentry/issues
+│ /endpoints | head -300"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 23  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01SFMKuXotyVBkT4TH9z6QMx
+│ chars: 8,036
+│
+│ preview:
+│   diff --git a/src/sentry/integrations/github/integration.py b/src/sentry/in
+│ tegrations/github/integration.py
+│   index dc0a4382..3506ca32 100644
+│   --- a/src/sentry/integrations/github/integration.py
+│   +++ b/src/sentry/integrations/github/integration.py
+│   @@ -384,8 +384,6 @@ This pull request was deployed and Sentry observed the
+│  following issues:
+│    
+│    <sub>Did you find this useful? React with a 👍 or 👎</sub>"""
+│    
+│   -MERGED_PR_SINGLE_ISSUE_TEMPLATE = "- ‼️ **{title}** `{subtitle}` [View Is
+│ sue]({url})"
+│   -
+│   … (+7,436 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 24  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3563 cache_r=48620 out=6
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "src/sentry/replays/endpoints/project_replay_
+│ summarize_breadcrumbs.py", "line": 126, "line_end": 129, "category": "logic"
+│ , "severity": "medium", "summary": "fetch_error_details pairs error_ids with
+│  nodestore.get_multi…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 25  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01Mo9GukeH6GH6sow67wCgsD
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 26  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1037 cache_r=52183 out=6
+│
+│ thinking: (omitted)
+│
+│ text:
+│   I found two bugs, both in the new error-merging code in `src/sentry/replay
+│ s/endpoints/project_replay_summarize_breadcrumbs.py`, and submitted them as 
+│ findings. Coverage was partial: the review-context tool's output was too lar
+│ ge to load, so I read the backend diffs directly. I reviewed the replay, gro
+│ uping, hybridcloud, constants, feedback and PR-comment changes, and only par
+│ tly read the browser reporting collector and workflow-engine changes. I didn
+│ 't look at the frontend changes.
+│   
+│   The diff range is labeled as a one-line fix (exit early when `max_segment_
+│ id` is null). That fix in `src/sentry/replays/usecases/delete.py` looks corr
+│ ect. But the range actually spans 106 files of unrelated work, and both bugs
+│  are in that wider change.
+│   
+│   1. **Error details can get attached to the wrong error (medium, ~line 126)
+│ .** `fetch_error_details` pairs the requested error IDs with `nodestore.back
+│ end.get_multi(...).values()` by position. `get_multi` doesn't return results
+│  in request order or one per ID:
+│      - it removes duplicate IDs;
+│      - it may leave out IDs it can't find;
+│      - it lists freshly fetched items first and cached items after them.
+│   
+│      So if some errors are cached and others aren't, or there are duplicates
+│  or misses, an error's ID gets another event's title, message and timestamp.
+│  The fix is to look each result up by its node ID instead of pairing by posi
+│ tion.
+│   
+│   2. **Errors all appear before every breadcrumb (medium, ~line 160).** `gen
+│ _request_data` interleaves errors with replay events by comparing timestamps
+│ . Error timestamps from nodestore are in seconds (about 1.7e9), while replay
+│  recording events use milliseconds (about 1.7e12). The comparison is therefo
+│ re always true, and the logs sent for summarizing are never in the promised 
+│ chronological order. The new tests miss this because their fake replay event
+│ s use seconds. The fix is to convert both to the same unit (for example, mul
+│ tiply the error timestamp by 1000).
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 27  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 13
+│ duration: 51148 ms
+│ total_cost_usd: $0.3083
+│ totals: in=26 cache_w=22901 cache_r=558604 out=4100
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-11-27T17:40:39.776089+00:00  submitted=True  duplicate_submission=False  findings=2  num_turns=13  stop_reason=end_turn

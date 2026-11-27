@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_verify_opus55_high_rest90_resume
+# bug: matplotlib#29
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_resume_opus.json
+# prepared_sha256_16: 700f2fd6541062ca
+# upstream_repo: matplotlib/matplotlib
+# introducing_commit: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7
+# fixed_commit: fc51b411ba5d0984544ecff97e0a28ea4b6a6d03
+# base_ref: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7^
+# head_ref: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7
+# started: 2026-11-27T17:59:03+00:00
+# finished: 2026-11-27T17:59:55+00:00
+# duration_s: 51.2
+# cost_usd: 0.2088
+# num_turns: 6
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 1074
+# repo: LocalRepo
+# refs: 01aedbc0454ca2a434cdf2c63230ad73dda58cf7^..01aedbc0454ca2a434cdf2c63230ad73dda58cf7
+# turns: 6
+# cost (USD, harness-reported): 0.208817
+# cost (USD, public Opus 4 rate): 0.959482
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 16169, 'cache_read_input_tokens': 235222, 'output_tokens': 4044, 'output_tokens_details': {'thinking_tokens': 1262}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16169}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 826, 'cache_read_input_tokens': 44677, 'cache_creation_input_tokens': 1811, 'cache_creation': {'ephemeral_5m_input_tokens': 1811, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "lib/matplotlib/axes/_base.py",
+    "line": 3001,
+    "category": "logic",
+    "severity": "high",
+    "summary": "invert_xaxis/invert_yaxis now bypass set_xlim/set_ylim, so shared axes are not inverted and xlim_changed/ylim_changed callbacks never fire.",
+    "detail": "Previously invert_xaxis called `self.set_xlim(self.get_xlim()[::-1], auto=None)`, which processes 'xlim_changed' callbacks, propagates the new limits to every axes in `_shared_x_axes` (set_xlim lines ~3235-3242), and marks the axes stale. The new code calls `self.xaxis.set_inverted(...)`, which goes to `XAxis.set_view_interval(..., ignore=True)` and only assigns `self.axes.viewLim.intervalx` directly. Result: with `fig, (a1, a2) = plt.subplots(2, sharex=True); a1.invert_xaxis()` only a1 is inverted while a2 stays normal (shared axes become inconsistent), callbacks registered on xlim_changed/ylim_changed (e.g. colorbar, twinned axes, user zoom handlers, interactive toolbars) are not notified, and for XAxis the axes is not even marked stale (XAxis.set_view_interval doesn't set stale, unlike YAxis), so interactive figures may not redraw. Same issue for invert_yaxis at line 3406.",
+    "line_end": null,
+    "suggested_fix": "Implement set_inverted via the axes' limit setter, e.g. in Axis.set_inverted: `a, b = self.get_view_interval(); lo, hi = sorted((a, b)); self.axes.set_xlim(hi, lo, auto=None)` (set_ylim for YAxis), or keep invert_xaxis using `self.set_xlim(self.get_xlim()[::-1], auto=None)`."
+  },
+  {
+    "file": "lib/matplotlib/axis.py",
+    "line": 931,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "For mplot3d axes, set_inverted (and thus Axes3D.invert_xaxis/invert_yaxis) only rebinds axis3d's v_interval to a tuple and never updates Axes3D.xy_viewLim, so the plot is not inverted and the link to the view limits is permanently broken.",
+    "detail": "Axes3D creates `axis3d.XAxis('x', self.xy_viewLim.intervalx, ...)`, so `v_interval` is a view into xy_viewLim's points; Axes3D's get_xlim/set_xlim (set_xlim3d) operate on xy_viewLim. Before this change Axes3D.invert_xaxis went through set_xlim -> set_xlim3d and updated xy_viewLim. Now `Axis.set_inverted` calls axis3d `set_view_interval(..., ignore=True)` which does `self.v_interval = vmin, vmax`, replacing the view with a plain tuple. xy_viewLim (used for rendering via get_w_lims) is unchanged, so `ax3d.invert_xaxis()` has no visible effect, and afterwards the axis' v_interval no longer tracks subsequent set_xlim calls, making xaxis_inverted() and tick location computations stale/wrong.",
+    "line_end": 935,
+    "suggested_fix": "Route set_inverted through the axes limit setters (set_xlim/set_ylim, which Axes3D overrides) instead of set_view_interval(ignore=True)."
+  }
+]

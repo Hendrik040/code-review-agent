@@ -1,0 +1,59 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_verify_martian_sonnet55_high
+# pr: getsentry_sentry#93824
+# pr_url: https://github.com/getsentry/sentry/pull/93824
+# original_upstream_url: 
+# pr_title: Span Buffer Multiprocess Enhancement with Health Monitoring
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: de11fb0166a7244115bb066edd65ec0d6b7e365c
+# head_sha: 3162ad68a5c87666788b27a44eb31235025091a9
+# n_goldens: 5
+# started: 2026-11-27T17:00:18+00:00
+# finished: 2026-11-27T17:01:13+00:00
+# duration_s: 54.7
+# cost_usd: 0.0980
+# num_turns: 4
+# num_findings: 2
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 810
+# repo: LocalRepo
+# refs: de11fb0166a7244115bb066edd65ec0d6b7e365c..3162ad68a5c87666788b27a44eb31235025091a9
+# turns: 4
+# cost (USD, harness-reported): 0.097976
+# cost (USD, public Opus 4 rate): 0.862072
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 22957, 'cache_read_input_tokens': 169672, 'output_tokens': 2360, 'output_tokens_details': {'thinking_tokens': 1119}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 22957}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 290, 'cache_read_input_tokens': 52699, 'cache_creation_input_tokens': 693, 'cache_creation': {'ephemeral_5m_input_tokens': 693, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 254,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "Hung flusher processes are never killed on restart because the isinstance check against multiprocessing.Process is always False for spawn processes.",
+    "detail": "The old code called self.process.kill() unconditionally. The new code only kills if isinstance(process, multiprocessing.Process). Processes made by mp_context=get_context('spawn') are SpawnProcess instances, which derive from BaseProcess and not from multiprocessing.context.Process. I confirmed issubclass(spawn.Process, multiprocessing.Process) is False. So when a flusher is unhealthy with cause 'hang', it is not killed. A new process is started for the same shards while the hung one stays alive, and both may later wake up and flush the same shards, leaking processes. The same check in join() (line 346) means terminate() never runs either. That check already existed before this change, but this change adds the new guard in the restart path.",
+    "line_end": null,
+    "suggested_fix": "Check against multiprocessing.context.SpawnProcess, or against `not isinstance(process, threading.Thread)`, or just call process.kill() inside try/except (ValueError, AttributeError). Apply the same fix to the terminate() check in join()."
+  },
+  {
+    "file": "src/sentry/spans/consumers/process/flusher.py",
+    "line": 340,
+    "category": "logic",
+    "severity": "low",
+    "summary": "join() breaks out of the loop when the deadline expires and skips terminate() for the remaining processes.",
+    "detail": "When the remaining time is <= 0 the loop breaks. Processes later in the dict are then never terminated, even though the original code always terminated the process. With multiple processes, a slow first process can leave the others running.",
+    "line_end": null,
+    "suggested_fix": "Use `continue` instead of `break` for the expired deadline, so every process is still terminated."
+  }
+]

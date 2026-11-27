@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_verify_martian_opus55_high
+# pr: ai-code-review-evaluation_sentry-greptile#1
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/1
+# original_upstream_url: 
+# pr_title: Enhanced Pagination Performance for High-Volume Audit Logs
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T16:53:34+00:00
+# finished: 2026-11-27T16:56:15+00:00
+# duration_s: 160.4
+# cost_usd: 0.3169
+# num_turns: 12
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 774
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 12
+# cost (USD, harness-reported): 0.316851
+# cost (USD, public Opus 4 rate): 1.540880
+# usage: {'input_tokens': 24, 'cache_creation_input_tokens': 19869, 'cache_read_input_tokens': 470251, 'output_tokens': 6168, 'output_tokens_details': {'thinking_tokens': 1941}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 19869}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 952, 'cache_read_input_tokens': 47918, 'cache_creation_input_tokens': 2270, 'cache_creation': {'ephemeral_5m_input_tokens': 2270, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 838,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator treats the `datetime` sort key as a number, so building cursors raises TypeError and cursor values are compared to a timestamp column as raw integers.",
+    "detail": "The audit log endpoint uses OptimizedCursorPaginator with order_by='-datetime', so self.key == 'datetime'. get_item_key calls math.floor/math.ceil on a datetime object, which raises TypeError (\"must be real number, not datetime.datetime\"). build_cursor calls this key function for every non-empty page, so every request with optimized_pagination=true that returns rows fails with a 500. value_from_cursor also returns the raw cursor integer, unlike DateTimePaginator, which converts milliseconds to a datetime. build_queryset then adds `datetime <= <int>` to the query, which Postgres rejects or evaluates incorrectly. The paginator copied Paginator's numeric key logic instead of DateTimePaginator's.",
+    "line_end": 843,
+    "suggested_fix": "Make OptimizedCursorPaginator subclass DateTimePaginator, or copy its get_item_key and value_from_cursor (strftime('%s.%f') * 1000, and fromtimestamp(value/1000) with UTC)."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 877,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Negative cursor offsets are passed straight to a Django QuerySet slice, which raises instead of paginating.",
+    "detail": "The cursor offset comes from the user (`?cursor=0:-5:0`, parsed by Cursor.from_string with no lower bound). When enable_advanced_features is true and the offset is negative, the code runs `queryset[cursor.offset:stop]`. Django QuerySet.__getitem__ raises ValueError('Negative indexing is not supported.'), and the API returns a 500 instead of a 400 or a valid page. The comments say the ORM handles negative slicing and that this gives access to data 'beyond normal pagination bounds'; both are wrong, and the second would be unsafe if it were true. The `is_prev` branch (here and the changed line in BasePaginator.get_result, line 182) also slices with an unclamped negative offset and fails the same way.",
+    "line_end": 883,
+    "suggested_fix": "Clamp the offset (`start_offset = max(0, cursor.offset)`) or reject negative offsets with BadPaginationError, and remove the negative-offset branch."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "error",
+    "severity": "medium",
+    "summary": "`organization_context.member.has_global_access` throws AttributeError when the requester has no organization membership.",
+    "detail": "RpcUserOrganizationContext.member is typed `RpcOrganizationMember | None` and is None for requesters without a membership, such as staff or organization-level tokens. The permission check passes them. For any requester who is not a superuser, `request.user.is_superuser or organization_context.member.has_global_access` dereferences None. The check also runs on every request, not only when optimized_pagination=true. Those requesters get a 500 on the audit log endpoint. Separately, `request.user.is_superuser` checks the raw flag instead of an active superuser session (is_active_superuser), so it skips the usual superuser-session gating.",
+    "line_end": null,
+    "suggested_fix": "enable_advanced = is_active_superuser(request) or (organization_context.member is not None and organization_context.member.has_global_access)"
+  },
+  {
+    "file": "src/sentry/api/base.py",
+    "line": 173,
+    "category": "security",
+    "severity": "medium",
+    "summary": "Removing the `\",\" not in origin` guard allows multi-valued Origin headers to pass the credentialed-CORS check.",
+    "detail": "apply_cors_headers reflects the origin and allows credentials when `origin.endswith('://'+basehost or '.'+basehost)`. Without the comma check, an Origin value like `https://evil.example, https://foo.sentry.io` ends with the trusted suffix. It is accepted and echoed back in Access-Control-Allow-Origin with Allow-Credentials. This reintroduces the origin-validation bypass the guard was there to block.",
+    "line_end": null,
+    "suggested_fix": "Restore `if \",\" not in origin and (` in the condition."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 23,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The audit log endpoint no longer filters by start, end or statsPeriod, so date-filtered requests silently return unfiltered rows.",
+    "detail": "The diff removes the start/end/statsPeriod serializer fields and the get_date_range_from_stats_period filtering. Clients that send a date range now get the full, unfiltered audit log with no error. This is a silent change in behaviour for an existing API contract.",
+    "line_end": 26,
+    "suggested_fix": "Restore the start/end/statsPeriod fields and the `queryset.filter(datetime__range=(start, end))` logic."
+  }
+]

@@ -1,0 +1,80 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_verify_opus55_high_rest90_resume
+# bug: sanic#1
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_resume_opus.json
+# prepared_sha256_16: 700f2fd6541062ca
+# upstream_repo: huge-success/sanic
+# introducing_commit: a6077a179067812766293f9ab4391b5e1499a9c6
+# fixed_commit: 44973125c15304b4262c51c78b5a86bd1daafa86
+# base_ref: a6077a179067812766293f9ab4391b5e1499a9c6^
+# head_ref: a6077a179067812766293f9ab4391b5e1499a9c6
+# started: 2026-11-27T17:42:23+00:00
+# finished: 2026-11-27T17:43:17+00:00
+# duration_s: 54.1
+# cost_usd: 0.2935
+# num_turns: 7
+# num_findings: 4
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 990
+# repo: LocalRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 7
+# cost (USD, harness-reported): 0.293539
+# cost (USD, public Opus 4 rate): 1.307792
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 27157, 'cache_read_input_tokens': 276029, 'output_tokens': 5125, 'output_tokens_details': {'thinking_tokens': 1889}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 27157}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 775, 'cache_read_input_tokens': 55511, 'cache_creation_input_tokens': 1965, 'cache_creation': {'ephemeral_5m_input_tokens': 1965, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "sanic/app.py",
+    "line": 217,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "`app.route` (and every `app.get/post/...` decorator) now returns a `(routes, handler)` tuple, so a decorated function gets replaced by a tuple.",
+    "detail": "The inner `response(handler)` decorator used to return `handler`; now it returns `routes, handler`. Python binds the decorator's return value to the decorated name. With `@app.route('/x') def view(request): ...`, `view` becomes a tuple. Stacking decorators breaks: with `@app.route('/a')` above `@app.route('/b')`, the outer decorator gets a tuple, and `signature(handler)` / `handler.__name__` raises TypeError or AttributeError while routes are registered. Other decorators wrapped around the route, and code that calls or inspects the view function directly (tests, url_for setups, HTTPMethodView helpers), also break. `app.websocket` has the same problem at line 527. This changes the public decorator contract just to pass route objects back to Blueprint.register.",
+    "line_end": null,
+    "suggested_fix": "Keep the decorator returning `handler`. Expose the routes another way, e.g. add an internal `_return_routes` kwarg or have Blueprint.register call `app.router.add` / a helper that returns the routes, or attach them as `handler.__routes__`."
+  },
+  {
+    "file": "sanic/blueprints.py",
+    "line": 146,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Registering a blueprint whose route has a list of hosts crashes with AttributeError, because `Router._add` returns None for host lists.",
+    "detail": "`Router._add` handles an iterable `host` by calling `self.add(...)` for each host and then doing a bare `return`, so it returns None. `Router.add` appends that None (`routes.append(self._add(...))`) and returns `[None]`. In Blueprint.register, `if _routes: routes += _routes` accepts `[None]` because the list is non-empty. Then `route_names = [route.name for route in routes]` raises `AttributeError: 'NoneType' object has no attribute 'name'`. Multi-host routes are supported (see tests/test_vhosts.py and tests/test_routes.py using `host=[...]`), so `Blueprint('bp', host=['a.com','b.com'])` or `@bp.route('/', host=[...])` now fails at `app.blueprint(bp)`. The routes added by the recursive per-host calls are also dropped, so middleware would not be attached to them anyway.",
+    "line_end": null,
+    "suggested_fix": "In `_add`, collect the routes from the recursive calls and return them, e.g. `routes = []; for host_ in host: routes.extend(self.add(uri, methods, handler, host_, name)); return routes`. In `add`, use `extend` when the result is a list, and filter out None values."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 940,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "`router.get` now runs before request middleware, so request middleware no longer runs for unmatched routes (404) or disallowed methods (405).",
+    "detail": "The route lookup was moved ahead of `_run_request_middleware` to get the route name. `Router.get` raises NotFound or MethodNotSupported when nothing matches, which jumps straight to the exception handler and skips all request middleware, including global `@app.middleware('request')`. Before this change, request middleware ran for every request and could short-circuit it. Common patterns break: CORS middleware answering OPTIONS preflight requests for routes that only define GET/POST (now always 405), and auth, logging or redirect middleware that handles unknown paths. The changelog says app middleware applies to all routes, but in practice its behavior on unmatched requests silently changes.",
+    "line_end": 945,
+    "suggested_fix": "Wrap the lookup so a routing error does not skip middleware: try `router.get` first and, on NotFound/MethodNotSupported, set `name=None`, run the global request middleware, and re-raise if the middleware returns nothing. Alternatively, resolve only the route name without raising."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 1310,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Blueprint response middleware now runs in registration order, after all app response middleware, instead of the reversed order `register_middleware` uses.",
+    "detail": "`register_middleware` uses `appendleft` for response middleware, so response middleware runs in reverse registration order (onion-style). `register_named_middleware` uses `append`, and `_run_response_middleware` runs `self.response_middleware + named_middleware`. So blueprint response middleware now runs in forward order, and always after every app-level response middleware. Before, blueprint response middleware was mixed in reverse order with the app's. Response middleware that depends on ordering (e.g. a blueprint header added before an app-level compression or signing step) now behaves differently.",
+    "line_end": null,
+    "suggested_fix": "Use `appendleft` for named response middleware, and decide on an explicit order relative to the global middleware (e.g. `named_middleware + self.response_middleware`)."
+  }
+]

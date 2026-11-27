@@ -1,0 +1,79 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_verify_martian_sonnet55_high_resume
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 1d0f1e1c3e7a87c46aac815a73ded91910a907dd
+# prepared_path: bench_impact/prepared_resume_martian_sonnet.json
+# prepared_sha256_16: c6b65b1e767d1cde
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-11-27T17:40:53+00:00
+# finished: 2026-11-27T17:42:20+00:00
+# duration_s: 86.9
+# cost_usd: 0.1027
+# num_turns: 8
+# num_findings: 4
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 982
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 8
+# cost (USD, harness-reported): 0.102748
+# cost (USD, public Opus 4 rate): 0.971669
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 16685, 'cache_read_input_tokens': 268077, 'output_tokens': 3420, 'output_tokens_details': {'thinking_tokens': 940}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16685}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 534, 'cache_read_input_tokens': 45845, 'cache_creation_input_tokens': 1275, 'cache_creation': {'ephemeral_5m_input_tokens': 1275, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 338,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Strategy close()/terminate() shuts down the factory-owned shared FixedQueuePool, so after any rebalance new strategies submit into dead queues and messages are dropped with offsets committed.",
+    "detail": "The FixedQueuePool is created once in ResultsStrategyFactory.__init__ and shared across every SimpleQueueProcessingStrategy built by create_with_partitions. Arroyo closes and joins the old strategy on each partition revoke/rebalance, and then creates a new one. close()/terminate()/join() call queue_pool.shutdown(), which sets worker.shutdown and calls Queue.shutdown() on every queue, and the worker threads exit. The new strategy reuses the same pool, so queue.put() raises queue.ShutDown. submit() catches that in its broad `except Exception`, then calls add_offset and complete_offset. The offset is marked done and later committed even though the message was never processed. After the first rebalance, all consumed messages are silently lost.",
+    "line_end": null,
+    "suggested_fix": "Do not shut down the shared pool in the strategy's close()/terminate(). Leave pool shutdown to ResultsStrategyFactory.shutdown(), or create a pool per strategy instance."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 317,
+    "category": "error",
+    "severity": "medium",
+    "summary": "A submit failure marks the offset complete, so a message that was never processed gets committed.",
+    "detail": "When decoding, grouping or queue submission raises, the except branch registers the offset and immediately completes it. The commit loop then treats it as processed and commits past it. This turns transient errors, such as the ShutDown case above, into permanent data loss rather than a retry or crash.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 57,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "OffsetTracker is never reset on partition revocation, and its contiguity check stalls on Kafka offset gaps.",
+    "detail": "The tracker state (all_offsets, outstanding, last_committed) lives in the shared pool and is not cleared when partitions are revoked or reassigned. The commit thread can commit stale offsets for partitions the consumer no longer owns. After a partition is reassigned, a stale last_committed can also hide or skip offsets. get_committable_offsets requires every integer offset in the range to be present in all_offsets. Offset gaps (compaction, transaction markers) or filtered offsets that were never added therefore block commits for that partition permanently.",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 337,
+    "category": "logic",
+    "severity": "low",
+    "summary": "close() stops the commit thread without a final commit of completed offsets.",
+    "detail": "close() sets the shutdown event and joins the commit thread. The loop exits after its wait without one last get_committable_offsets and commit. Offsets processed since the last 1s tick are not committed, so they are reprocessed after a rebalance or shutdown. Queue workers are also still draining at this point, and their completions are never committed.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

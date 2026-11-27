@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 1002
+# repo: LocalRepo
+# refs: e1208f5b9f0897c6d975d3dca67ad2188b021da2^..e1208f5b9f0897c6d975d3dca67ad2188b021da2
+# turns: 5
+# cost (USD, harness-reported): 0.059249
+# cost (USD, public Opus 4 rate): 0.551617
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 10429, 'cache_read_input_tokens': 143002, 'output_tokens': 1886, 'output_tokens_details': {'thinking_tokens': 203}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 10429}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 352, 'cache_read_input_tokens': 39696, 'cache_creation_input_tokens': 1168, 'cache_creation': {'ephemeral_5m_input_tokens': 1168, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/preprocessing/image.py",
+    "line": 314,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "preprocessing_function is applied in standardize() but not in fit(), so featurewise statistics are computed on unpreprocessed data.",
+    "detail": "standardize() now runs preprocessing_function first, then applies the featurewise mean, std and ZCA whitening. fit() (lines ~434-476) computes self.mean, self.std and self.principal_components from the raw X. It never calls preprocessing_function. When preprocessing_function is combined with featurewise_center, featurewise_std_normalization or zca_whitening, the statistics describe a different data distribution than the one they are subtracted from or divided into. For example, a preprocessing function that scales by 1/255 or swaps channels makes the mean or std wrong at generation time. The result is silently wrong normalization. The docstring says the function runs 'before any other modification', so fit() should follow the same order.",
+    "line_end": null,
+    "suggested_fix": "In fit(), apply self.preprocessing_function to each sample of X (after np.copy, before augmentation or statistics) so the fitted stats match what standardize() sees."
+  },
+  {
+    "file": "keras/preprocessing/image.py",
+    "line": 257,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "The new preprocessing_function parameter is inserted before dim_ordering, which breaks callers that pass dim_ordering positionally.",
+    "detail": "The signature was `..., rescale=None, dim_ordering='default'`. It is now `..., rescale=None, preprocessing_function=None, dim_ordering='default'`. Any caller passing dim_ordering as the 16th positional argument now binds it to preprocessing_function. dim_ordering silently stays 'default', and the string is later invoked as a function in standardize(), raising TypeError ('str' object is not callable). Appending the new parameter after dim_ordering would keep backward compatibility.",
+    "line_end": null,
+    "suggested_fix": "Move `preprocessing_function=None` after `dim_ordering='default'` in the signature."
+  },
+  {
+    "file": "keras/preprocessing/image.py",
+    "line": 316,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The in-place `x *= self.rescale` can fail after preprocessing_function returns an integer-typed array.",
+    "detail": "A user preprocessing_function may return an int array, for example uint8 after PIL-based ops. The in-place `x *= self.rescale` with a float rescale then raises a numpy casting error, and the later in-place `-=` and `/=` operations fail the same way. Before this change x was always the float array produced by img_to_array. The new hook makes that dtype assumption unsafe, and the docstring does not require a float output.",
+    "line_end": null,
+    "suggested_fix": "Cast to float after preprocessing, for example `x = np.asarray(self.preprocessing_function(x), dtype=K.floatx())`."
+  }
+]

@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 781
+# repo: LocalRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 6
+# cost (USD, harness-reported): 0.333939
+# cost (USD, public Opus 4 rate): 1.448624
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 24582, 'cache_read_input_tokens': 261804, 'output_tokens': 7931, 'output_tokens_details': {'thinking_tokens': 5718}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 24582}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 700, 'cache_read_input_tokens': 52226, 'cache_creation_input_tokens': 2675, 'cache_creation': {'ephemeral_5m_input_tokens': 2675, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 1352,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "When `input_tensors` is provided, the original model's InputLayers are never mapped in `layer_map`, so they get re-cloned and inserted into the new graph as extra pass-through layers. If the names match, this can crash.",
+    "detail": "In the `input_tensors is None` branch, each original input layer is mapped to its replacement (`layer_map[layer] = newly_created_input_layer`). When the original InputLayer node comes up in the depth loop, the `isinstance(layer, InputLayer): continue` check skips it. In the `else` branch nothing is mapped for Keras tensors. For non-Keras tensors the code does `original_input_layer = x._keras_history[0]` after `Input(tensor=x)`. `Input(tensor=x)` sets `_keras_history` on that same tensor object, so this returns the NEW wrapper layer and maps new->new. The original input layer is still missing. The depth loop therefore treats each original InputLayer as an ordinary layer. It clones it via `from_config`, which creates a stray placeholder with the same name as the original input (e.g. 'input_1'), and calls it on the provided tensor. That adds an identity node and an extra InputLayer inside the cloned model. Users often build replacement inputs with the same names as the original ones, e.g. `Input(shape, name='image')`. In that case the provided input layer and the cloned original InputLayer share a name. Container then raises `RuntimeError: The name \"image\" is used 2 times in the model`.",
+    "line_end": 1367,
+    "suggested_fix": "for i, x in enumerate(input_tensors):\n    if not K.is_keras_tensor(x):\n        name = model.input_layers[i].name\n        x = Input(tensor=x, name='input_wrapper_for_' + name)\n    _input_tensors.append(x)\n    layer_map[model.input_layers[i]] = x._keras_history[0]"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1407,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`kwargs = node.arguments` aliases the ORIGINAL model's node arguments dict, and `kwargs['mask'] = ...` then permanently writes a mask tensor from the cloned graph into it.",
+    "detail": "For nodes created with call kwargs (e.g. `layer(x, training=True)` or RNN `initial_state`), `node.arguments` is the original node's dict. If the layer's `call` accepts `mask`, the clone puts `computed_mask` into that dict. This mask belongs to the clone's graph and may be None or a tensor. After that, the original model's node carries a stale `mask` argument. Later calls of the original model (`run_internal_graph` checks `'mask' not in kwargs`) and later clones then reuse this stale mask instead of the correct one. That gives wrong masking or cross-graph tensor errors. Serializing the original model can also warn about or drop non-serializable arguments.",
+    "line_end": 1415,
+    "suggested_fix": "kwargs = dict(node.arguments) if node.arguments else {}"
+  }
+]
