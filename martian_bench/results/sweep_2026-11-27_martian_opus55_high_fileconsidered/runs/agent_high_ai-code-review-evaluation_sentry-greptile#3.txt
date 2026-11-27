@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_opus55_high_fileconsidered
+# pr: ai-code-review-evaluation_sentry-greptile#3
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/3
+# original_upstream_url: https://github.com/getsentry/sentry/pull/94376
+# pr_title: feat(upsampling) - Support upsampled error count with performance optimizations
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 4efafe751311777c7cb84a12a9331899d0760313
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 6ad6fe3899f630ccf922ce7ac681147dc7987435
+# n_goldens: 3
+# started: 2026-11-27T17:45:26+00:00
+# finished: 2026-11-27T17:47:20+00:00
+# duration_s: 113.4
+# cost_usd: 0.2627
+# num_turns: 11
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 726
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 11
+# cost (USD, harness-reported): 0.262661
+# cost (USD, public Opus 4 rate): 1.282055
+# usage: {'input_tokens': 20, 'cache_creation_input_tokens': 19176, 'cache_read_input_tokens': 396103, 'output_tokens': 4374, 'output_tokens_details': {'thinking_tokens': 956}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 19176}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 629, 'cache_read_input_tokens': 48047, 'cache_creation_input_tokens': 1555, 'cache_creation': {'ephemeral_5m_input_tokens': 1555, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/search/events/datasets/discover.py",
+    "line": 1046,
+    "category": "logic",
+    "severity": "high",
+    "summary": "upsampled_count now sums raw sample_weight without ifNull(...,1), so events with no sample_weight are dropped from the count.",
+    "detail": "The base implementation was toInt64(sum(ifNull(sample_weight, 1))). The new code is toInt64(sum(sample_weight)). An allowlisted project can still have events with a NULL sample_weight: events ingested before sampling was turned on, events from SDKs that don't send a client sample rate, and events that weren't client-sampled. In ClickHouse, sum() skips NULLs, so those events add 0 instead of 1. When every event in a bucket has a NULL weight, sum returns NULL or 0, and toInt64 can also fail on NULL. The result is that error counts and charts for allowlisted projects are undercounted or zero. Nothing enforces the schema guarantee the new comment relies on.",
+    "line_end": 1050,
+    "suggested_fix": "-                        [Function(\"sum\", [Column(\"sample_weight\")])],\n+                        [Function(\"sum\", [Function(\"ifNull\", [Column(\"sample_weight\"), 1])])],"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_events_stats.py",
+    "line": 229,
+    "category": "error",
+    "severity": "medium",
+    "summary": "The check that rejects top-events requests grouped by timestamp (ParseError 'Cannot group by timestamp') was removed.",
+    "detail": "Before, the top_events branch called get_field_list and raised ParseError(\"Cannot group by timestamp\") when the field list included 'timestamp'. The refactor deleted that check. Now a request with topEvents>0 and field=timestamp reaches top_events_timeseries / run_top_events_timeseries_query. That will either fail inside the query builder with an unhandled error (a 500 where the client used to get a 400) or build a degenerate top-N query with one group per timestamp.",
+    "line_end": 241,
+    "suggested_fix": "            if top_events > 0:\n+                raw_groupby = self.get_field_list(organization, request)\n+                if \"timestamp\" in raw_groupby:\n+                    raise ParseError(\"Cannot group by timestamp\")"
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 27,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Eligibility is cached per project set for 60s, and invalidate_upsampling_cache cannot reliably clear stale entries after an allowlist change.",
+    "detail": "The cache key is built from the organization plus the exact sorted project-id tuple. A change to the issues.client_error_sampling.project_allowlist option affects every project combination that includes the changed project. invalidate_upsampling_cache only deletes the single key for the exact (org, project_ids) pair it is given, and nothing calls it. After a project is added to or removed from the allowlist, queries keep using the old upsampling decision for up to 60 seconds. If a project is removed, its counts stay inflated by sample_weight; if one is added, counts stay unscaled. Different project selections can disagree during that window. The docstring of _are_all_projects_error_upsampled also says the configuration is read fresh each time, which the cache contradicts.",
+    "line_end": 40,
+    "suggested_fix": ""
+  }
+]

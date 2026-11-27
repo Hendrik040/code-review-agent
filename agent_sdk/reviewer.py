@@ -135,6 +135,33 @@ mcp__reviewer__submit_findings exactly once.
 
 SYSTEM_PROMPT_AGENT_SDK = SYSTEM_PROMPT + "\n" + SDK_ADDENDUM
 
+# Opt-in prompt variant (REVIEW_PROMPT_VARIANT=file_considered). Step 7 of
+# bugsinpy_bench/EXPERIMENT_LOG.md found Opus 5.5 describing real bugs in its
+# own summary and then not filing them ("pre-existing", "low impact",
+# "intended"). This addendum asks it to file them. Unset keeps the prompt
+# the earlier sweeps ran with.
+FILE_CONSIDERED_ADDENDUM = """\
+<reporting_note>
+If you identify a concrete defect in code that this change adds, modifies,
+moves or newly calls, file it, even when:
+- it may have existed before this change (moved or copied code counts as
+  part of the change),
+- its practical impact looks small, or another bug currently masks it,
+- the behaviour change might be intentional.
+Give such findings the severity they merit (often low) and say in `detail`
+why you are unsure. Do not leave out an issue you have already described
+in your reasoning: anything your final summary would call a bug, a slip,
+or an issue you left out belongs in submit_findings.
+This does not change the other rules: still no style, naming, or
+missing-test findings.
+</reporting_note>
+"""
+PROMPT_VARIANT = os.environ.get("REVIEW_PROMPT_VARIANT", "")
+if PROMPT_VARIANT == "file_considered":
+    SYSTEM_PROMPT_AGENT_SDK += "\n" + FILE_CONSIDERED_ADDENDUM
+elif PROMPT_VARIANT:
+    raise SystemExit(f"unknown REVIEW_PROMPT_VARIANT={PROMPT_VARIANT!r}")
+
 
 # ---------------------------------------------------------------------------
 # Trace writer — boxed turn-by-turn view of the SDK message stream.

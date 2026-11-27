@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_opus55_high_fileconsidered
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 4efafe751311777c7cb84a12a9331899d0760313
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-11-27T17:54:08+00:00
+# finished: 2026-11-27T17:56:25+00:00
+# duration_s: 136.8
+# cost_usd: 0.2500
+# num_turns: 9
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 732
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 9
+# cost (USD, harness-reported): 0.250022
+# cost (USD, public Opus 4 rate): 1.172810
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 18694, 'cache_read_input_tokens': 313638, 'output_tokens': 4688, 'output_tokens_details': {'thinking_tokens': 1605}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 18694}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 667, 'cache_read_input_tokens': 47406, 'cache_creation_input_tokens': 1714, 'cache_creation': {'ephemeral_5m_input_tokens': 1714, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 332,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Strategy close()/join() shuts down the factory-owned shared FixedQueuePool, so after the first rebalance every message is silently dropped and its offset committed.",
+    "detail": "The FixedQueuePool is created once in ResultsStrategyFactory.__init__ and handed to every SimpleQueueProcessingStrategy built by create_thread_queue_parallel_worker. On a partition revocation, arroyo calls strategy.close() and then join(), which here calls self.queue_pool.shutdown(). That shuts down every queue and stops every worker thread. When partitions are reassigned, create_with_partitions builds a new strategy around the same dead pool, because the factory still holds a reference to it. In SimpleQueueProcessingStrategy.submit, work_queue.put() now raises queue.ShutDown. The broad `except Exception` catches it and marks the offset as added and completed, so the commit loop commits it. Every result after the first rebalance is lost and never processed, and the loss is only visible as a log line.",
+    "line_end": 341,
+    "suggested_fix": "Don't shut down the shared pool from the strategy's close/terminate. Leave pool shutdown to ResultsStrategyFactory.shutdown(), or create a new pool per strategy. Also, in submit, don't mark an offset complete when enqueueing fails; re-raise instead."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 87,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "get_committable_offsets requires strictly contiguous offsets, so any gap in Kafka offsets stops commits for that partition and all_offsets grows without bound.",
+    "detail": "The loop walks `range(start, max_offset + 1)` and breaks at the first offset missing from all_offsets. Kafka offsets are not guaranteed to be contiguous: transaction control markers, compacted topics and aborted transactions all leave gaps. Once last_committed = X and the next offset seen is X+2, start = X+1 is never in all_offsets. The loop breaks right away, nothing is committed for that partition again, and every later offset piles up in all_offsets/outstanding for good. That is an unbounded memory leak, and restarts cause huge reprocessing. The latest commit, \"remove gap test\", suggests this case was known and the test was dropped rather than fixed.",
+    "line_end": 92,
+    "suggested_fix": "Walk the sorted set of tracked offsets above last_committed instead of every integer, e.g. `for offset in sorted(o for o in all_offsets if o > last_committed): if offset in outstanding: break; highest_committable = offset`."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 272,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "Arroyo's commit callback is called from a background thread, and offsets for revoked partitions are retried forever.",
+    "detail": "_commit_loop runs in its own daemon thread and calls the arroyo `commit` callable, which leads to StreamProcessor/KafkaConsumer.stage_offsets. Arroyo expects that callback on the consumer's processing thread; the underlying consumer state is not thread-safe, and calling it during a rebalance can race with assignment changes. The OffsetTracker is shared across strategies and never forgets revoked partitions. Committing offsets for a partition that is no longer assigned raises (arroyo refuses to stage offsets for unassigned partitions). The error is caught, but mark_committed never runs, so the same failing commit is retried and logged every second. Because a revoked partition is batched with valid ones in the same commit dict, the valid ones also fail to commit.",
+    "line_end": 288,
+    "suggested_fix": "Do commits from poll() on the consumer thread, using offsets computed by the tracker. Clear tracker state for revoked partitions when the strategy is closed."
+  }
+]

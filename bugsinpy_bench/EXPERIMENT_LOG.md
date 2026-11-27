@@ -37,6 +37,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 5 | 2026-11-27 00:13-00:40 | Opus 5.5 high on the 30 bugs (needed a newer CLI) | 22/30 for $4.77 |
 | 6 | 2026-11-27 00:45-01:40 | Full benchmark: all three models on the other 70 BugsInPy bugs and Martian's 10 PRs, six sweeps in parallel | Triage matches all-Opus 5.5 (42/100) for 13% less |
 | 7 | 2026-11-27 | Trace analysis of Opus 5.5's misses; alternative routings scored from stored results | Opus 5.5 often sees the bug and decides not to report it; triage + Haiku second pass: 48/100 for $14.66 |
+| 8 | 2026-11-27 17:00-17:35 | Opus 5.5 high on Martian with a prompt addendum asking it to file what it would drop | Recall 9 → 14 of 31, precision unchanged, F1 0.359 → 0.459 for $3.07 |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -265,6 +266,47 @@ are single runs, with run-to-run noise of about ±2-4 bugs on 30.
 2. Run Haiku as a second pass next to triage and measure the extra false positives
    on Martian, where precision counts.
 
+## Step 8. Martian rerun with the "file what you considered" prompt
+
+Experiment 1 from step 7. `agent_sdk/reviewer.py` gained an opt-in addendum,
+`REVIEW_PROMPT_VARIANT=file_considered` (unset keeps the earlier prompt). It asks the
+reviewer to file concrete defects in changed, moved or newly called code even when
+they may be pre-existing, look low-impact, or might be intended, with the severity
+they merit, and not to leave out anything its own summary would call a bug. The
+other rules (no style, naming or missing-test findings) are unchanged. Everything
+else matches step 6's Opus 5.5 Martian sweep: same model, effort, newer CLI, isolated
+CLI config, PR list and judge.
+
+A first attempt stopped after one PR when the API account ran out of credit; it was
+discarded and the full sweep rerun from scratch.
+
+Sweep `sweep_2026-11-27_martian_opus55_high_fileconsidered`, traces 724-733:
+
+| Setup | Goldens matched | Findings | Recall | Precision | F1 | Cost |
+|---|---:|---:|---:|---:|---:|---:|
+| Opus 5.5 high, original prompt (step 6) | 9/31 | 17 | 0.290 | 0.471 | 0.359 | $2.77 |
+| **Opus 5.5 high, file_considered** | **14/31** | **30** | **0.452** | **0.467** | **0.459** | **$3.07** |
+| Sonnet 5.5 high, original prompt (step 6) | 13/31 | 20 | 0.419 | 0.650 | 0.510 | $1.06 |
+| Opus 4.7 max (May) | 14/31 | 19 | 0.452 | 0.684 | 0.544 | $23.33 |
+
+Per PR, the goldens gained are the ones step 7 found Opus 5.5 describing and
+dropping:
+
+- sentry-greptile#2: both negative-offset slicing goldens (Critical, High).
+- sentry#80528: the function returning the original config (High).
+- sentry#93824: `join()` exiting without terminating flushers, plus the `shard`/`shards`
+  metric tag mismatch.
+- sentry-greptile#5: the `zip` ordering bug.
+
+It lost one golden (sentry#67876, the missing `github_authenticated_user` check)
+that the original-prompt run had matched, within single-run noise.
+
+Filing more raised recall without lowering precision (13 extra findings, 6 of them
+matches). Opus 5.5 now matches Opus 4.7 max on recall for an eighth of the cost.
+Its precision stays well below Sonnet's and Opus 4.7's, so its F1 is still below
+both. This is one run on 10 PRs; Sonnet was not rerun with the addendum, so the
+comparison mixes prompts. BugsInPy was not rerun.
+
 ## Spend
 
 | Step | Cost |
@@ -274,7 +316,8 @@ are single runs, with run-to-run noise of about ±2-4 bugs on 30.
 | 6 Six full sweeps ($19.75), Martian tail reruns ($0.19), judging ($1.14) | $21.08 |
 | 6 Stopped sequential start (two Opus 5.5 bugs, cost not recorded) | about $0.30 |
 | 7 Trace analysis (no API calls) | $0 |
-| **Total** | **about $29.33** |
+| 8 Martian sweep ($3.07), judging ($0.30), discarded first attempt ($0.27) | $3.64 |
+| **Total** | **about $32.97** |
 
 Jev's own cost is not measured.
 

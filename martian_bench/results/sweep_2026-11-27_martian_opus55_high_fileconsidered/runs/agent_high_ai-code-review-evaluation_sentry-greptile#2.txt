@@ -1,0 +1,79 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_opus55_high_fileconsidered
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 4efafe751311777c7cb84a12a9331899d0760313
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T17:44:00+00:00
+# finished: 2026-11-27T17:45:26+00:00
+# duration_s: 86.1
+# cost_usd: 0.2569
+# num_turns: 8
+# num_findings: 4
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 725
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 8
+# cost (USD, harness-reported): 0.256871
+# cost (USD, public Opus 4 rate): 1.198980
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 18550, 'cache_read_input_tokens': 314285, 'output_tokens': 5060, 'output_tokens_details': {'thinking_tokens': 1625}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 18550}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 863, 'cache_read_input_tokens': 47380, 'cache_creation_input_tokens': 1596, 'cache_creation': {'ephemeral_5m_input_tokens': 1596, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 839,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator.get_item_key calls math.floor/ceil on a datetime, which raises TypeError on every non-empty page of the optimized audit-log path.",
+    "detail": "The endpoint uses OptimizedCursorPaginator with order_by='-datetime', so self.key is 'datetime' and getattr(item, 'datetime') returns a datetime object. math.floor(datetime) and math.ceil(datetime) raise TypeError. build_cursor calls key=self.get_item_key on the results, so any request with ?optimized_pagination=true that returns rows fails with a 500. DateTimePaginator first converts the value with value.strftime('%s.%f') * multiplier; the new class skips that step.",
+    "line_end": 841,
+    "suggested_fix": "Subclass DateTimePaginator (or copy its get_item_key/value_from_cursor) so datetimes are converted to millisecond epoch ints."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 844,
+    "category": "logic",
+    "severity": "high",
+    "summary": "value_from_cursor returns the raw integer cursor value, which build_queryset then compares directly against the datetime column.",
+    "detail": "For the datetime key, cursor.value is an epoch-millisecond integer. build_queryset adds `WHERE auditlogentry.datetime <= %s` with that integer as the parameter. On Postgres this either fails with a type error (timestamp vs integer) or filters the wrong rows. So the next/prev cursors on the optimized path cannot work. DateTimePaginator turns the cursor value back into a UTC datetime first.",
+    "line_end": 845,
+    "suggested_fix": "return datetime.fromtimestamp(float(cursor.value) / 1000).replace(tzinfo=timezone.utc) (or inherit from DateTimePaginator)."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 874,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Negative cursor offsets are passed straight into Django queryset slicing, which raises instead of paginating, so a client-supplied cursor can cause a 500.",
+    "detail": "When enable_advanced_features is set and cursor.offset < 0, the code runs queryset[start_offset:stop] with a negative start. In the base path the new `start_offset = ... if not cursor.is_prev else offset` also keeps negative offsets for prev cursors. Django querysets do not support negative indexing and raise (AssertionError/ValueError 'Negative indexing is not supported.'). Cursor parsing accepts negative offsets (int(offset)), so a cursor like '0:-10:0' causes a server error. The comment says this 'enables access to data beyond normal pagination bounds'; that is also a worrying intent. Negative offsets should be rejected or clamped.",
+    "line_end": 881,
+    "suggested_fix": "Always clamp: start_offset = max(0, offset); reject negative offsets in Cursor parsing / paginator (raise BadPaginationError)."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "error",
+    "severity": "medium",
+    "summary": "organization_context.member can be None, so `.has_global_access` raises AttributeError for non-member staff access.",
+    "detail": "RpcUserOrganizationContext.member is typed `RpcOrganizationMember | None`. If the requester is not a superuser and has no membership (for example, staff access allowed by the permission class), evaluating organization_context.member.has_global_access raises AttributeError \u2192 500. This happens on every request, even when optimized_pagination is not requested, because enable_advanced is computed unconditionally. The gate also checks the raw `request.user.is_superuser` flag instead of an active superuser session (is_active_superuser). And has_global_access is a per-member flag that defaults to true, not an admin role, so the 'authorized administrators' restriction does not actually restrict anyone.",
+    "line_end": null,
+    "suggested_fix": "enable_advanced = is_active_superuser(request) or (organization_context.member is not None and organization_context.member.has_global_access); only compute when use_optimized is true."
+  }
+]

@@ -1,0 +1,89 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_opus55_high_fileconsidered
+# pr: ai-code-review-evaluation_sentry-greptile#1
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/1
+# original_upstream_url: 
+# pr_title: Enhanced Pagination Performance for High-Volume Audit Logs
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 4efafe751311777c7cb84a12a9331899d0760313
+# prepared_path: martian_bench/dataset/prepared_martian.json
+# prepared_sha256_16: 06a8cdac4a79de37
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T17:41:40+00:00
+# finished: 2026-11-27T17:44:00+00:00
+# duration_s: 140.4
+# cost_usd: 0.3673
+# num_turns: 11
+# num_findings: 5
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 724
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 11
+# cost (USD, harness-reported): 0.367338
+# cost (USD, public Opus 4 rate): 1.716483
+# usage: {'input_tokens': 22, 'cache_creation_input_tokens': 25668, 'cache_read_input_tokens': 451952, 'output_tokens': 7426, 'output_tokens_details': {'thinking_tokens': 2414}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 25668}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 940, 'cache_read_input_tokens': 51480, 'cache_creation_input_tokens': 2272, 'cache_creation': {'ephemeral_5m_input_tokens': 2272, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 5
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 840,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator.get_item_key calls math.floor/math.ceil on a datetime, raising TypeError for every non-empty page.",
+    "detail": "The audit-log endpoint uses this paginator with order_by=\"-datetime\", so self.key is 'datetime' and getattr(item, self.key) returns a datetime object. math.floor(datetime) / math.ceil(datetime) raise TypeError ('must be real number, not datetime.datetime'). build_cursor calls key=self.get_item_key on the results to build the next/prev cursors, so any request with optimized_pagination=true from a superuser or global-access member that returns at least one audit log entry gets a 500. DateTimePaginator first converts the datetime to a millisecond timestamp (float(value.strftime('%s.%f')) * multiplier); that step is missing here.",
+    "line_end": null,
+    "suggested_fix": "-class OptimizedCursorPaginator(BasePaginator):\n+class OptimizedCursorPaginator(DateTimePaginator):\n@@\n-    def get_item_key(self, item, for_prev=False):\n-        value = getattr(item, self.key)\n-        return int(math.floor(value) if self._is_asc(for_prev) else math.ceil(value))\n-\n-    def value_from_cursor(self, cursor):\n-        return cursor.value\n+    # inherit datetime-aware get_item_key / value_from_cursor from DateTimePaginator"
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 843,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "value_from_cursor returns the raw integer cursor value, which build_queryset then compares directly against the datetime column.",
+    "detail": "For any cursor that has a value (page 2 onward, or a prev cursor), build_queryset adds `WHERE sentry_auditlogentry.datetime <= %s` with the integer from the cursor string, for example 1721900000000. A timestamptz column compared to an integer parameter raises a database error in Postgres (operator does not exist / invalid input), so the request fails with a 500. Even if that comparison were coerced, the value would be meaningless. DateTimePaginator.value_from_cursor converts it back with datetime.fromtimestamp(value / multiplier).",
+    "line_end": null,
+    "suggested_fix": ""
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 880,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Negative-offset 'advanced' path slices a Django QuerySet with a negative index, which raises an uncaught ValueError (500); the generic BasePaginator change does the same for prev cursors.",
+    "detail": "Cursor.from_string accepts any int offset, so a cursor such as `0:-10:0` with enable_advanced_features=True runs queryset[-10:...]. Django QuerySets reject this with ValueError('Negative indexing is not supported.'), and Endpoint.paginate only catches BadPaginationError, so the request returns a 500. The comments claim 'The underlying Django ORM properly handles negative slicing automatically' and 'enables access to data beyond normal pagination bounds'. Both are wrong, and the stated intent of reaching data past normal bounds is itself a red flag. BasePaginator.get_result (line 182) now also deliberately passes negative offsets through when cursor.is_prev, with the same crash. Negative offsets should be rejected with BadPaginationError or clamped to 0. I'm unsure whether the BasePaginator prev-cursor path is a regression: the old code also sliced with an unclamped offset, so treat that part as a pre-existing crash this change endorses rather than fixes.",
+    "line_end": null,
+    "suggested_fix": "-        if self.enable_advanced_features and cursor.offset < 0:\n-            start_offset = cursor.offset\n-            stop = start_offset + limit + extra\n-            results = list(queryset[start_offset:stop])\n-        else:\n-            start_offset = max(0, offset) if not cursor.is_prev else offset\n+        if offset < 0:\n+            raise BadPaginationError(\"Pagination offset cannot be negative\")\n+        start_offset = offset\n         stop = start_offset + limit + extra\n         results = list(queryset[start_offset:stop])"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "error",
+    "severity": "medium",
+    "summary": "organization_context.member can be None, so the access check raises AttributeError for non-member requesters.",
+    "detail": "RpcUserOrganizationContext.member is typed `RpcOrganizationMember | None` and is documented as None when the requester has no membership in the org. Examples are org-level auth tokens or API keys (request.user is AnonymousUser, is_superuser False) and staff users who are not members. These callers pass OrganizationAuditPermission. When such a caller hits the endpoint, `organization_context.member.has_global_access` raises AttributeError and the request returns a 500. The expression is evaluated on every request, even without optimized_pagination=true, because enable_advanced is computed unconditionally, so this can break the plain audit-log listing for those callers.",
+    "line_end": null,
+    "suggested_fix": "-        enable_advanced = request.user.is_superuser or organization_context.member.has_global_access\n+        member = organization_context.member\n+        enable_advanced = is_active_superuser(request) or (\n+            member is not None and member.has_global_access\n+        )"
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "security",
+    "severity": "low",
+    "summary": "The 'admin-only' gate uses request.user.is_superuser (which ignores active superuser mode) and has_global_access (which plain members have in open-membership orgs).",
+    "detail": "Elsewhere Sentry gates superuser privileges on is_active_superuser(request), so a user with the is_superuser flag who has not elevated into superuser mode should not get elevated behavior. has_global_access is True for any member of an org with open membership, not only administrators. The negative-offset pagination this check unlocks is meant for 'authorized administrators', but much broader populations can reach it. Today that path crashes rather than leaking data, so the practical impact is limited, which is why I rated this low.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]
