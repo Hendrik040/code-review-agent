@@ -203,8 +203,13 @@ def _odis_error(result: Any) -> str:
     )
 
 
+_COMPUTE: Any = object()  # build_review_context: compute the PR summary if enabled
+
+
 def build_review_context(
     repo: Repo, base_ref: str, head_ref: str, *, jev_client: Any = None,
+    pr_summary: Any = _COMPUTE, summary_client: Any = None,
+    lint_hints: Any = _COMPUTE, lint_client: Any = None,
 ) -> str:
     """ODIS-as-a-tool: same algorithm as `shared.odis.build_context`,
     exposed for the agent to call when it wants the curated slice.
@@ -223,7 +228,41 @@ def build_review_context(
 
     Recommended as the first investigation step — 1-5 KB of context
     surfaces most boundary bugs immediately.
+
+    Phase 9: with REVIEW_PR_SUMMARY=1 a machine summary of the PR
+    (shared/pr_summary.py) comes first, framed as possibly wrong. Pass
+    `pr_summary` (a summary dict, or None for none) when the caller has
+    already computed it; by default it is computed here. Any failure
+    leaves the context as it is. `summary_client` is a test seam.
+
+    Phase 10: with REVIEW_LINT_HINTS=1, ruff/pylint warnings on added
+    lines that pass Jev's two checks (shared/lint_hints.py) go in a short
+    section before the diff. Pass `lint_hints` (a list, or None for
+    none) when already computed. Fail-open. `lint_client` is a test seam.
     """
+    context = _context_body(repo, base_ref, head_ref, jev_client=jev_client)
+    from shared import lint_hints as lh  # host side: talks to Jev
+    from shared import pr_summary as prs  # host only: talks to the Anthropic API
+
+    summary = None
+    if prs.enabled():
+        try:
+            summary = prs.for_repo(repo, base_ref, head_ref, client=summary_client) if pr_summary is _COMPUTE else pr_summary
+            if summary:
+                context = prs.prepend(context, summary)
+        except Exception:  # noqa: BLE001 — the summary must never fail the review
+            logging.getLogger("shared.pr_summary").exception("pr_summary: could not add the summary")
+    if lh.enabled():
+        try:
+            hints = lh.for_repo(repo, base_ref, head_ref, summary=summary, client=lint_client) if lint_hints is _COMPUTE else lint_hints
+            context = lh.insert(context, hints or [])
+        except Exception:  # noqa: BLE001 — hints must never fail the review
+            logging.getLogger("shared.lint_hints").exception("lint_hints: could not add the hints")
+    return context
+
+
+def _context_body(repo: Repo, base_ref: str, head_ref: str, *, jev_client: Any = None) -> str:
+    """build_review_context without the optional PR summary."""
     from shared import impact_select  # host only: talks to Jev
 
     rng = f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
