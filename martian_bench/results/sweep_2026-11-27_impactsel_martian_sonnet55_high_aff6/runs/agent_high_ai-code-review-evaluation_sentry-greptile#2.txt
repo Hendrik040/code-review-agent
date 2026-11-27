@@ -1,0 +1,69 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_impactsel_martian_sonnet55_high_aff6
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 791001021d9f09834f1912b21bbaefd253f64e52
+# prepared_path: bench_impact/prepared_martian_affected.json
+# prepared_sha256_16: b755905bfae7484e
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T02:07:23+00:00
+# finished: 2026-11-27T02:08:44+00:00
+# duration_s: 81.3
+# cost_usd: 0.0941
+# num_turns: 8
+# num_findings: 3
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 623
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 8
+# cost (USD, harness-reported): 0.094137
+# cost (USD, public Opus 4 rate): 0.936589
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 13020, 'cache_read_input_tokens': 307413, 'output_tokens': 3081, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 13020}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 447, 'cache_read_input_tokens': 44373, 'cache_creation_input_tokens': 1144, 'cache_creation': {'ephemeral_5m_input_tokens': 1144, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 80,
+    "category": "logic",
+    "severity": "high",
+    "summary": "The audit log endpoint now uses OptimizedCursorPaginator, which doesn't handle datetime keys, so `?optimized_pagination=true` breaks on the `datetime` ordering.",
+    "detail": "OptimizedCursorPaginator extends BasePaginator directly. It defines `get_item_key` as `math.floor(getattr(item, 'datetime'))` and `value_from_cursor` as `cursor.value`. DateTimePaginator, which this endpoint used before, overrides both to convert between datetime and epoch-milliseconds. With `order_by='-datetime'`, `get_item_key` calls `math.floor` on a datetime, which raises TypeError. Any non-empty page will hit this when it builds the cursor. On a follow-up request, `build_queryset` would filter a datetime column against a raw numeric cursor value. Superusers and global-access members get a 500 whenever they pass `optimized_pagination=true`.",
+    "line_end": null,
+    "suggested_fix": "Subclass DateTimePaginator, or copy its `get_item_key` and `value_from_cursor`, in the optimized paginator."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 879,
+    "category": "security",
+    "severity": "medium",
+    "summary": "The optimized paginator passes a user-controlled negative cursor offset straight into queryset slicing.",
+    "detail": "The cursor offset comes from the request's `cursor` query parameter (`Cursor.from_string`). The `enable_advanced_features and cursor.offset < 0` branch slices `queryset[cursor.offset:stop]` without validating it. Django querysets raise AssertionError on negative indexing, so this produces a 500. The code comments claim the ORM handles negative offsets safely and that this reaches data beyond normal pagination bounds, and neither claim is true. If the queryset were evaluated differently, for example after a list conversion, a negative start would silently return wrong rows. The same `start_offset` is used when computing `stop`. In the `cursor.is_prev` case, `start_offset` stays negative. In BasePaginator.get_result, `offset` also stays unclamped when `cursor.is_prev`. Negative offsets are therefore still passed to the ORM there.",
+    "line_end": null,
+    "suggested_fix": "Reject or clamp negative offsets: `start_offset = max(0, offset)`. Remove the negative-offset branch."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 30,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The redirect-chain traversal limit was cut from 10000 to 1000 with no justification.",
+    "detail": "The loop `for i = 0, 1000` follows span redirects to find the segment root. A trace whose redirect chain is deeper than 1000 stops early. The span is then attached to the wrong intermediate set, so segments of that depth are not joined correctly. This change is unrelated to the zset conversion and lowers a limit the original comment explicitly accepted at 10k.",
+    "line_end": null,
+    "suggested_fix": "Restore `for i = 0, 10000 do`."
+  }
+]

@@ -1,0 +1,52 @@
+# Agent SDK reviewer run 520
+# repo: LocalRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 5
+# cost (USD, harness-reported): 0.010308
+# cost (USD, public Opus 4 rate): 1.546209
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 13484, 'cache_read_input_tokens': 624486, 'output_tokens': 4753, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 13484}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 458, 'cache_read_input_tokens': 128753, 'cache_creation_input_tokens': 1921, 'cache_creation': {'ephemeral_5m_input_tokens': 1921, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 34,
+    "category": "security",
+    "severity": "high",
+    "summary": "side_effect calls os.remove on raw archive member names, so a crafted zip can delete files outside the current directory.",
+    "detail": "side_effect (thefuck/rules/dirty_unzip.py:34-38) iterates archive.namelist() and calls os.remove(file) on each name without normalizing or validating it. Zip members named with absolute paths (e.g. '/home/user/.bashrc') or traversal (e.g. '../../x') resolve outside cwd. main.run_rule (thefuck/main.py:139-140) invokes side_effect after the user confirms the suggested command, so a user who runs 'unzip evil.zip' and then accepts the thefuck suggestion can have arbitrary user-writable files deleted. Expected trigger: a malicious or untrusted archive whose members include absolute or '..' paths.",
+    "line_end": 38,
+    "suggested_fix": "Only remove members whose normalized path stays inside cwd, e.g. skip names where os.path.isabs(name) or '..' in os.path.normpath(name).split(os.sep); or drop the removal entirely and only delete paths that are verified to be regular files created by this archive."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 34,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "side_effect deletes pre-existing user files that share a name with archive members, and crashes on directory entries.",
+    "detail": "side_effect removes every archive member path, regardless of whether the original unzip actually extracted it. If the user already has 'notes.txt' and the zip also contains 'notes.txt', unzip may have prompted and the user may have declined overwriting; thefuck then deletes the user's original file. Also, zip directory entries (names ending in '/') are included in namelist(); os.remove on a directory raises IsADirectoryError/PermissionError. Because this runs after confirm() and before shells.put_to_history (main.py:139-141), the exception aborts the flow after the user has approved the command. Triggering scenario: 'unzip project.zip' where the archive contains 'src/' and a pre-existing file collides with a member.",
+    "line_end": 38,
+    "suggested_fix": "Skip member names ending in '/', and only remove files that did not exist before the original command ran (for example, record existing paths in match or check with os.path.isfile and compare mtimes), or remove the side_effect altogether."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 26,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The '-d' guard is a substring check, so any filename containing '-d' (e.g. 'my-data.zip') silently disables the rule.",
+    "detail": "match uses `'-d' not in command.script`, which matches substrings inside filenames, not only the flag. For 'unzip build-docs.zip' the script contains '-d', so match returns False and the rule never fires even though the archive needs fixing. The check should test whether the flag is actually present as a standalone token.",
+    "line_end": null,
+    "suggested_fix": "Check the tokens instead: `not any(t == '-d' or t.startswith('-d') for t in command.script.split())` (or inspect only flag tokens starting with '-')."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 24,
+    "category": "error",
+    "severity": "low",
+    "summary": "_zip_file returns None when no file argument is given, so match raises TypeError on bare 'unzip' commands.",
+    "detail": "For a script like 'unzip' or 'unzip -l' with no positional argument, _zip_file's loop never returns and yields None. _is_bad_zip(None) then calls zipfile.ZipFile(None), raising TypeError. thefuck/main.py:116-117 catches the exception and only logs it, so the impact is a noisy debug/rule-failure log rather than a crash, but the rule is relying on an exception for control flow.",
+    "line_end": 27,
+    "suggested_fix": "Return early from match when _zip_file(command) is None, e.g. `archive = _zip_file(command); return bool(archive) and ...`."
+  }
+]

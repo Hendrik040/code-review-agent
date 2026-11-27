@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 563
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 7
+# cost (USD, harness-reported): 0.017009
+# cost (USD, public Opus 4 rate): 2.551309
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 39561, 'cache_read_input_tokens': 827600, 'output_tokens': 7572, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 39561}, 'inference_geo': '', 'iterations': [{'input_tokens': 4, 'output_tokens': 530, 'cache_read_input_tokens': 155574, 'cache_creation_input_tokens': 1177, 'cache_creation': {'ephemeral_5m_input_tokens': 1177, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 335,
+    "category": "resource",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close() shuts down the shared FixedQueuePool, so the next partition assignment gets a dead pool and silently drops messages.",
+    "detail": "ResultsStrategyFactory.create_with_partitions (result_consumer.py:200-212) builds a new SimpleQueueProcessingStrategy on every call, and every strategy wraps the same self.queue_pool (created once in __init__). Arroyo closes and joins the previous strategy on a rebalance, and SimpleQueueProcessingStrategy.close() (and join(), which calls close(), and terminate()) calls self.queue_pool.shutdown(). That sets worker.shutdown=True on all workers and calls queue.shutdown() on every queue, permanently. After the rebalance, the new strategy's submit() calls queue_pool.submit() -> work_queue.put(), which raises queue.ShutDown. The except branch in submit() then marks the offset as added and completed, so the message is discarded and its offset is committed past it. Nothing is processed after the first rebalance, and messages are lost without any error reaching the consumer. Triggering scenario: any consumer-group rebalance (deploy, scale-out, or a consumer crash/restart in the group) in thread-queue-parallel mode. The existing tests do not cover this because they never close one strategy and then create another from the same factory.",
+    "line_end": 338,
+    "suggested_fix": "Do not shut down the shared pool from strategy close(). Either give each strategy its own FixedQueuePool (create it in create_thread_queue_parallel_worker and shut it down in the strategy's close), or keep the pool shared and make close() only stop this strategy's commit thread and drain its in-flight items. Only factory.shutdown() should shut the pool down. Add a test that calls create_with_partitions, closes/joins the returned strategy, then creates a second strategy and verifies a message submitted to it is processed."
+  }
+]

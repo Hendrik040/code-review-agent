@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 560
+# repo: LocalRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 11
+# cost (USD, harness-reported): 0.250484
+# cost (USD, public Opus 4 rate): 2.963237
+# usage: {'input_tokens': 26, 'cache_creation_input_tokens': 27111, 'cache_read_input_tokens': 1446144, 'output_tokens': 3804, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 27111}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 454, 'cache_read_input_tokens': 143238, 'cache_creation_input_tokens': 1063, 'cache_creation': {'ephemeral_5m_input_tokens': 1063, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 118,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "fetch_error_details zips error_ids with nodestore.get_multi().values(), which misaligns IDs and events.",
+    "detail": "`nodestore.backend.get_multi` returns a dict keyed by node id. It omits ids that aren't found. It also deduplicates the ids. In `base.py` get_multi, uncached items come first and cached items are added afterwards with `items.update(cache_items)`, so the dict order is not the order of the input ids. Zipping `error_ids` with `events.values()` therefore pairs the wrong event ID with the wrong data whenever any error is missing from nodestore, is duplicated, or is partly cached. The `id` field of the resulting ErrorEvent can then be wrong. Because `if data is not None` never filters anything (missing keys are absent, not None), the output also shifts. The title, message and timestamp can be attributed to the wrong error.",
+    "line_end": 118,
+    "suggested_fix": "node_ids = {Event.generate_node_id(project_id, event_id=eid): eid for eid in error_ids}\nevents = nodestore.backend.get_multi(list(node_ids))\nreturn [ErrorEvent(category=\"error\", id=node_ids[nid], title=data.get(\"title\",\"\"), timestamp=data.get(\"timestamp\",0.0), message=data.get(\"message\",\"\")) for nid, data in events.items() if data is not None]"
+  },
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 155,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Error timestamps (seconds) are compared against replay event timestamps (milliseconds), so errors are not interleaved chronologically.",
+    "detail": "Nodestore error events store `timestamp` as epoch seconds (float, ~1.7e9). Replay recording events, as consumed by `as_log_message` in event_parser.py, carry epoch-millisecond timestamps (~1.7e12). In `gen_request_data`, the check `error_events[error_idx][\"timestamp\"] < event.get(\"timestamp\", 0)` is therefore true for essentially every error at the first replay event. All errors are emitted at the start of the logs instead of at the point they occurred. Seer receives a wrongly ordered timeline. The error log message also prints a seconds timestamp while the breadcrumb messages print milliseconds. The tests use small or equal-unit timestamps, so they hide this.",
+    "line_end": 155,
+    "suggested_fix": "Convert error timestamps to milliseconds when building ErrorEvent (e.g. `timestamp=data.get(\"timestamp\", 0.0) * 1000`), or compare using `event.get(\"timestamp\", 0) / 1000`."
+  }
+]

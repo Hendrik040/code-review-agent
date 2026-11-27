@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 625
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 13
+# cost (USD, harness-reported): 0.009829
+# cost (USD, public Opus 4 rate): 1.474387
+# usage: {'input_tokens': 32, 'cache_creation_input_tokens': 15354, 'cache_read_input_tokens': 517680, 'output_tokens': 5460, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 15354}, 'inference_geo': '', 'iterations': [{'input_tokens': 4, 'output_tokens': 578, 'cache_read_input_tokens': 46536, 'cache_creation_input_tokens': 1315, 'cache_creation': {'ephemeral_5m_input_tokens': 1315, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 92,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "count() is rewritten to sum(sample_weight) with the null/missing-weight guards removed, so events lacking sample_weight silently drop out of the count.",
+    "detail": "transform_query_columns_for_error_upsampling() rewrites count() to upsampled_count() as count, and discover.py:1042-1048 implements that as toInt64(sum(sample_weight)). The commit removed null checks based on a claim that the schema guarantees sample_weight for every event in allowlisted projects. If any event in those projects lacks sample_weight (older SDKs, ingestion paths that do not set it, or data written before the allowlist), ClickHouse sum() skips NULLs and the count is undercounted, and it returns 0 when all rows are NULL. Nothing in the code validates this, so the error is silent.",
+    "line_end": 95,
+    "suggested_fix": "Either keep a guard, e.g. sum(if(isNull(sample_weight), 1, sample_weight)) or coalesce(sample_weight, 1) in the upsampled_count aggregate, or document and verify the schema guarantee before relying on it."
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 67,
+    "category": "other",
+    "severity": "low",
+    "summary": "invalidate_upsampling_cache() is defined but never called, so the advertised cache invalidation on allowlist changes does not happen.",
+    "detail": "The docstring says this must be called when the allowlist changes to keep the cache consistent. A grep of src/ finds no caller. Removing a project from issues.client_error_sampling.project_allowlist therefore leaves the cached eligibility True for up to 60 seconds, and queries keep applying sum(sample_weight) to a project that is no longer allowlisted. The 60-second TTL is documented as acceptable, so the impact is narrow, but the stated consistency guarantee is not provided.",
+    "line_end": 74,
+    "suggested_fix": "Call invalidate_upsampling_cache(organization_id, project_ids) from the code path that writes the allowlist option, or remove the function and the claim that it provides consistency."
+  }
+]

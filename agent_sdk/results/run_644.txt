@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 644
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 8
+# cost (USD, harness-reported): 0.090624
+# cost (USD, public Opus 4 rate): 0.909112
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 12555, 'cache_read_input_tokens': 305907, 'output_tokens': 2861, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 12555}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 516, 'cache_read_input_tokens': 44185, 'cache_creation_input_tokens': 867, 'cache_creation': {'ephemeral_5m_input_tokens': 867, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 335,
+    "category": "resource",
+    "severity": "high",
+    "summary": "The strategy's close()/terminate() shuts down the shared FixedQueuePool, so the pool is dead for any strategy Arroyo creates after a rebalance.",
+    "detail": "The FixedQueuePool is created once in ResultsStrategyFactory.__init__ and passed to every strategy from create_thread_queue_parallel_worker. Arroyo calls close()/terminate() on the strategy at every partition rebalance, then calls create_with_partitions again, which reuses the same self.queue_pool. SimpleQueueProcessingStrategy.close() and terminate() call queue_pool.shutdown(). That sets worker.shutdown and calls q.shutdown() on every queue, which stops the worker threads. The next strategy gets a pool with no live workers and shut-down queues. queue.put() then raises queue.ShutDown. SimpleQueueProcessingStrategy.submit() catches that in its broad `except Exception`, logs it, and marks the offset as added and completed. The commit loop then commits those offsets, so every message after the first rebalance is silently dropped and its offset committed. This is data loss.",
+    "line_end": 342,
+    "suggested_fix": "Do not shut down the shared pool from the strategy's close()/terminate(). Stop only the commit thread there and leave pool shutdown to ResultsStrategyFactory.shutdown(). Alternatively, create the FixedQueuePool inside create_thread_queue_parallel_worker so each strategy owns its pool."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 300,
+    "category": "error",
+    "severity": "medium",
+    "summary": "When decode or submit fails, the offset is marked complete and later committed, so the message is lost with no retry.",
+    "detail": "The `except Exception` block in SimpleQueueProcessingStrategy.submit() calls add_offset and complete_offset for the failed message. The commit loop then treats the offset as safely processed and commits it. Any transient failure drops the message permanently. Examples are a decode error, a grouping_fn error, or queue.put failing. The class docstring says it only commits after successful processing, which this path contradicts.",
+    "line_end": 322,
+    "suggested_fix": ""
+  }
+]

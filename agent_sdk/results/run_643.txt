@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 643
+# repo: LocalRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 22
+# cost (USD, harness-reported): 0.634036
+# cost (USD, public Opus 4 rate): 3.296572
+# usage: {'input_tokens': 44, 'cache_creation_input_tokens': 45958, 'cache_read_input_tokens': 1225250, 'output_tokens': 7951, 'output_tokens_details': {'thinking_tokens': 2227}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 45958}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 773, 'cache_read_input_tokens': 74617, 'cache_creation_input_tokens': 1539, 'cache_creation': {'ephemeral_5m_input_tokens': 1539, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 117,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Error IDs are matched to fetched event data with `zip(error_ids, events.values())`, but `nodestore.get_multi` does not return results in input order, so errors can get the wrong IDs.",
+    "detail": "`fetch_error_details` pairs `error_ids` with `nodestore.backend.get_multi(node_ids).values()` by position. `get_multi` (src/sentry/nodestore/base.py:183-205) removes duplicate IDs. When only some IDs are cached, it builds the result dict from the uncached IDs first and then appends the cached ones with `items.update(cache_items)`. Some backends also leave missing keys out entirely. So when some errors are cached and others are not, or an event is missing or duplicated, the result is no longer in the same order as `error_ids`, or no longer the same length. `zip` then attaches a title, message or timestamp to the wrong error ID, or drops errors. The result is wrong error context in the replay summary sent to Seer. Fix: look results up by key, e.g. build `node_id -> event_id`, call `get_multi`, then iterate `for node_id, event_id in ...: data = events.get(node_id)`.",
+    "line_end": 119,
+    "suggested_fix": "-        node_ids = [Event.generate_node_id(project_id, event_id=id) for id in error_ids]\n-        events = nodestore.backend.get_multi(node_ids)\n+        node_id_to_error_id = {\n+            Event.generate_node_id(project_id, event_id=id): id for id in error_ids\n+        }\n+        events = nodestore.backend.get_multi(list(node_id_to_error_id.keys()))\n@@\n-            for event_id, data in zip(error_ids, events.values())\n-            if data is not None\n+            for node_id, event_id in node_id_to_error_id.items()\n+            if (data := events.get(node_id)) is not None"
+  },
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 152,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Error timestamps are in seconds but replay event timestamps are in milliseconds, so every error is placed before the first breadcrumb instead of in time order.",
+    "detail": "`fetch_error_details` takes `timestamp` from the stored event payload, which is Unix seconds as a float (about 1.7e9). `gen_request_data` compares it with the top-level rrweb event `timestamp` (`event.get(\"timestamp\", 0)`), which is in milliseconds (about 1.7e12). The same field is what `as_log_message` prints. Because `error.timestamp < event.timestamp` is always true, every error is emitted before the first recording event in the first segment. The feature's goal is to show errors in time order, and this defeats it. The LLM also gets error timestamps in a different unit from the breadcrumb timestamps. This also interacts with pagination: each page calls `analyze_recording_segments` with the full error list, so every error is repeated in every page's prompt, all placed at the start. Fix: convert error timestamps to milliseconds (`timestamp * 1000`) before sorting and comparing, and only include errors that fall within the current page's segment range.",
+    "line_end": 154,
+    "suggested_fix": "-                timestamp=data.get(\"timestamp\", 0.0),\n+                timestamp=data.get(\"timestamp\", 0.0) * 1000,  # seconds -> ms to match rrweb events"
+  }
+]

@@ -1,0 +1,52 @@
+# Agent SDK reviewer run 554
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 9
+# cost (USD, harness-reported): 0.019343
+# cost (USD, public Opus 4 rate): 2.901406
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 41443, 'cache_read_input_tokens': 934273, 'output_tokens': 9636, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 41443}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 646, 'cache_read_input_tokens': 155339, 'cache_creation_input_tokens': 3294, 'cache_creation': {'ephemeral_5m_input_tokens': 3294, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 882,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "OptimizedCursorPaginator's \"advanced\" negative-offset branch slices the Django queryset with a negative start, which Django rejects, so the path always errors.",
+    "detail": "In OptimizedCursorPaginator.get_result, when enable_advanced_features is True and cursor.offset < 0, the code runs `results = list(queryset[start_offset:stop])` with start_offset = cursor.offset (negative). Django QuerySet.__getitem__ asserts that slice starts are non-negative (\"Negative indexing is not supported\"), so this raises AssertionError and the request returns a 500. The endpoint in organization_auditlogs.py enables this path for superusers/global-access members who pass `optimized_pagination=true`, and the cursor offset comes straight from the request's cursor query parameter. The feature the branch advertises (\"access beyond normal bounds\") therefore never works and turns a malformed cursor into a server error. Triggering scenario: admin calls the audit log endpoint with optimized_pagination=true and a cursor encoding a negative offset.",
+    "line_end": 882,
+    "suggested_fix": "Do not slice with a negative start. Either reject negative offsets (raise a ValidationError / clamp to 0) in this branch, or implement the reverse access explicitly, e.g. by reversing ordering and computing a non-negative start from count, instead of passing cursor.offset to the queryset slice."
+  },
+  {
+    "file": "src/sentry/spans/buffer.py",
+    "line": 197,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "Redis key type changes from SET to ZSET under the same key names, so keys written by the old code will raise WRONGTYPE during a rolling deploy.",
+    "detail": "Span subsegment keys `span-buf:s:{...}:<id>` were previously Redis sets written with SADD/SUNIONSTORE/SCARD/SSCAN. This diff switches them to sorted sets (ZADD in buffer.py:197, ZSCAN at ~434, and ZCARD/ZUNIONSTORE in add-buffer.lua:43-65) without changing the key names. Any set created by the previous consumer and still alive (buffer timeouts are short but non-zero) makes the new ZADD/ZCARD/ZUNIONSTORE/ZSCAN calls fail with WRONGTYPE. During a rolling deploy, old and new consumers share the same Redis, so the Lua ingest script and flusher can error for in-flight segments, and the batch can fail repeatedly. Triggering scenario: deploy the new consumer while segments buffered by the old consumer still exist.",
+    "line_end": 199,
+    "suggested_fix": "Use new key names (e.g. a version suffix) for the zset layout so old and new keys never collide, or drain/expire old keys before enabling the new code path."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 53,
+    "category": "logic",
+    "severity": "low",
+    "summary": "ZUNIONSTORE uses the default SUM aggregate, so members present in both sets get their end-timestamp scores added together, corrupting the trim order.",
+    "detail": "The script merges sets with `zunionstore(set_key, 2, set_key, parent_key)` (and the same for span_key at line ~47). Redis's default AGGREGATE is SUM, so a payload that exists in both source and destination (for example a re-delivered span) gets score = a + b, roughly doubling its end_timestamp_precise. The later `zpopmin(set_key, span_count - 1000)` trim evicts by score, so the duplicated span looks newer than it is and survives trimming while genuinely newer spans can be evicted. Previously the set union was idempotent. This only matters once a segment exceeds 1000 spans, but then it selects the wrong spans to drop.",
+    "line_end": 53,
+    "suggested_fix": "Add `AGGREGATE MIN` (or MAX) to both ZUNIONSTORE calls, e.g. `redis.call(\"zunionstore\", set_key, 2, set_key, span_key, \"AGGREGATE\", \"MAX\")`."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 182,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Clamping a negative offset to 0 in BasePaginator silently returns the first page instead of rejecting the bad cursor.",
+    "detail": "Before this diff, a negative offset on the normal (non-prev) path produced a slice error. Now `start_offset = max(0, offset)` silently serves rows from position 0 while the rest of the cursor logic (the `len(results) == offset + limit + extra` check, and the cursor built from the original offset) still uses the negative value. A client that sends a malformed cursor receives a wrong page with no error, and the next/prev cursors it gets back are inconsistent with the data it was shown. The is_prev path still passes the negative offset straight into the slice, so the two branches now behave differently.",
+    "line_end": 184,
+    "suggested_fix": "Reject negative cursor offsets explicitly (for example raise BadRequest/ValueError when cursor.offset < 0) instead of silently clamping, and use the same handling for both branches."
+  }
+]

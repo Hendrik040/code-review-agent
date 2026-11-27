@@ -1,0 +1,79 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_impactsel_martian_opus55_high_aff6
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 791001021d9f09834f1912b21bbaefd253f64e52
+# prepared_path: bench_impact/prepared_martian_affected.json
+# prepared_sha256_16: b755905bfae7484e
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-11-27T02:14:08+00:00
+# finished: 2026-11-27T02:15:26+00:00
+# duration_s: 77.7
+# cost_usd: 0.2289
+# num_turns: 6
+# num_findings: 4
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 645
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 6
+# cost (USD, harness-reported): 0.228916
+# cost (USD, public Opus 4 rate): 1.026725
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 17298, 'cache_read_input_tokens': 224388, 'output_tokens': 4875, 'output_tokens_details': {'thinking_tokens': 1532}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 17298}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 985, 'cache_read_input_tokens': 44154, 'cache_creation_input_tokens': 2888, 'cache_creation': {'ephemeral_5m_input_tokens': 2888, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 335,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Strategy close()/terminate() shuts down the factory-shared FixedQueuePool, so after the first rebalance every subsequent message is dropped and its offset committed.",
+    "detail": "`ResultsStrategyFactory.__init__` creates a single `FixedQueuePool` (result_consumer.py) and passes the same instance to every `SimpleQueueProcessingStrategy` built in `create_with_partitions`. Arroyo closes/joins the current strategy on every partition revocation and then builds a new one on assignment. `SimpleQueueProcessingStrategy.close()` (and `terminate()`) call `self.queue_pool.shutdown()`, which sets `worker.shutdown=True`, calls `q.shutdown()` on every queue and joins the workers. The next strategy reuses this dead pool: `work_queue.put()` on a shut-down queue raises `queue.ShutDown`, which is caught by the broad `except Exception` in `submit()`, which then marks the offset as added+completed. The commit loop then commits those offsets. Net effect: after the first rebalance, the consumer silently skips all uptime results while advancing committed offsets (data loss). Even without the exception path, no worker threads remain alive to process anything.",
+    "line_end": 341,
+    "suggested_fix": "Do not shut down the shared pool from the per-assignment strategy. In close()/join(), stop the commit thread, wait for in-flight items (e.g. queue_pool.wait_until_empty), do a final commit, and leave pool lifecycle to ResultsStrategyFactory.shutdown(); alternatively create a fresh FixedQueuePool per strategy."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 271,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "Arroyo's `commit` callback is invoked from a background thread, concurrently with the consumer's poll loop, and may commit revoked partitions.",
+    "detail": "`_commit_loop` runs in its own daemon thread and calls `commit_function` -> arroyo `Commit`, which stages/commits offsets on the underlying Kafka consumer owned by the StreamProcessor main thread. Arroyo strategies are expected to call `commit` only from within `submit`/`poll`/`join` on the main thread; calling it from another thread races with poll()/rebalance handling. In addition, the OffsetTracker is never cleared on revocation, so the background thread can try to commit offsets for partitions that are no longer assigned, which arroyo rejects/raises (swallowed by the loop's except, but leaves the tracker inconsistent).",
+    "line_end": 288,
+    "suggested_fix": "Compute committable offsets in a thread-safe way but invoke `commit` from `poll()` (main thread), and reset the tracker for revoked partitions."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 343,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "join()/close() never drain the queues or perform a final commit, so work done since the last 1s commit tick is uncommitted and items still queued are abandoned.",
+    "detail": "`join()` just calls `close()`, which sets the shutdown event, joins the commit thread (it exits without a final commit after wait returns), then shuts down workers, which exit as soon as `self.shutdown` is True, leaving queued items unprocessed. Arroyo calls `join()` on revocation expecting in-flight work to finish and offsets to be committed. Here, every rebalance/shutdown causes re-delivery of up to all queued and recently processed messages to the next owner, so the same uptime results get processed twice (duplicate checks/incidents).",
+    "line_end": 345,
+    "suggested_fix": "In join(), wait for queues to drain (respecting timeout), then run one final get_committable_offsets()/commit before stopping."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 185,
+    "category": "resource",
+    "severity": "medium",
+    "summary": "Work queues are unbounded and submit() never raises MessageRejected, so there is no backpressure and memory grows without limit.",
+    "detail": "`queue.Queue()` is created without maxsize and `SimpleQueueProcessingStrategy.submit` always accepts. The docstring claims 'Natural backpressure when queues fill up', but if processing is slower than consumption (e.g. slow DB/Redis in the result processor or one hot group key), the consumer keeps polling Kafka and buffers an unbounded number of WorkItems (each holding the full message) in memory, eventually OOMing the consumer.",
+    "line_end": null,
+    "suggested_fix": "Use bounded queues (queue.Queue(maxsize=N)) and raise arroyo's MessageRejected when the target queue is full (put_nowait + queue.Full)."
+  }
+]

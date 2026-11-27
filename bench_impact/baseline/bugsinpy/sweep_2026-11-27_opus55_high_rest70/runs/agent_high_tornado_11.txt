@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: tornado#11
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-11-27T01:37:15+00:00
+# finished: 2026-11-27T01:38:03+00:00
+# duration_s: 47.5
+# cost_usd: 0.2632
+# num_turns: 9
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 718
+# repo: LocalRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 9
+# cost (USD, harness-reported): 0.263240
+# cost (USD, public Opus 4 rate): 1.267044
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 21078, 'cache_read_input_tokens': 373191, 'output_tokens': 4157, 'output_tokens_details': {'thinking_tokens': 1678}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 21078}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 625, 'cache_read_input_tokens': 49986, 'cache_creation_input_tokens': 1290, 'cache_creation': {'ephemeral_5m_input_tokens': 1290, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 91,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Client-side 1xx responses get handled recursively, but the outer call then keeps going: it tries to read a body for the 1xx response and calls delegate.finish() a second time.",
+    "detail": "In `_process_message`, when `is_client` is true and the code is 1xx, the method yields a nested `_process_message`. That nested call reads the real response, calls `delegate.finish()` and waits for `_finish_future`. The outer call does not return afterwards. It sets `skip_body` to False and calls `_read_body` with the 1xx headers. Those headers have no Content-Length and no chunked encoding, so the client falls back to `_read_body_until_close`. On a closed stream that returns the leftover buffer to `delegate.data_received`. The outer call then calls `delegate.finish()` again. `_HTTPConnection.finish` runs twice: it builds the response again, closes the stream again and appends stray data to `chunks`. On a 3xx final response with follow_redirects, the second pass calls `self.client.fetch(new_request, None)`, so the redirected request is sent twice. The old code (`_handle_1xx`) only re-read the headers and continued. `headers_received` is also now called for the interim 1xx response, so `header_callback` receives the 100-Continue headers as well.",
+    "line_end": 101,
+    "suggested_fix": "if code >= 100 and code < 200:\n-    yield self._process_message(delegate, is_client, method=method)\n+    ret = yield self._process_message(delegate, is_client, method=method)\n+    raise gen.Return(ret)\n(ideally skip calling delegate.headers_received for interim 1xx responses as well)"
+  },
+  {
+    "file": "tornado/http1connection.py",
+    "line": 224,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "A client-side 204 (or 1xx) response with no Content-Length is now read until the connection closes; before, the client finished right away with an empty body.",
+    "detail": "Before this change, `_on_headers` called `_on_body(b\"\")` straight away for 1xx/204 responses. Now `headers_received` only checks Content-Length. Back in `_process_message`, `skip_body` is set only for HEAD and 304. A 204 without Content-Length and without chunked encoding therefore falls into `_read_body_until_close`, so the client waits for the server to close the socket. A user can override the default `Connection: close` header (for example with keep-alive), or a server may keep the connection open after a 204. In those cases the request hangs until the request timeout and then fails with 599, where before it completed immediately.",
+    "line_end": 226,
+    "suggested_fix": "In _process_message (client side), also set skip_body = True when code == 204 or 100 <= code < 200."
+  }
+]

@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 493
+# repo: LocalRepo
+# refs: 37526c1ddbe0952dffe16ac0fe158a00aa7b397f^..37526c1ddbe0952dffe16ac0fe158a00aa7b397f
+# turns: 3
+# cost (USD, harness-reported): 0.007528
+# cost (USD, public Opus 4 rate): 1.129230
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 17290, 'cache_read_input_tokens': 373565, 'output_tokens': 3261, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 17290}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 452, 'cache_read_input_tokens': 131789, 'cache_creation_input_tokens': 2691, 'cache_creation': {'ephemeral_5m_input_tokens': 2691, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/arrays/categorical.py",
+    "line": 2146,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Categorical.min/max with skipna=True raises ValueError when all values are NaN, instead of returning NaN.",
+    "detail": "In the new min() (categorical.py:2143-2151), when `good = self._codes != -1` is all False (every element is NaN), `not good.all()` is True and skipna defaults to True, so it executes `self._codes[good].min()` on a zero-size array. NumPy raises 'zero-size array to reduction operation minimum which has no identity'. The previous implementation used `self._codes.min()`, which returned -1 and then produced np.nan. Trigger: `pd.Categorical([np.nan, np.nan], ordered=True).min()` or `pd.Series(...).min()` on an all-NaN ordered categorical now raises instead of returning NaN. The same bug exists in max() at categorical.py:2173. The new tests cover only mixed NaN/non-NaN inputs, so they miss this case.",
+    "line_end": 2146,
+    "suggested_fix": "-        good = self._codes != -1\n-        if not good.all():\n-            if skipna:\n-                pointer = self._codes[good].min()\n-            else:\n-                return np.nan\n-        else:\n-            pointer = self._codes.min()\n+        good = self._codes != -1\n+        if not good.any():\n+            return np.nan\n+        if not good.all() and skipna:\n+            pointer = self._codes[good].min()\n+        elif not good.all():\n+            return np.nan\n+        else:\n+            pointer = self._codes.min()\n\n(apply the same change to max())"
+  },
+  {
+    "file": "pandas/core/series.py",
+    "line": 3823,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Series.min/max on Categorical silently drops a user-supplied numeric_only instead of warning or forwarding it.",
+    "detail": "Before this change, Series._reduce forwarded numeric_only to Categorical._reduce, so Series.min(numeric_only=True) on an ordered categorical behaved as skipna. Now the call at series.py:3823 passes only skipna, and numeric_only is absorbed by Series._reduce's own parameter and discarded. Callers who pass numeric_only=True to a categorical Series get no FutureWarning, unlike direct Categorical.min(numeric_only=...) calls, and their NaN handling is silently changed. The deprecation is only applied on the direct Categorical path.",
+    "line_end": 3823,
+    "suggested_fix": "In Series._reduce, when delegate is a Categorical and numeric_only is not None, emit the same FutureWarning and map numeric_only to skipna (or forward numeric_only to the Categorical method so deprecate_kwarg handles it)."
+  }
+]

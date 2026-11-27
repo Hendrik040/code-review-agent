@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_impactsel_opus55_high_aff16
+# bug: luigi#5
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 791001021d9f09834f1912b21bbaefd253f64e52
+# prepared_path: bench_impact/prepared_affected.json
+# prepared_sha256_16: 7857226df30f26ed
+# upstream_repo: spotify/luigi
+# introducing_commit: be88a318dce06254a66303a1c398ec28f89c60d7
+# fixed_commit: 1fbec18ceb7c5de352e6d1df12960c61f09e67c2
+# base_ref: be88a318dce06254a66303a1c398ec28f89c60d7^
+# head_ref: be88a318dce06254a66303a1c398ec28f89c60d7
+# started: 2026-11-27T01:58:45+00:00
+# finished: 2026-11-27T01:59:20+00:00
+# duration_s: 35.3
+# cost_usd: 0.3506
+# num_turns: 5
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 569
+# repo: LocalRepo
+# refs: be88a318dce06254a66303a1c398ec28f89c60d7^..be88a318dce06254a66303a1c398ec28f89c60d7
+# turns: 5
+# cost (USD, harness-reported): 0.350574
+# cost (USD, public Opus 4 rate): 1.445149
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 49867, 'cache_read_input_tokens': 173995, 'output_tokens': 3320, 'output_tokens_details': {'thinking_tokens': 1193}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 49867}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 597, 'cache_read_input_tokens': 48489, 'cache_creation_input_tokens': 1378, 'cache_creation': {'ephemeral_5m_input_tokens': 1378, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/util.py",
+    "line": 68,
+    "category": "logic",
+    "severity": "high",
+    "summary": "Decorated tasks are registered twice under the same task_family, so Register.get_reg() marks them AMBIGUOUS_CLASS and they can no longer be run by name from the command line.",
+    "detail": "Register.__new__ (luigi/task.py:67-68) adds every Task subclass to Register._reg if `run` is not NotImplemented, and Task.run defaults to `pass`. When `@inherits` is applied, two classes get registered: the user's original class (e.g. `MyTask`) and the new `Wrapped` subclass. `_cleanup_wrapper` then renames `Wrapped.__name__` to `MyTask`. Both now have the same task_family, and Register.get_reg() (luigi/task.py:118-124) sees two different classes under that name and replaces the entry with AMBIGUOUS_CLASS. `@requires` stacks a third class with the same name and `@copies` a fourth. As a result, luigi/interface.py:247-250 and 328-333 reject the task as ambiguous, so `luigi.run()` / `python script.py MyTask --date ...` fails for any task using `@inherits`, `@requires`, `@copies` or `@delegates`. The unit tests don't catch this because they call luigi.build() directly with instances.",
+    "line_end": 74,
+    "suggested_fix": "Don't subclass the decorated class. Attach the methods to the existing class instead, e.g. in inherits.__call__: `def clone_parent(_self, **args): return _self.clone(cls=self.task_to_inherit, **args)` then `task_that_inherits.clone_parent = clone_parent` and `return task_that_inherits`. Do the same for requires/copies/delegates. Alternatively, remove the intermediate/original classes from Register._reg."
+  },
+  {
+    "file": "test/decorator_test.py",
+    "line": 276,
+    "category": "logic",
+    "severity": "low",
+    "summary": "SubtaskDelegator uses F (which has no `f` method) instead of the newly defined Subtask, and the test asserts nothing, so the @delegates test passes while the task actually fails.",
+    "detail": "`subtasks()` returns `[F(1), F(2)]`, where F is the earlier decorator_test task with only `param1`. It has no `f` method, so `t.f(42)` raises AttributeError inside run(). luigi.build() catches worker failures and returns normally, and test_multiple_workers checks neither the return value nor any output. The test passes regardless, and the new `Subtask` class is never used, so the @delegates code path has no real test coverage.",
+    "line_end": 288,
+    "suggested_fix": "Return `[Subtask(1), Subtask(2)]` and assert on the result, e.g. `self.assertTrue(luigi.build([...], local_scheduler=True))`."
+  }
+]

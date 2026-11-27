@@ -1,0 +1,49 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_impactsel_martian_haiku55_medium_aff6
+# pr: getsentry_sentry#95633
+# pr_url: https://github.com/getsentry/sentry/pull/95633
+# original_upstream_url: 
+# pr_title: feat(uptime): Add ability to use queues to manage parallelism
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 791001021d9f09834f1912b21bbaefd253f64e52
+# prepared_path: bench_impact/prepared_martian_affected.json
+# prepared_sha256_16: b755905bfae7484e
+# repo_slug: getsentry/sentry
+# base_sha: fd358e8a388939959369f08f616e29552cdaf96e
+# head_sha: 9966ec5a13e331659c3ea00981f9b11b0faf821f
+# n_goldens: 3
+# started: 2026-11-27T02:11:40+00:00
+# finished: 2026-11-27T02:12:52+00:00
+# duration_s: 72.4
+# cost_usd: 0.0106
+# num_turns: 10
+# num_findings: 1
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 641
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 10
+# cost (USD, harness-reported): 0.010648
+# cost (USD, public Opus 4 rate): 1.597243
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 30803, 'cache_read_input_tokens': 322331, 'output_tokens': 7146, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 30803}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 443, 'cache_read_input_tokens': 62448, 'cache_creation_input_tokens': 852, 'cache_creation': {'ephemeral_5m_input_tokens': 852, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 335,
+    "category": "logic",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close() permanently shuts down the FixedQueuePool that the factory reuses for every strategy it creates, so after the first rebalance/revoke all later messages are silently dropped with their offsets committed.",
+    "detail": "close() calls self.queue_pool.shutdown(), which sets shutdown on every queue and on every worker. ResultsStrategyFactory.create_thread_queue_parallel_worker (result_consumer.py:247-257) passes the same self.queue_pool into each new strategy, and the factory only clears it in factory.shutdown(). Arroyo's StreamProcessor closes the current strategy on partition revoke and calls create_with_partitions again on assignment, so after any rebalance the new strategy's submit() calls queue.put() on a shut-down queue, which raises queue.ShutDown. submit() catches it in its broad except (queue_consumer.py:318-324), calls add_offset/complete_offset, and returns. The message is never processed, but its offset becomes committable. Workers have also exited, so nothing drains the queues. Result: after any consumer-group rebalance, results are silently lost. The integration tests do not catch this because they never call strategy.close() before factory.shutdown(). Note: arroyo's rebalance close path is not in the sandbox, so this relies on the standard arroyo revoke behavior.",
+    "line_end": 338,
+    "suggested_fix": "Do not shut down the shared pool in strategy close()/terminate()/join(). Only stop the commit thread there, and let ResultsStrategyFactory.shutdown() own the pool lifecycle. Alternatively, create a new FixedQueuePool in create_thread_queue_parallel_worker for each strategy and shut down that pool in the strategy's close().\n-    def close(self) -> None:\n-        self.shutdown_event.set()\n-        self.commit_thread.join(timeout=5.0)\n-        self.queue_pool.shutdown()\n+    def close(self) -> None:\n+        self.shutdown_event.set()\n+        self.commit_thread.join(timeout=5.0)\n+        # pool lifecycle is owned by the factory"
+  }
+]

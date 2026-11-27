@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 636
+# repo: LocalRepo
+# refs: 49a275847631e231672d01b5dcd66558c069d25b..ea188e2d736fd6ed27c1dba8aae63b7268e2a7a9
+# turns: 9
+# cost (USD, harness-reported): 0.113869
+# cost (USD, public Opus 4 rate): 1.125008
+# usage: {'input_tokens': 20, 'cache_creation_input_tokens': 17583, 'cache_read_input_tokens': 361318, 'output_tokens': 3374, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 17583}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 539, 'cache_read_input_tokens': 49829, 'cache_creation_input_tokens': 944, 'cache_creation': {'ephemeral_5m_input_tokens': 944, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 120,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Error timestamps (seconds) are compared against replay event timestamps (milliseconds), so errors are not interleaved chronologically.",
+    "detail": "fetch_error_details copies the nodestore event `timestamp` unchanged. That value is epoch seconds (about 1.7e9). Replay/rrweb event timestamps are epoch milliseconds (about 1.7e12). In gen_request_data, `error_events[error_idx][\"timestamp\"] < event.get(\"timestamp\", 0)` is therefore always true for the first replay event. Every error is emitted before the first breadcrumb instead of at its place in the timeline. The log text also prints the two timestamps in different units. The summary sent to Seer is wrong whenever error context is enabled, which is the default.",
+    "line_end": null,
+    "suggested_fix": "timestamp=data.get(\"timestamp\", 0.0) * 1000,"
+  },
+  {
+    "file": "src/sentry/replays/endpoints/project_replay_summarize_breadcrumbs.py",
+    "line": 118,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Error IDs are zipped with `events.values()`, which can pair IDs with the wrong event data.",
+    "detail": "`nodestore.backend.get_multi` returns a dict keyed by node_id. It deduplicates the ids, and in the partially-cached path the order of the returned dict does not have to match the input order (cache hits come first). Zipping `error_ids` with `events.values()` assumes both are in the same order and have the same length. A duplicate id or a different ordering therefore attaches the wrong event ID to the title and message. Any shift in alignment drops or mislabels errors.",
+    "line_end": null,
+    "suggested_fix": "Build the id-to-node mapping explicitly: `node_to_id = {Event.generate_node_id(project_id, event_id=i): i for i in error_ids}`. Then iterate `events.items()` and use `node_to_id[node_id]` for the id."
+  }
+]

@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: scrapy#15
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: scrapy/scrapy
+# introducing_commit: 68dedf54cb27847f6d035099b61aa06226549fad
+# fixed_commit: 1aec5200bc81493623f2a4e077b4e80e104e47d5
+# base_ref: 68dedf54cb27847f6d035099b61aa06226549fad^
+# head_ref: 68dedf54cb27847f6d035099b61aa06226549fad
+# started: 2026-11-27T01:28:12+00:00
+# finished: 2026-11-27T01:29:01+00:00
+# duration_s: 49.2
+# cost_usd: 0.2572
+# num_turns: 5
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 696
+# repo: LocalRepo
+# refs: 68dedf54cb27847f6d035099b61aa06226549fad^..68dedf54cb27847f6d035099b61aa06226549fad
+# turns: 5
+# cost (USD, harness-reported): 0.257173
+# cost (USD, public Opus 4 rate): 1.125151
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 23361, 'cache_read_input_tokens': 214338, 'output_tokens': 4873, 'output_tokens_details': {'thinking_tokens': 2238}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 23361}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 653, 'cache_read_input_tokens': 51606, 'cache_creation_input_tokens': 1499, 'cache_creation': {'ephemeral_5m_input_tokens': 1499, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "scrapy/utils/url.py",
+    "line": 46,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Encoding the whole netloc with the 'idna' codec makes canonicalize_url raise UnicodeError for ASCII hosts that have an empty label or a label of 64+ characters, including a long userinfo.",
+    "detail": "`_safe_ParseResult` calls `parts.netloc.encode('idna')` on the full netloc, including userinfo and port. Python's idna codec checks every dot-separated label, even when the text is pure ASCII. Any empty label or label of 64 or more characters raises `UnicodeError('label empty or too long')`. I confirmed this in the sandbox with `'www..example.com'`, `'.example.com'`, `'a'*70+'.com'` and `'u'*70+':p@example.com'`. The `except UnicodeError` in canonicalize_url either re-raises (encoding == 'utf8') or retries with exactly the same netloc encoding, which raises again. The old code never IDNA-encoded the netloc, so these URLs used to canonicalize fine. canonicalize_url runs on hot paths (request fingerprinting / dupefilter, link extractors), so one malformed or unusual href scraped from a page now raises instead of being handled.",
+    "line_end": null,
+    "suggested_fix": "Only IDNA-encode the hostname, and fall back to the raw netloc on failure:\n-        to_native_str(parts.netloc.encode('idna')),\n+        to_native_str(_idna_netloc(parts.netloc)),\n...\n+def _idna_netloc(netloc):\n+    try:\n+        return netloc.encode('idna')\n+    except UnicodeError:\n+        return netloc"
+  },
+  {
+    "file": "scrapy/utils/url.py",
+    "line": 159,
+    "category": "contract-mismatch",
+    "severity": "low",
+    "summary": "parse_url now always decodes bytes URLs as UTF-8 (to_unicode), so on Python 2 canonicalize_url raises UnicodeDecodeError for non-UTF-8 byte-string URLs that it used to accept, and the fallback retry cannot recover.",
+    "detail": "Previously `parse_url` used `to_native_str`, which on Py2 returned byte strings unchanged, so a native-str URL with raw non-UTF-8 bytes (e.g. latin1 `b'http://example.com/caf\\xe9'`) was canonicalized. Now `to_unicode(url, None)` decodes with UTF-8 and raises UnicodeDecodeError. canonicalize_url catches UnicodeError, but the retry calls `parse_url(url)` again with the same default UTF-8 decoding, and canonicalize_url never passes its `encoding` argument to parse_url, so it fails again. parse_url's return type on Py2 also changes from str to unicode for its other callers (url_is_from_any_domain, url_has_any_extension).",
+    "line_end": null,
+    "suggested_fix": "Pass the encoding through, and on the fallback decode bytes leniently, e.g. `parse_url(url, encoding)`, or in parse_url use `to_unicode(url, encoding, errors='surrogateescape' if six.PY3 else 'replace')`, or keep native bytes on Py2."
+  }
+]

@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 628
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 14
+# cost (USD, harness-reported): 0.352699
+# cost (USD, public Opus 4 rate): 1.765483
+# usage: {'input_tokens': 28, 'cache_creation_input_tokens': 23306, 'cache_read_input_tokens': 590484, 'output_tokens': 5898, 'output_tokens_details': {'thinking_tokens': 1906}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 23306}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 748, 'cache_read_input_tokens': 51447, 'cache_creation_input_tokens': 1603, 'cache_creation': {'ephemeral_5m_input_tokens': 1603, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/search/events/datasets/discover.py",
+    "line": 1046,
+    "category": "logic",
+    "severity": "high",
+    "summary": "upsampled_count() now sums raw sample_weight without ifNull(\u2026, 1), so events with no sample_weight are dropped from counts.",
+    "detail": "The aggregate changed from toInt64(sum(ifNull(sample_weight, 1))) to toInt64(sum(sample_weight)). sample_weight is nullable. Events ingested before a project was allowlisted, or events the client did not sample, have NULL sample_weight. ClickHouse's sum skips NULLs, so those events now count as 0 instead of 1. If every row in a bucket is NULL, the result is NULL or 0 instead of the real event count. Every error count()/events-stats chart for allowlisted projects is undercounted for any time range that includes unweighted events. The comment says the schema guarantees sample_weight exists, but nothing enforces that.",
+    "line_end": 1050,
+    "suggested_fix": "-                        [Function(\"sum\", [Column(\"sample_weight\")])],\n+                        [Function(\"sum\", [Function(\"ifNull\", [Column(\"sample_weight\"), 1])])],"
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 62,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Eligibility changed from ANY allowlisted project to ALL, so mixed-project queries no longer upsample their allowlisted projects.",
+    "detail": "Before, are_any_projects_error_upsampled returned True if any project in the query was allowlisted. upsampled_count's ifNull(...,1) handled the non-allowlisted projects correctly. The new _are_all_projects_error_upsampled needs every project to be allowlisted. A query across an allowlisted project and a non-allowlisted one (e.g. the 'All projects' view) now falls back to plain count(). That silently reports the sampled project's raw, un-upsampled counts. The commit message says nothing about this behavior change.",
+    "line_end": null,
+    "suggested_fix": "Go back to any(project_id in allowlist for project_id in project_ids), and keep the ifNull fallback in upsampled_count."
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 67,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The new eligibility cache can't be invalidated reliably: invalidate_upsampling_cache is never called and needs the exact project set of every cached query.",
+    "detail": "Cache keys are built from org id plus a hash of the exact sorted project_id tuple. The allowlist is a single global option, so a change affects every org and every project combination. invalidate_upsampling_cache(org_id, project_ids) only deletes one specific combination, and nothing in the codebase calls it. After an allowlist change, cached True/False decisions stay stale for up to 60s for every combination. Requests can therefore flip between upsampled and non-upsampled counts, and newly removed projects keep using sum(sample_weight).",
+    "line_end": null,
+    "suggested_fix": "Include a version or hash of the allowlist option in the cache key, e.g. f\"error_upsampling_eligible:{hash(tuple(sorted(allowlist)))}:...\". Or drop the cache: options.get is already cached in memory."
+  }
+]

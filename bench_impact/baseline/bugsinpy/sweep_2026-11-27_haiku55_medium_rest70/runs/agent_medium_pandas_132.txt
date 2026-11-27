@@ -1,0 +1,50 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: pandas#132
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# fixed_commit: bd8f07fb29d2ac819f4c8e8e1b8e6d40f8b0f40c
+# base_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5^
+# head_ref: 2d0d58c04114b634072e9425824b34cda3aeaef5
+# started: 2026-11-27T01:19:19+00:00
+# finished: 2026-11-27T01:19:57+00:00
+# duration_s: 38.1
+# cost_usd: 0.0081
+# num_turns: 5
+# num_findings: 1
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 638
+# repo: LocalRepo
+# refs: 2d0d58c04114b634072e9425824b34cda3aeaef5^..2d0d58c04114b634072e9425824b34cda3aeaef5
+# turns: 5
+# cost (USD, harness-reported): 0.008141
+# cost (USD, public Opus 4 rate): 1.221097
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 23004, 'cache_read_input_tokens': 169045, 'output_tokens': 7147, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 23004}, 'inference_geo': '', 'iterations': [{'input_tokens': 4, 'output_tokens': 560, 'cache_read_input_tokens': 53881, 'cache_creation_input_tokens': 2313, 'cache_creation': {'ephemeral_5m_input_tokens': 2313, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/nanops.py",
+    "line": 394,
+    "category": "logic",
+    "severity": "high",
+    "summary": "nanvar now wraps its result as Timedelta for timedelta64 input, so nanstd's np.sqrt and var() on timedeltas break or overflow.",
+    "detail": "Before this diff nanvar was disallowed for 'm8' and nanstd took the raw float variance from a private _nanvar, then applied np.sqrt and _wrap_results once. The diff makes nanvar public-facing with @disallow('M8') only (m8 allowed) and ends with `return _wrap_results(result, values.dtype)` (line 394). For m8 input, _wrap_results converts the float variance into a Timedelta (scalar case: lib.Timedelta(result, unit='ns'), raising ValueError when |result| > int64 max) or into an m8 array via astype('i8').view. nanstd (line 352) then calls np.sqrt(nanvar(...)) on that m8/Timedelta value, which fails with TypeError for ndarrays, and the variance-in-ns^2 is reinterpreted as ns. Triggering scenario: td.std() on any timedelta Series (exercised by test_timedeltas.py around line 680, which asserts td.std() returns a timedelta) breaks. td.var() also now raises a ValueError 'overflow in timedelta operation' for realistic spreads (e.g. a 1-day std is ~8.6e13 ns, variance ~7.5e27 ns^2, far above int64 max), where previously it raised TypeError. The test change removing 'var' from the timedelta invalid-ops list hides this rather than making var work.",
+    "line_end": 352,
+    "suggested_fix": "Do not wrap inside nanvar for m8 input; return the raw float variance from nanvar (wrap only for datetime/timedelta where appropriate) and let nanstd do sqrt first, then wrap once:\n-    return _wrap_results(result, values.dtype)\n+    if is_timedelta64_dtype(dtype):\n+        raise TypeError('reduction operation var not allowed for this dtype')\n+    return result\n and in nanstd keep `result = np.sqrt(nanvar(...))` followed by `_wrap_results(result, values.dtype)` only for the m8 case."
+  }
+]

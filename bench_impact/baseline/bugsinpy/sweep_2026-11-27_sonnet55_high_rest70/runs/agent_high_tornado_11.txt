@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_sonnet55_high_rest70
+# bug: tornado#11
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# fixed_commit: 1131c9b50a6a4c0868d0d6fa5e0be077cf8fd1ca
+# base_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^
+# head_ref: a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# started: 2026-11-27T01:24:16+00:00
+# finished: 2026-11-27T01:24:54+00:00
+# duration_s: 37.3
+# cost_usd: 0.1095
+# num_turns: 9
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 672
+# repo: LocalRepo
+# refs: a3d6fc6defb9cd690a5f66a18130a3aa080f402d^..a3d6fc6defb9cd690a5f66a18130a3aa080f402d
+# turns: 9
+# cost (USD, harness-reported): 0.109464
+# cost (USD, public Opus 4 rate): 1.059640
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 18051, 'cache_read_input_tokens': 318209, 'output_tokens': 3248, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 18051}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 419, 'cache_read_input_tokens': 50235, 'cache_creation_input_tokens': 1006, 'cache_creation': {'ephemeral_5m_input_tokens': 1006, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/http1connection.py",
+    "line": 89,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "For client 1xx responses, _process_message recurses and then the outer call goes on to read a body and call delegate.finish() a second time.",
+    "detail": "When `code` is 100-199 on the client path, the code does `yield self._process_message(...)` to read the real response. It does not return afterwards. The outer invocation then falls through to `_read_body(is_client, headers, delegate)` using the 1xx headers. With no Content-Length and no chunked encoding, that selects `_read_body_until_close`. It blocks until the connection closes, then appends the leftover bytes via `data_received`. It then calls `delegate.finish()` a second time and yields a `_finish_future` that was replaced by the recursive call. So `_HTTPConnection.finish` runs twice, and with a body-less 1xx, the outer call can hang until close. The recursive call also resets `self._finish_future` and `_disconnect_on_finish`. The old code simply re-armed the header read and returned.",
+    "line_end": 98,
+    "suggested_fix": "After the recursive `yield self._process_message(...)` for a 1xx code, return its result right away (`raise gen.Return(ret)`) instead of continuing into the body-reading and finish logic."
+  },
+  {
+    "file": "tornado/http1connection.py",
+    "line": 86,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The client no longer skips the body for 204 responses (and 1xx), so a response with no Content-Length waits for connection close.",
+    "detail": "The old `_on_headers` treated 204 and 1xx as having no body and called `_on_body(b\"\")` immediately. The new `_process_message` sets `skip_body` only for HEAD and 304. For a 204 with no Content-Length and no chunked encoding, `_read_body` falls to `_read_body_until_close`. The request then does not complete until the server closes the connection or the request times out. `headers_received` only validates that a 204 has no declared Content-Length. It does not stop the body read. A keep-alive server that sends 204 without closing the socket would stall the request.",
+    "line_end": 95,
+    "suggested_fix": "In the is_client branch, also set `skip_body = True` when `code == 204` (and for 1xx)."
+  }
+]

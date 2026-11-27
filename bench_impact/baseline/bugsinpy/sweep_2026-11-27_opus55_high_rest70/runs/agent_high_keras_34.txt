@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: keras#34
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: keras-team/keras
+# introducing_commit: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# fixed_commit: 4b74fc5418944c9f449eb88ed4b40ada280fa5ca
+# base_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^
+# head_ref: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# started: 2026-11-27T01:06:00+00:00
+# finished: 2026-11-27T01:06:26+00:00
+# duration_s: 25.5
+# cost_usd: 0.1633
+# num_turns: 4
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 550
+# repo: LocalRepo
+# refs: ce80cd1c85eee49de8e647124b5a87b6ea55ffe6^..ce80cd1c85eee49de8e647124b5a87b6ea55ffe6
+# turns: 4
+# cost (USD, harness-reported): 0.163279
+# cost (USD, public Opus 4 rate): 0.725701
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 16789, 'cache_read_input_tokens': 151208, 'output_tokens': 2453, 'output_tokens_details': {'thinking_tokens': 436}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16789}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 541, 'cache_read_input_tokens': 45154, 'cache_creation_input_tokens': 1379, 'cache_creation': {'ephemeral_5m_input_tokens': 1379, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/engine/training.py",
+    "line": 2107,
+    "category": "logic",
+    "severity": "high",
+    "summary": "With workers=0, a keras.utils.Sequence is assigned directly as output_generator, and the later next(output_generator) raises TypeError.",
+    "detail": "The new `else: output_generator = generator` branch does not check `is_sequence`. `keras.utils.Sequence` defines only `__getitem__` and `__len__` (no `__iter__` or `__next__`), so `next(output_generator)` at the top of the training loop fails with `TypeError: 'X' object is not an iterator`. Any user who calls `fit_generator(my_sequence, workers=0)` gets a crash. Two other problems: `shuffle` is ignored, and `on_epoch_end` is never called for Sequences in this path. The new tests only pass plain Python generators, so they do not catch this.",
+    "line_end": null,
+    "suggested_fix": "-            else:\n-                output_generator = generator\n+            else:\n+                if is_sequence:\n+                    def _seq_iter(seq):\n+                        while True:\n+                            idxs = list(range(len(seq)))\n+                            if shuffle:\n+                                random.shuffle(idxs)\n+                            for i in idxs:\n+                                yield seq[i]\n+                            seq.on_epoch_end()\n+                    output_generator = _seq_iter(generator)\n+                else:\n+                    output_generator = generator"
+  },
+  {
+    "file": "keras/engine/training.py",
+    "line": 2277,
+    "category": "logic",
+    "severity": "high",
+    "summary": "evaluate_generator with workers=0 and a Sequence calls next() on a non-iterator Sequence, which raises TypeError.",
+    "detail": "This is the same problem as in fit_generator. For Sequence inputs `is_sequence` is True, but the workers==0 branch sets `output_generator = generator`, and `next(output_generator)` fails because Sequence is not an iterator. fit_generator passes `workers=workers` through to evaluate_generator for validation, so `fit_generator(..., validation_data=some_sequence, workers=0)` also crashes when validation runs at the end of the epoch.",
+    "line_end": null,
+    "suggested_fix": "Wrap Sequences in an iterator, e.g. `output_generator = (generator[i % len(generator)] for i in itertools.count())` when `is_sequence`, and keep using the raw generator otherwise."
+  },
+  {
+    "file": "keras/engine/training.py",
+    "line": 2401,
+    "category": "logic",
+    "severity": "high",
+    "summary": "predict_generator with workers=0 and a Sequence calls next() on a non-iterator Sequence, which raises TypeError.",
+    "detail": "This is the same missing `is_sequence` handling in the new main-thread branch. `next(output_generator)` on a `keras.utils.Sequence` raises TypeError, so `predict_generator(seq, workers=0)` always fails.",
+    "line_end": null,
+    "suggested_fix": "When `is_sequence` is True, build an iterator over the Sequence indices instead of using the Sequence object directly."
+  }
+]

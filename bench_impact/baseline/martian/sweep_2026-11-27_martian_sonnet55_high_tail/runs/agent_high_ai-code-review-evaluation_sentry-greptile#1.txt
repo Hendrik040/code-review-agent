@@ -1,0 +1,79 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_martian_sonnet55_high_tail
+# pr: ai-code-review-evaluation_sentry-greptile#1
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/1
+# original_upstream_url: 
+# pr_title: Enhanced Pagination Performance for High-Volume Audit Logs
+# sdk: agent_sdk
+# effort: high
+# model: claude-sonnet-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: martian_bench/dataset/prepared_martian_tail_greptile1.json
+# prepared_sha256_16: cfaa74d34b1bd7db
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: a5d290951def84afdcc4c88d2f1f20023fc36e2a
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T01:39:31+00:00
+# finished: 2026-11-27T01:43:23+00:00
+# duration_s: 232.1
+# cost_usd: 0.1812
+# num_turns: 9
+# num_findings: 4
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 723
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 9
+# cost (USD, harness-reported): 0.181201
+# cost (USD, public Opus 4 rate): 1.590511
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 45367, 'cache_read_input_tokens': 308673, 'output_tokens': 3688, 'output_tokens_details': {'thinking_tokens': 523}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 45367}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 691, 'cache_read_input_tokens': 44020, 'cache_creation_input_tokens': 1347, 'cache_creation': {'ephemeral_5m_input_tokens': 1347, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 882,
+    "category": "security",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator slices the queryset with a client-controlled negative offset, which Django does not support.",
+    "detail": "When `enable_advanced_features` is set and `cursor.offset < 0`, the code runs `queryset[cursor.offset:stop]`. The offset comes straight from the user-supplied `cursor` query param. The comment says Django handles negative slicing, but Django raises `AssertionError: Negative indexing is not supported`. Any admin or superuser who sends `?optimized_pagination=true&cursor=0:-5:0` gets a 500. Where the slice does work, `stop = start_offset + limit + extra` can be zero or negative, so the slice would not give the intended page. The code comment also claims it lets callers reach data 'beyond normal pagination bounds', which is the wrong thing to allow for an audit log.",
+    "line_end": null,
+    "suggested_fix": "Remove the negative-offset branch and clamp with `start_offset = max(0, offset)` as the other paginators do. Better still, drop `OptimizedCursorPaginator` and the `optimized_pagination` flag."
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 838,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator uses the base numeric `get_item_key` and `value_from_cursor`, so it fails on the `datetime` key it is used with.",
+    "detail": "The audit log endpoint paginates with `order_by='-datetime'`. `OptimizedCursorPaginator.get_item_key` does `math.floor(getattr(item, 'datetime'))`, and `math.floor` raises `TypeError` on a `datetime`. `value_from_cursor` returns the raw `cursor.value` instead of converting it to a datetime as `DateTimePaginator` does. So `?optimized_pagination=true` fails with a 500 as soon as any result exists, and a non-empty cursor value would be compared against the datetime column without conversion. The path is also reachable only by admins, so the failure would not show up in normal use.",
+    "line_end": null,
+    "suggested_fix": "Subclass `DateTimePaginator`, or reuse its `get_item_key` and `value_from_cursor`."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 65,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The date filtering (`start`, `end`, `statsPeriod`) was removed from the audit log endpoint without any replacement.",
+    "detail": "The serializer fields and the `get_date_range_from_stats_period` filtering were deleted. Clients that pass `statsPeriod`, `start` or `end` now get unfiltered results with no error. The commit message only mentions a pagination performance change, and the matching tests were deleted.",
+    "line_end": null,
+    "suggested_fix": "Restore the removed serializer fields and the date-range filter."
+  },
+  {
+    "file": "src/sentry/models/auditlogentry.py",
+    "line": 68,
+    "category": "other",
+    "severity": "medium",
+    "summary": "`AuditLogEntry.data` was changed from `JSONField` to `GzippedDictField`, and the migration that supported the JSONField was removed.",
+    "detail": "`0940_auditlog_json_field.py` is deleted, along with many other migrations: 40 migration files are removed in this diff. The model field type now differs from the schema and data that the existing JSON migration created. Existing JSON rows are read through a gzipped-pickle field, which can fail or corrupt reads. The `data` argument was also made optional in `audit.py`, so entries can be created without data.",
+    "line_end": null,
+    "suggested_fix": "Revert the field change and the migration deletions, and keep `data` as a required keyword argument."
+  }
+]

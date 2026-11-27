@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: luigi#18
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: spotify/luigi
+# introducing_commit: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# fixed_commit: c521d59c5eacf6c19ce3c17a62f73e042fa0556e
+# base_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^
+# head_ref: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# started: 2026-11-27T01:05:18+00:00
+# finished: 2026-11-27T01:05:59+00:00
+# duration_s: 40.5
+# cost_usd: 0.0099
+# num_turns: 9
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 547
+# repo: LocalRepo
+# refs: a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e^..a5bc6c937c8f02ae0d39c3aac235c9bf7c55d33e
+# turns: 9
+# cost (USD, harness-reported): 0.009949
+# cost (USD, public Opus 4 rate): 1.492288
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 23548, 'cache_read_input_tokens': 266419, 'output_tokens': 8679, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 23548}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 466, 'cache_read_input_tokens': 53248, 'cache_creation_input_tokens': 2797, 'cache_creation': {'ephemeral_5m_input_tokens': 2797, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "luigi/scheduler.py",
+    "line": 160,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "re_enable() with a config re-runs set_status(FAILED), which counts a failure and can immediately re-disable the task when disable_failures == 1.",
+    "detail": "In the new SimpleTaskState.re_enable (luigi/scheduler.py ~lines 160-167), when config is passed it calls self.set_status(task, FAILED, config) while the task is still DISABLED. set_status then calls task.add_failure() (because can_disable() is true) and, since has_excessive_failures() is num_failures() >= disable_failures, a single new failure with disable_failures=1 meets the threshold. The task is set back to DISABLED with a fresh scheduler_disable_time, an error email is sent, and only afterwards does re_enable clear the failures. Each prune() after disable_time expires (CentralPlannerScheduler.prune -> state.prune -> re_enable) repeats this, so the task is never retried. The original code simply set status=FAILED without counting a failure, so this is a regression for that configuration. The same path is reachable via re_enable_task().",
+    "line_end": 167,
+    "suggested_fix": "Set the status without going through failure accounting, e.g. in re_enable: clear failures and disable time, then move the task directly to FAILED via the index update (self._status_tasks[task.status].pop(task.id); self._status_tasks[FAILED][task.id] = task; task.status = FAILED), instead of calling set_status(task, FAILED, config)."
+  },
+  {
+    "file": "luigi/scheduler.py",
+    "line": 535,
+    "category": "logic",
+    "severity": "low",
+    "summary": "_rank() now only counts dependents from PENDING/RUNNING tasks, dropping the previous contribution of FAILED/DISABLED/UNKNOWN non-DONE tasks.",
+    "detail": "Previously _rank iterated get_active_tasks() and accumulated dependents for every task with status != DONE. It now iterates get_pending_tasks(), which yields only PENDING and RUNNING tasks. Deps of FAILED or DISABLED tasks no longer receive the dependents boost used as the tie-breaker in the sort key (priority, dependents, -time), so the scheduling order of pending tasks can change relative to before. If this narrowing is intentional it should be documented; otherwise the iteration should keep the original set of statuses.",
+    "line_end": 540,
+    "suggested_fix": "If the old behavior must be preserved, iterate over all non-DONE statuses, e.g. itertools.chain over self._status_tasks for every status except DONE, instead of get_pending_tasks()."
+  }
+]

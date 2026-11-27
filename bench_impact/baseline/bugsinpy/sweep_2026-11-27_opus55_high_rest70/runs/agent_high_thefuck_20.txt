@@ -1,0 +1,80 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: thefuck#20
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: nvbn/thefuck
+# introducing_commit: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# fixed_commit: 280751b36e715b006c631ba6c08de99ccc74f6d2
+# base_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^
+# head_ref: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# started: 2026-11-27T01:33:05+00:00
+# finished: 2026-11-27T01:34:22+00:00
+# duration_s: 76.6
+# cost_usd: 0.2052
+# num_turns: 9
+# num_findings: 4
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 710
+# repo: LocalRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 9
+# cost (USD, harness-reported): 0.205214
+# cost (USD, public Opus 4 rate): 1.017397
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 11538, 'cache_read_input_tokens': 330460, 'output_tokens': 4068, 'output_tokens_details': {'thinking_tokens': 840}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 11538}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 813, 'cache_read_input_tokens': 40018, 'cache_creation_input_tokens': 1718, 'cache_creation': {'ephemeral_5m_input_tokens': 1718, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 35,
+    "category": "other",
+    "severity": "high",
+    "summary": "side_effect blindly os.remove()s every archive member path in the cwd, which can delete pre-existing user files and paths outside the cwd.",
+    "detail": "`side_effect` iterates `archive.namelist()` and calls `os.remove(file)` on each name, relative to the current directory. It never checks that the file was created by the failed unzip. unzip without `-o` prompts before overwriting, and the user may have answered 'n' or 'N'. In that case a same-named file that already existed (e.g. README, Makefile, setup.py) is still there and gets deleted, so user data is lost. Zip member names can also contain `../` segments or absolute paths. The rule then deletes files outside the cwd, and a malicious or sloppy archive can point that deletion at arbitrary user files.",
+    "line_end": 37,
+    "suggested_fix": "Only remove files whose resolved path is inside the cwd (`os.path.abspath(f).startswith(os.getcwd())`), and skip entries that don't resolve there. Ideally only remove files whose size/CRC match the archive entry, so pre-existing files are left alone."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "error",
+    "severity": "medium",
+    "summary": "os.remove() raises on directory entries or on missing files, which crashes thefuck before the corrected command is printed.",
+    "detail": "`ZipFile.namelist()` includes directory entries (names ending in '/'). Any archive with subdirectories therefore makes `os.remove('dir/')` raise IsADirectoryError/OSError. It also raises FileNotFoundError if some member wasn't extracted. `run_rule` in thefuck/main.py:139-142 calls `rule.side_effect` with no exception handling, so the whole program crashes with a traceback. `put_to_history` and `print(new_command)` never run, so the fix is never applied. Directories are also never cleaned up.",
+    "line_end": null,
+    "suggested_fix": "Skip names ending in '/' (or remove those directories afterwards with `os.rmdir` / `shutil.rmtree` if empty). Wrap each removal in try/except OSError."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 25,
+    "category": "error",
+    "severity": "low",
+    "summary": "match() raises on common unzip failures (missing archive, bare `unzip`, non-zip file), so every such failure prints a full [WARN] traceback.",
+    "detail": "`requires_output = False` means this rule is tried for every `unzip...` script, and the most common reason unzip fails is a missing or misspelled archive. `_is_bad_zip` then calls `zipfile.ZipFile` on a nonexistent path and raises IOError/FileNotFoundError. A bare `unzip`, or one with only flags, makes `_zip_file` return None, and `ZipFile(None)` raises. A corrupt file raises BadZipfile. `get_matched_rule` catches the error but calls `logs.rule_failed`, which always writes a red [WARN] traceback to stderr. The user sees spurious error output from this rule on ordinary unzip mistakes. In addition, `startswith('unzip')` also matches other commands such as `unzipsfx`, and the `'-d' not in command.script` substring check is wrong for filenames containing '-d' (e.g. `my-data.zip`).",
+    "line_end": 27,
+    "suggested_fix": "In `_is_bad_zip`, return False when the file is None or doesn't exist, and catch `zipfile.BadZipfile`. Use `command.script.split()[0] == 'unzip'` and check `'-d' in command.script.split()`."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 31,
+    "category": "logic",
+    "severity": "low",
+    "summary": "get_new_command builds a broken command when the archive path has another directory or when trailing file arguments follow it.",
+    "detail": "It appends ` -d <archive without .zip>` to the end of the original script. For `unzip path/to/foo.zip`, the target becomes `path/to/foo`, so the files are extracted next to the archive and not into a `foo` directory in the cwd. That is inconsistent with the side_effect, which cleans up the cwd.",
+    "line_end": null,
+    "suggested_fix": ""
+  }
+]

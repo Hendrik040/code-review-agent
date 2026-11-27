@@ -1,0 +1,79 @@
+# === MARTIAN RUN ===
+# bench: martian v1
+# sweep_id: sweep_2026-11-27_impactsel_martian_opus55_high_aff6
+# pr: ai-code-review-evaluation_sentry-greptile#2
+# pr_url: https://github.com/ai-code-review-evaluation/sentry-greptile/pull/2
+# original_upstream_url: https://github.com/getsentry/sentry/pull/92393
+# pr_title: Optimize spans buffer insertion with eviction during insert
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: 791001021d9f09834f1912b21bbaefd253f64e52
+# prepared_path: bench_impact/prepared_martian_affected.json
+# prepared_sha256_16: b755905bfae7484e
+# repo_slug: ai-code-review-evaluation/sentry-greptile
+# base_sha: 28e3db2520d4ea28c57b08da57b83917ba7b2e15
+# head_sha: 8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# n_goldens: 3
+# started: 2026-11-27T02:07:25+00:00
+# finished: 2026-11-27T02:09:11+00:00
+# duration_s: 106.0
+# cost_usd: 0.2770
+# num_turns: 9
+# num_findings: 4
+# exit_reason: submit_findings
+# === END MARTIAN ===
+
+# Agent SDK reviewer run 622
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 9
+# cost (USD, harness-reported): 0.277039
+# cost (USD, public Opus 4 rate): 1.318879
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 20753, 'cache_read_input_tokens': 373310, 'output_tokens': 4927, 'output_tokens_details': {'thinking_tokens': 1257}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20753}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 724, 'cache_read_input_tokens': 48961, 'cache_creation_input_tokens': 1990, 'cache_creation': {'ephemeral_5m_input_tokens': 1990, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 838,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator treats the `datetime` sort key as a number, so every optimized audit-log request fails or filters wrongly.",
+    "detail": "The audit-log endpoint uses OptimizedCursorPaginator with order_by=\"-datetime\". The new `get_item_key` calls `math.floor` / `math.ceil` on the raw `datetime` attribute. Python raises `TypeError: must be real number, not datetime` for that, and `build_cursor` calls `key=self.get_item_key` on the results, so any non-empty page returns a 500. `value_from_cursor` also returns the raw numeric cursor value instead of turning it back into a datetime. `build_queryset` therefore compares `datetime` against an integer, which either fails or filters incorrectly. DateTimePaginator handles both steps correctly (`strftime('%s.%f') * multiplier` and `datetime.fromtimestamp`). As written, a request with `optimized_pagination=true` from a superuser or global-access member returns 500 whenever there is at least one audit row.",
+    "line_end": 840,
+    "suggested_fix": "Make OptimizedCursorPaginator subclass DateTimePaginator, or copy its get_item_key/value_from_cursor (multiplier=1000, strftime/fromtimestamp conversion)."
+  },
+  {
+    "file": "src/sentry/api/endpoints/organization_auditlogs.py",
+    "line": 71,
+    "category": "error",
+    "severity": "high",
+    "summary": "`organization_context.member` can be None, so the endpoint raises AttributeError for non-member callers on every request, even without the new flag.",
+    "detail": "`RpcUserOrganizationContext.member` is typed `RpcOrganizationMember | None`. Callers that pass OrganizationAuditPermission without an org membership get `member=None`: staff users, users with read-only superuser access but no `is_superuser` flag, and API/org-token or sentry-app callers. For them, `organization_context.member.has_global_access` raises AttributeError. The expression is evaluated on every request, before the `use_optimized` check, so the regression also breaks the ordinary DateTimePaginator path for these callers and they get a 500.",
+    "line_end": null,
+    "suggested_fix": "Evaluate only when needed and guard None:\n-enable_advanced = request.user.is_superuser or organization_context.member.has_global_access\n+member = organization_context.member\n+enable_advanced = request.user.is_superuser or (member is not None and member.has_global_access)"
+  },
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 877,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Negative cursor offsets are passed straight into a Django queryset slice, which raises instead of paginating.",
+    "detail": "`Cursor.from_string` accepts any integer offset from the client's `cursor` query parameter. With `enable_advanced_features` and `cursor.offset < 0`, the code runs `queryset[start_offset:stop]` with a negative start. Django querysets do not support negative indexing and raise `ValueError` / `AssertionError` (\"Negative indexing is not supported.\"), so a crafted cursor such as `0:-5:0` produces a 500. The \"else\" branch and the modified `BasePaginator.get_result` (`start_offset = offset` when `cursor.is_prev`) still forward negative offsets for prev cursors. The comments' claim that the ORM handles negative slicing is false.",
+    "line_end": 883,
+    "suggested_fix": "Always clamp: start_offset = max(0, cursor.offset); drop the negative-offset branch."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 47,
+    "category": "other",
+    "severity": "low",
+    "summary": "Switching span-buf:s:* keys from Redis SETs to ZSETs causes WRONGTYPE errors for keys left over from before the deploy.",
+    "detail": "Before this change, buffer keys were written with SADD/SUNIONSTORE. The new code calls ZADD (buffer.py), and add-buffer.lua calls ZCARD/ZUNIONSTORE, on the same key names. During a rolling deploy, or while old keys are still alive within `set_timeout`, these commands hit existing SET keys and fail with WRONGTYPE. That makes the Lua script and `process_spans` fail, and `flush_segments`' ZSCAN fails on old keys too. The consumer can crash-loop until the old keys expire. There is no migration or key-prefix change to separate the old and new formats.",
+    "line_end": 56,
+    "suggested_fix": "Use a new key prefix for the zset-based buffer (or handle/convert legacy set keys) so old and new formats don't collide."
+  }
+]

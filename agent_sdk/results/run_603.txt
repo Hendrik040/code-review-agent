@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 603
+# repo: LocalRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 6
+# cost (USD, harness-reported): 0.155392
+# cost (USD, public Opus 4 rate): 0.742525
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 10034, 'cache_read_input_tokens': 213072, 'output_tokens': 3128, 'output_tokens_details': {'thinking_tokens': 740}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 10034}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 640, 'cache_read_input_tokens': 38274, 'cache_creation_input_tokens': 1504, 'cache_creation': {'ephemeral_5m_input_tokens': 1504, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "error",
+    "severity": "high",
+    "summary": "side_effect calls os.remove on every archive entry, so it crashes on directory entries and on files that are missing.",
+    "detail": "`archive.namelist()` returns directory entries such as `dir/` as well as files. Zip archives with folders usually contain these entries. `os.remove('dir/')` raises IsADirectoryError or OSError. It also raises FileNotFoundError when a listed file wasn't extracted, for example after a partial or failed extraction, or when the user declined an overwrite prompt. `run_rule` in thefuck/main.py:139-140 calls side_effect without a try/except. After the user confirms, thefuck crashes with a traceback. The corrected command is never printed or added to history, and the cleanup is left half done. Even when the removals work, the extracted directories stay behind.",
+    "line_end": 38,
+    "suggested_fix": "for file in archive.namelist():\n    try:\n        if os.path.isdir(file): continue  # or remove empty dirs after files\n        os.remove(file)\n    except OSError:\n        pass"
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 36,
+    "category": "security",
+    "severity": "medium",
+    "summary": "side_effect deletes paths taken straight from the archive, so entries with ../ or absolute names delete files outside the extraction directory.",
+    "detail": "unzip removes leading `/` and `../` components by default, so it extracts those entries inside the current directory. The side effect does not do the same. It passes the raw archive name to `os.remove`, so an entry named `../../.bashrc` or `/home/user/file` deletes a real file outside the working directory. A crafted or careless archive can therefore make thefuck delete files the user never extracted. The same applies to files that already existed in the current directory and that unzip did not overwrite: they are deleted as well.",
+    "line_end": 38,
+    "suggested_fix": "Resolve each name against os.getcwd() and skip any name whose absolute path does not stay under cwd (e.g. `os.path.abspath(f).startswith(os.getcwd() + os.sep)`)."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 24,
+    "category": "error",
+    "severity": "low",
+    "summary": "match raises for many ordinary unzip commands, which logs a traceback.",
+    "detail": "`_zip_file` returns None when there are no positional arguments (for example `unzip` or `unzip -l`), and `zipfile.ZipFile(None)` then raises. When the archive doesn't exist, which is a common reason unzip fails, ZipFile raises FileNotFoundError, and a non-zip file raises BadZipFile. Because `requires_output = False`, this rule is tried even without output. `get_matched_rule` catches the exception but calls `logs.rule_failed`, which prints a traceback for an ordinary situation. In addition, `'-d' not in command.script` is a substring check, so an archive whose name contains `-d` (for example `my-docs.zip`) never matches.",
+    "line_end": 27,
+    "suggested_fix": "def _is_bad_zip(file):\n    try:\n        with zipfile.ZipFile(file, 'r') as archive:\n            return len(archive.namelist()) > 1\n    except Exception:\n        return False\n\n# and check `'-d' not in command.script.split()`, guarding None from _zip_file"
+  }
+]

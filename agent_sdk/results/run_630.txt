@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 630
+# repo: LocalRepo
+# refs: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+# turns: 6
+# cost (USD, harness-reported): 0.009160
+# cost (USD, public Opus 4 rate): 1.374037
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 25111, 'cache_read_input_tokens': 284547, 'output_tokens': 6349, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 25111}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 448, 'cache_read_input_tokens': 56449, 'cache_creation_input_tokens': 1159, 'cache_creation': {'ephemeral_5m_input_tokens': 1159, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 402,
+    "category": "security",
+    "severity": "high",
+    "summary": "The OAuth 'state' is pipeline.signature, a public MD5 of pipeline class names, so it is not a CSRF/session-bound token and the callback cannot prove the flow was started by this user.",
+    "detail": "OAuthLoginView sets state = pipeline.signature (line 402), which is md5_text(*pipe_ids) (src/sentry/pipeline/base.py:133) and is therefore constant and publicly known (the tests hard-code it as 9cae5e88...). The callback at line 412 only checks request.GET['state'] == pipeline.signature, so any caller can supply their own state. An attacker can make a victim open the setup URL with the attacker's own GitHub OAuth `code` and this constant state. The code is exchanged for the attacker's identity, bound as 'github_authenticated_user' (line ~421). If the attacker has installed the app themselves (so the integration's sender.login is the attacker), the new check at ~502 passes and the victim's org links the attacker's GitHub installation. This is the exact authorization check the diff adds, and it can be defeated by login-CSRF-style request forging.",
+    "line_end": 412,
+    "suggested_fix": "Generate a per-pipeline random nonce, store it in pipeline state (or the session) when redirecting to GitHub, pass it as `state`, and compare against that stored value in the callback instead of pipeline.signature."
+  },
+  {
+    "file": "src/sentry/integrations/github/integration.py",
+    "line": 481,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The installer-identity check is skipped entirely when no Integration row exists yet (fresh install before the webhook arrives), so the OAuth user is never compared to the installer in that case.",
+    "detail": "When Integration.objects.get(external_id=installation_id) raises DoesNotExist (lines 481-483), the code returns pipeline.next_step() immediately. The new check that compares github_authenticated_user to integration.metadata['sender']['login'] (around line 502) is only reached when an Integration row already exists. Because the installation webhook is asynchronous, the row may not exist when the setup callback is processed, so the pipeline completes without any verification that the authenticated user installed the app. The check is therefore conditional rather than enforced.",
+    "line_end": 502,
+    "suggested_fix": "Enforce the authenticated-user check on all paths: when the Integration is missing, verify the installation owner through the GitHub API (get_installation_info / the installation's account login) against github_authenticated_user before calling pipeline.next_step(), instead of returning early."
+  }
+]

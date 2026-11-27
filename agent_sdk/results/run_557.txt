@@ -1,0 +1,22 @@
+# Agent SDK reviewer run 557
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 10
+# cost (USD, harness-reported): 0.021829
+# cost (USD, public Opus 4 rate): 3.274411
+# usage: {'input_tokens': 24, 'cache_creation_input_tokens': 64283, 'cache_read_input_tokens': 1167063, 'output_tokens': 4242, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 64283}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 449, 'cache_read_input_tokens': 135472, 'cache_creation_input_tokens': 1555, 'cache_creation': {'ephemeral_5m_input_tokens': 1555, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 1
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/workflow_engine/processors/delayed_workflow.py",
+    "line": 478,
+    "category": "error",
+    "severity": "medium",
+    "summary": "Direct dict indexing of per-group query results can raise KeyError and abort the whole delayed-workflow batch, replacing the previous MissingQueryResult guard.",
+    "detail": "In get_groups_to_fire, the new code does `condition_group_results[unique_query][group_id]` with no guard. The removed code (_group_result_for_dcg) checked `if group_id not in query_result: raise MissingQueryResult` and skipped firing for that group. The percent-comparison handler (EventFrequencyPercentQueryHandler.batch_query in src/sentry/workflow_engine/handlers/condition/event_frequency_query_handlers.py, ~lines 443-500) returns a plain dict `{}` rather than a defaultdict(int). It can return results missing requested group ids: when `organization_id` is falsy it returns `batch_percents` which is empty; the `if not project_id` branch returns only ids found in the Group table, so a group deleted between enqueue and processing is absent; and `results.items()` from tsdb only covers ids tsdb returns. In any of these cases the KeyError propagates out of get_groups_to_fire and fails the entire delayed-workflow task for the batch, instead of skipping the one group.",
+    "line_end": 478,
+    "suggested_fix": "-            conditions_to_evaluate: list[tuple[DataCondition, list[int | float]]] = []\n-            for condition in slow_conditions:\n-                unique_queries = generate_unique_queries(condition, workflow_env)\n-                query_values = [\n-                    condition_group_results[unique_query][group_id]\n-                    for unique_query in unique_queries\n-                ]\n+            conditions_to_evaluate: list[tuple[DataCondition, list[int | float]]] = []\n+            missing = False\n+            for condition in slow_conditions:\n+                unique_queries = generate_unique_queries(condition, workflow_env)\n+                query_values = []\n+                for unique_query in unique_queries:\n+                    query_result = condition_group_results[unique_query]\n+                    if group_id not in query_result:\n+                        missing = True\n+                        break\n+                    query_values.append(query_result[group_id])\n+                if missing:\n+                    break\n+                conditions_to_evaluate.append((condition, query_values))\n+            if missing:\n+                metrics.incr(\"workflow_engine.delayed_workflow.missing_query_result\")\n+                continue"
+  }
+]

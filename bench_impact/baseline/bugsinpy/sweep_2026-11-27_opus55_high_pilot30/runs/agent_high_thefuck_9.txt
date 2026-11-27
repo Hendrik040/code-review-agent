@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_pilot30
+# bug: thefuck#9
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 03dfd3f08c79694c673d12b7263dadfe4e0696ab
+# prepared_path: bugsinpy_bench/dataset/prepared_pilot30.json
+# prepared_sha256_16: dba763c9d9f4c2fe
+# upstream_repo: nvbn/thefuck
+# introducing_commit: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# fixed_commit: feb36ede5c518fdc3b6eddf945b2d8b1e2294d15
+# base_ref: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0^
+# head_ref: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# started: 2026-11-27T00:37:03+00:00
+# finished: 2026-11-27T00:37:46+00:00
+# duration_s: 43.5
+# cost_usd: 0.1323
+# num_turns: 4
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 477
+# repo: LocalRepo
+# refs: aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0^..aa6b18d0ce64b1e9f902a617eb7b88b1b88877d0
+# turns: 4
+# cost (USD, harness-reported): 0.132255
+# cost (USD, public Opus 4 rate): 0.600631
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 9426, 'cache_read_input_tokens': 139566, 'output_tokens': 2859, 'output_tokens_details': {'thinking_tokens': 703}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 9426}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 585, 'cache_read_input_tokens': 38081, 'cache_creation_input_tokens': 1543, 'cache_creation': {'ephemeral_5m_input_tokens': 1543, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 26,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Calling pop() on the cached command.script_parts list changes the shared Command object, so later rules see a corrupted argument list.",
+    "detail": "`Command.script_parts` is cached in `self._script_parts` (thefuck/types.py:30-38) and returns the same list object every time. get_new_command pops the `-u`/`--set-upstream` flag and its argument straight from that list. thefuck runs get_new_command for every rule that matches, on the same Command instance. Any rule that runs later, such as git_push_force or git_push_pull, or any other rule that reads script_parts, then gets a list with those arguments missing even though `command.script` is unchanged. It can also produce wrong suggestions. Example: for `git push -u origin` with this stderr, other rules see `['git','push']`.",
+    "line_end": 27,
+    "suggested_fix": "-    if upstream_option_index is not -1:\n-        command.script_parts.pop(upstream_option_index)\n-        command.script_parts.pop(upstream_option_index)\n+    script_parts = command.script_parts[:]\n+    if upstream_option_index != -1:\n+        script_parts.pop(upstream_option_index)\n+        if len(script_parts) > upstream_option_index:\n+            script_parts.pop(upstream_option_index)\n ...\n-    return replace_argument(\" \".join(command.script_parts), 'push', push_upstream)\n+    return replace_argument(\" \".join(script_parts), 'push', push_upstream)"
+  },
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 27,
+    "category": "error",
+    "severity": "medium",
+    "summary": "When `-u` or `--set-upstream` is the last argument, the second pop() raises IndexError and the rule crashes.",
+    "detail": "The code always pops twice, assuming the flag is followed by an argument. Running `git push -u` (or `git push --set-upstream`) on a branch with no upstream gives the same 'has no upstream branch' stderr, so match() returns True. script_parts is then `['git','push','-u']`: the first pop removes '-u', and the second pop(2) on a 2-element list raises IndexError. The user gets no correction from this rule.",
+    "line_end": null,
+    "suggested_fix": "Only pop the second element if it exists: `if len(parts) > idx: parts.pop(idx)`."
+  },
+  {
+    "file": "thefuck/rules/git_push.py",
+    "line": 30,
+    "category": "logic",
+    "severity": "low",
+    "summary": "Joining script_parts with spaces drops shell quoting, so arguments that contain spaces or special characters break.",
+    "detail": "The old code worked on `command.script`, which kept the user's quoting. The new code rebuilds the command with `\" \".join(command.script_parts)`, and script_parts has already had its quotes removed by shell.split_command. Any argument with spaces or shell metacharacters (e.g. `git push --set-upstream origin \"feature x\"` or a quoted push option) becomes unquoted, so the suggested command runs with different arguments.",
+    "line_end": null,
+    "suggested_fix": "Rebuild with quoting: `' '.join(shell.quote(p) for p in parts)`, or edit `command.script` directly instead."
+  }
+]

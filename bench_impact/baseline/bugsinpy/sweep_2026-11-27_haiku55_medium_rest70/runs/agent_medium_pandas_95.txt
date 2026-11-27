@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_haiku55_medium_rest70
+# bug: pandas#95
+# bug_source: blame
+# sdk: agent_sdk
+# effort: medium
+# model: claude-haiku-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: c38a416186b2ed789fb6ce6f1b0859d33bb57898
+# fixed_commit: c99dfea33612f44e97c2365f78c0ca6d5754a1bc
+# base_ref: c38a416186b2ed789fb6ce6f1b0859d33bb57898^
+# head_ref: c38a416186b2ed789fb6ce6f1b0859d33bb57898
+# started: 2026-11-27T01:16:31+00:00
+# finished: 2026-11-27T01:17:13+00:00
+# duration_s: 41.9
+# cost_usd: 0.0090
+# num_turns: 9
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 619
+# repo: LocalRepo
+# refs: c38a416186b2ed789fb6ce6f1b0859d33bb57898^..c38a416186b2ed789fb6ce6f1b0859d33bb57898
+# turns: 9
+# cost (USD, harness-reported): 0.009019
+# cost (USD, public Opus 4 rate): 1.352817
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 17068, 'cache_read_input_tokens': 297098, 'output_tokens': 7825, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 17068}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 420, 'cache_read_input_tokens': 48607, 'cache_creation_input_tokens': 1651, 'cache_creation': {'ephemeral_5m_input_tokens': 1651, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/arrays/period.py",
+    "line": 109,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "PeriodArray comparison with list-like/object-ndarray operands of Periods now silently returns all-False/all-True instead of comparing elementwise or raising.",
+    "detail": "The wrapper in _period_array_cmp (period.py:73-109) has no branch for ndarray/list operands. The old fallback `else: other = Period(other, freq=self.freq)` raised for such inputs, so the failure was loud. The diff replaces that fallback with `return invalid_comparison(self, other, op)` (line 109), which for == returns all-False and for != returns all-True without error. So `arr == list(arr)` or `arr == np.array(list(arr), dtype=object)` now yields wrong results silently. Caveat: I could not execute pandas in the sandbox (pytz missing), and the existing tests do not cover this case, so this rests on reading the code. Callers at the Index/Series layer may pre-convert, which would limit real-world reach.",
+    "line_end": null,
+    "suggested_fix": "--- a/pandas/core/arrays/period.py\n+++ b/pandas/core/arrays/period.py\n@@ _period_array_cmp wrapper\n-        else:\n-            return invalid_comparison(self, other, op)\n+        elif is_list_like(other):\n+            # elementwise comparison against array-like of Periods\n+            other = type(self)._from_sequence(other, freq=self.freq)\n+            return wrapper(self, other)\n+        else:\n+            return invalid_comparison(self, other, op)"
+  },
+  {
+    "file": "pandas/core/arrays/period.py",
+    "line": 85,
+    "category": "logic",
+    "severity": "low",
+    "summary": "numpy integer scalars (e.g. np.int64) are no longer accepted as ordinals; they now hit invalid_comparison and silently return all-False/all-True.",
+    "detail": "The new branch is `elif isinstance(other, int)` (period.py:85), which does not match np.int64 or np.int32 because they are not Python int subclasses. Before this diff, those values fell through to `Period(other, freq=self.freq)` and compared by ordinal. Now they reach the final else (line 109) and return invalid_comparison, so `pi == np.int64(10957)` quietly returns all-False. This is a narrow but real behavior regression for numpy-typed scalars, for example values pulled out of a numpy array. The int branch also recomputes the result via the following `if isinstance(other, Period)` block, which is redundant but harmless.",
+    "line_end": 89,
+    "suggested_fix": "--- a/pandas/core/arrays/period.py\n+++ b/pandas/core/arrays/period.py\n-        elif isinstance(other, int):\n+        elif is_integer(other):  # covers python int and numpy integer scalars"
+  }
+]

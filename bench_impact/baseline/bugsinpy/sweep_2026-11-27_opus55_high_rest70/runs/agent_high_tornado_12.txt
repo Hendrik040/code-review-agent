@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_rest70
+# bug: tornado#12
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 105f1df8fa0bcf83c41d825edd51db856715a816
+# prepared_path: bugsinpy_bench/dataset/prepared_rest70.json
+# prepared_sha256_16: 436c243a84d3c075
+# upstream_repo: tornadoweb/tornado
+# introducing_commit: 617d41f216ae195d630897d89cdf2fc9fc6fe91b
+# fixed_commit: 301f52b532c071a0d2fec1eb7c23f2714bb38567
+# base_ref: 617d41f216ae195d630897d89cdf2fc9fc6fe91b^
+# head_ref: 617d41f216ae195d630897d89cdf2fc9fc6fe91b
+# started: 2026-11-27T01:38:03+00:00
+# finished: 2026-11-27T01:38:28+00:00
+# duration_s: 25.5
+# cost_usd: 0.1635
+# num_turns: 4
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 719
+# repo: LocalRepo
+# refs: 617d41f216ae195d630897d89cdf2fc9fc6fe91b^..617d41f216ae195d630897d89cdf2fc9fc6fe91b
+# turns: 4
+# cost (USD, harness-reported): 0.163489
+# cost (USD, public Opus 4 rate): 0.729151
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 16669, 'cache_read_input_tokens': 154758, 'output_tokens': 2458, 'output_tokens_details': {'thinking_tokens': 586}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 16669}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 567, 'cache_read_input_tokens': 45508, 'cache_creation_input_tokens': 1359, 'cache_creation': {'ephemeral_5m_input_tokens': 1359, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "tornado/auth.py",
+    "line": 664,
+    "category": "error",
+    "severity": "high",
+    "summary": "oauth2_request references self._on_facebook_request, which this diff deletes, so every call raises AttributeError.",
+    "detail": "The new OAuth2Mixin.oauth2_request still runs `functools.partial(self._on_facebook_request, callback)`. The same diff removes FacebookGraphMixin._on_facebook_request and adds _on_oauth2_request instead. Any call to oauth2_request on a plain OAuth2Mixin/GoogleOAuth2Mixin subclass raises AttributeError, and so does every FacebookGraphMixin.facebook_request call, because it now delegates to oauth2_request. The AttributeError is captured into the returned future, so callers get an exception instead of the API response. Facebook Graph requests are therefore broken entirely.",
+    "line_end": null,
+    "suggested_fix": "-        callback = functools.partial(self._on_facebook_request, callback)\n+        callback = functools.partial(self._on_oauth2_request, callback)"
+  },
+  {
+    "file": "tornado/auth.py",
+    "line": 1060,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "facebook_request passes its own Future (the decorator-replaced `callback`) as the callback to oauth2_request, and the decorator then tries to call that Future as a function.",
+    "detail": "Both facebook_request and oauth2_request are wrapped by @_auth_return_future, which swaps the `callback` parameter for a TracebackFuture. facebook_request passes that Future positionally as `callback` into oauth2_request. oauth2_request's wrapper treats it as a user callback and registers `functools.partial(_auth_future_to_callback, callback)`, which eventually runs `callback(result)`, i.e. it calls the Future object. That raises TypeError ('Future' object is not callable) inside a done-callback, so the outer future returned by facebook_request is never resolved. A coroutine that yields facebook_request hangs forever. This stays true after the _on_facebook_request name bug is fixed. AuthErrors would also be logged and turned into None instead of propagating.",
+    "line_end": 1061,
+    "suggested_fix": "-        return self.oauth2_request(url, callback, access_token,\n-                                   post_args, **args)\n+        oauth_future = self.oauth2_request(url, access_token=access_token,\n+                                           post_args=post_args, **args)\n+        chain_future(oauth_future, callback)"
+  }
+]

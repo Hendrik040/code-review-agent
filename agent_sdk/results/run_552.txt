@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 552
+# repo: LocalRepo
+# refs: 28e3db2520d4ea28c57b08da57b83917ba7b2e15..8ab88145113dd23a930e23b9cbbcf8b30e4c0b17
+# turns: 5
+# cost (USD, harness-reported): 0.218117
+# cost (USD, public Opus 4 rate): 2.010266
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 55874, 'cache_read_input_tokens': 499182, 'output_tokens': 2849, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 55874}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 399, 'cache_read_input_tokens': 130788, 'cache_creation_input_tokens': 1795, 'cache_creation': {'ephemeral_5m_input_tokens': 1795, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/api/paginator.py",
+    "line": 875,
+    "category": "logic",
+    "severity": "high",
+    "summary": "OptimizedCursorPaginator slices the queryset with a user-controlled negative offset, which Django rejects (or which leaks out-of-bounds rows).",
+    "detail": "When `enable_advanced_features` is set and `cursor.offset < 0`, the code runs `queryset[cursor.offset:stop]`. The offset comes straight from the client-supplied cursor string (`value:offset:is_prev`). Django querysets raise `AssertionError: Negative indexing is not supported` for negative slice bounds, so any admin who sends `optimized_pagination=true` with a negative-offset cursor gets a 500. The comment claims the ORM handles negative slicing, but it does not. If the slice were ever evaluated in a way that works (a list-like queryset or a different backend), it would return rows outside the normal pagination window. The paginator also does not apply the `offset + limit + extra` guard in the prev-filtering branch (`len(results) == offset + limit + extra`), which breaks with a negative offset. The base `BasePaginator` change in the same diff leaves the `is_prev` case unclamped too, so a negative offset with `is_prev` still reaches the slice. The `Cursor` class previously accepted negative offsets only through `int()`, and its new comment advertises them as supported.",
+    "line_end": 880,
+    "suggested_fix": "Clamp the offset in all paths: `start_offset = max(0, cursor.offset)`. Drop the negative-offset branch and the `optimized_pagination` switch entirely, or validate the cursor offset to be >= 0 when parsing it."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 63,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Segments over 1000 spans are now silently truncated by dropping the lowest-scored (earliest) spans, and the flusher's span-count check and metric were removed.",
+    "detail": "The Lua script calls `zpopmin set_key (span_count - 1000)` and deletes the earliest-ending spans without any metric or log. `SpansBuffer.flush_segments` no longer checks `max_segment_spans`, so oversized segments that were previously reported and skipped are now flushed with a quietly altered set of spans. The cap is hardcoded at 1000 rather than using the configured `max_segment_spans`. When `zunionstore` runs twice (span set, then parent set), `span_count` reflects only the last union, which happens to be the full set size. Also, `zunionstore` defaults to SUM aggregation, so duplicate payloads have their scores summed and the eviction ordering becomes inaccurate.",
+    "line_end": 65,
+    "suggested_fix": "Use the configured max span count (passed as an ARGV) instead of the hardcoded 1000. Emit a metric or log when spans are evicted. Pass `AGGREGATE MAX` to `zunionstore`."
+  },
+  {
+    "file": "src/sentry/scripts/spans/add-buffer.lua",
+    "line": 30,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The redirect-chain loop limit was reduced from 10000 to 1000 with no justification.",
+    "detail": "The original comment said segment trees deeper than the limit may not be joined correctly. Lowering the limit to 1000 means traces with a parent chain deeper than 1000 stop resolving to the correct root set earlier, which produces fragmented segments. The change is unrelated to the zset migration.",
+    "line_end": null,
+    "suggested_fix": "Restore the loop bound of 10000 unless the reduction is intentional."
+  }
+]

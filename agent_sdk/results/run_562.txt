@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 562
+# repo: LocalRepo
+# refs: fd358e8a388939959369f08f616e29552cdaf96e..9966ec5a13e331659c3ea00981f9b11b0faf821f
+# turns: 5
+# cost (USD, harness-reported): 0.192323
+# cost (USD, public Opus 4 rate): 1.943299
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 35318, 'cache_read_input_tokens': 667838, 'output_tokens': 3722, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 35318}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 560, 'cache_read_input_tokens': 151113, 'cache_creation_input_tokens': 1395, 'cache_creation': {'ephemeral_5m_input_tokens': 1395, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 327,
+    "category": "resource",
+    "severity": "high",
+    "summary": "SimpleQueueProcessingStrategy.close()/terminate() shut down the FixedQueuePool, which is owned by the factory and shared across every strategy it creates.",
+    "detail": "The factory builds `queue_pool` once in `__init__` (with its worker threads). `create_thread_queue_parallel_worker` passes that same pool to each new strategy. Arroyo closes the current strategy on every partition rebalance and then calls `create_with_partitions` again. `close()` calls `queue_pool.shutdown()`, which sets `worker.shutdown = True`, shuts the queues down and joins the workers. The next strategy gets the same dead pool. Its `submit` then calls `work_queue.put`, which raises `queue.ShutDown`. `SimpleQueueProcessingStrategy.submit` catches that, marks the offset complete, and drops the message. After the first rebalance the consumer therefore silently discards every message and commits their offsets. Only the factory's `shutdown()` should stop the pool.",
+    "line_end": 338,
+    "suggested_fix": "Do not shut down the pool in the strategy's close()/terminate(). Stop only the commit thread there and leave the pool to ResultsStrategyFactory.shutdown(). Alternatively, create a per-strategy pool."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 79,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "OffsetTracker only commits strictly contiguous offsets, so a gap in the Kafka offset sequence stalls commits for that partition permanently.",
+    "detail": "`get_committable_offsets` breaks as soon as `offset not in all_offsets`. Kafka offsets are not guaranteed to be dense, for example with transaction control records, compaction, or any message skipped by an earlier stage. The first missing offset stops the loop forever. `all_offsets` then grows without bound. After a restart or rebalance the consumer reprocesses everything since the last real commit. The offset-gap test enshrines this behaviour.",
+    "line_end": 90,
+    "suggested_fix": "Track the highest offset below the lowest outstanding offset as committable, instead of requiring every intermediate offset to be present. For example, committable = min(outstanding) - 1, or max(all_offsets) if nothing is outstanding."
+  },
+  {
+    "file": "src/sentry/remote_subscriptions/consumers/queue_consumer.py",
+    "line": 245,
+    "category": "concurrency",
+    "severity": "medium",
+    "summary": "The commit thread calls the Arroyo commit callback from a background thread, and offset-tracker state is never reset on rebalance.",
+    "detail": "`commit_function` (the Arroyo `commit` for the StreamProcessor) is invoked from `_commit_loop` on a separate thread. Arroyo's commit and staging state is designed for the main consumer thread. Concurrent use can race with the main loop's poll, pause or commit, and with partition revocation. The `OffsetTracker` lives in the shared pool and keeps `last_committed`, `all_offsets` and `outstanding` per partition across rebalances. If a partition is revoked and later reassigned at an earlier offset, `last_committed` is stale and higher than the new offsets, and the stale state can block or misreport commits. Offsets for revoked partitions can also be committed after the revoke.",
+    "line_end": 263,
+    "suggested_fix": "Do the commit from the main thread, inside `poll()`/`submit()`. Clear the tracker state for a partition when it is revoked or reassigned."
+  }
+]

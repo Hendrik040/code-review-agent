@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 556
+# repo: LocalRepo
+# refs: a5d290951def84afdcc4c88d2f1f20023fc36e2a..6ad6fe3899f630ccf922ce7ac681147dc7987435
+# turns: 10
+# cost (USD, harness-reported): 0.165861
+# cost (USD, public Opus 4 rate): 1.906955
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 19186, 'cache_read_input_tokens': 883998, 'output_tokens': 2946, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 19186}, 'inference_geo': '', 'iterations': [{'input_tokens': 4, 'output_tokens': 452, 'cache_read_input_tokens': 134877, 'cache_creation_input_tokens': 1499, 'cache_creation': {'ephemeral_5m_input_tokens': 1499, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "src/sentry/search/events/datasets/discover.py",
+    "line": 1046,
+    "category": "logic",
+    "severity": "high",
+    "summary": "upsampled_count() uses sum(sample_weight) with no null/zero fallback, so events without sample_weight are not counted.",
+    "detail": "The new upsampled_count aggregate is toInt64(sum(sample_weight)). Events that lack sample_weight are ignored by sum(), which skips NULLs. That includes events ingested before upsampling was enabled for the project, or from SDKs that don't send a client sample rate. Any such event contributes 0 instead of 1. For allowlisted projects, transform_query_columns_for_error_upsampling rewrites every count() into this aggregate. Error counts and time series are then silently under-reported, or return 0 or NULL for time buckets that only hold older events. The PR comments justify dropping the null handling by saying the schema guarantees sample_weight, but nothing in this diff enforces that. Older data is the realistic counterexample.",
+    "line_end": null,
+    "suggested_fix": "Use a null-safe weight, e.g. toInt64(sum(if(isNull(sample_weight), 1, sample_weight))), or coalesce(sample_weight, 1) inside the sum."
+  },
+  {
+    "file": "src/sentry/api/helpers/error_upsampling.py",
+    "line": 27,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The eligibility cache is never invalidated, so allowlist changes take up to 60s to apply, and the cache key relies on Python's hash().",
+    "detail": "invalidate_upsampling_cache is added but nothing calls it, including whatever updates the option issues.client_error_sampling.project_allowlist. After an allowlist change, requests can use a stale eligibility value for up to 60s. A project removed from the allowlist keeps getting sum(sample_weight) counts, and one that was added keeps plain counts. The cache key is built from hash(tuple(sorted(project_ids))). That is a 64-bit hash, not the ids themselves, so a collision between different project sets would share an entry. Use the joined ids, or a stable digest, in the key instead.",
+    "line_end": null,
+    "suggested_fix": "Build the key from the ids, e.g. f\"error_upsampling_eligible:{organization.id}:{','.join(map(str, sorted(project_ids)))}\", and call invalidate_upsampling_cache wherever the allowlist option changes, or drop the cache."
+  }
+]

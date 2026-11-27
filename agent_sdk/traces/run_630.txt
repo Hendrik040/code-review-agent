@@ -1,0 +1,338 @@
+=== Agent SDK reviewer run 630 ===
+repo: LocalRepo
+refs: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+started: 2026-11-27T02:09:49.610322+00:00
+use_oauth: False
+
+--- system prompt (5647 chars) ---
+<role>
+You are a senior code reviewer finding real, production-relevant bugs in
+a pull-request diff.
+</role>
+
+<context_format>
+You receive a repo path and a (base_ref, head_ref) pair. Call
+`build_review_context` to get an ODIS review context: a markdown
+document with the unified diff, snippets of modified files (<file
+type="changed">), the callees the changed code depends on, and the
+callers that invoke changed functions/classes.
+
+Treat <callees> and <callers> as review evidence. A valid finding may
+point to changed code or unchanged impact code when the diff breaks
+that code.
+</context_format>
+
+<review_method>
+1. First inspect the diff to identify changed contracts, control flow,
+   data flow, error handling, resource handling, and security-sensitive
+   behavior.
+2. Then compare changed code against <callees> contracts.
+3. Then compare changed signatures/classes against <callers>.
+4. Report only bugs with a plausible runtime, correctness, security, or
+   data impact.
+5. Prefer no finding over a speculative finding.
+</review_method>
+
+<workflow>
+Start by calling `build_review_context` with the refs from the user
+prompt. If the returned context contains enough evidence, submit
+findings without further investigation. If evidence is incomplete,
+inspect only the smallest additional code slice needed to confirm or
+reject the suspected bug — use bash, read_file_section, ast_search,
+or grep. Preserve focus on the base..head change.
+
+Before each tool call, briefly state in your text WHAT you are
+checking and WHY (one sentence is enough), and cite the file/symbol
+you are reasoning about. This restated evidence survives once the
+underlying tool_results get cycled out of context — your assistant
+text stays.
+</workflow>
+
+<action_space>
+You have access to: build_review_context (curated ODIS slice — your
+recommended first action), bash (general shell), read_file_section
+(direct line range), ast_search (structural code patterns via
+ast-grep), grep (regex search), write_file (scratch notes), and
+submit_findings (terminator). Tool schemas are the source of truth for
+exact arguments. Prefer narrow reads and targeted searches over broad
+context dumps. Finish by calling submit_findings exactly once.
+
+When you have multiple INDEPENDENT investigations to run on the same
+turn (e.g. reading two different files, searching for two different
+symbols), issue them as parallel tool_use blocks in the SAME assistant
+turn. The loop executes all and returns all tool_results before your
+next turn. Don't serialize independent lookups across turns.
+</action_space>
+
+<bug_categories>
+- contract-mismatch: changed API/signature/return shape no longer
+  matches callers/callees.
+- logic: wrong condition, operator, ordering, edge case, or data
+  transformation.
+- concurrency: race, deadlock, unsafe shared state, ordering hazard.
+- resource: leak, missing cleanup, unbounded growth, timeout omission.
+- error: unhandled exception, swallowed failure, misleading fallback.
+- security: injection, authz/authn bug, unsafe parsing, secret exposure.
+- other: any other real bug.
+</bug_categories>
+
+<severity>
+- high: likely runtime failure, data corruption/loss, security issue, or
+  major broken workflow.
+- medium: incorrect behavior in realistic cases, degraded reliability,
+  or important missing handling.
+- low: real but narrow edge case with limited blast radius.
+Do not inflate severity for style, readability, or speculative concerns.
+</severity>
+
+<finding_contract>
+Each finding must include:
+- file: path where the bug manifests most directly.
+- line: specific primary line.
+- category and severity from the allowed values.
+- summary: one concise sentence.
+- detail: explain what is wrong, why it matters, and the triggering
+  scenario.
+- suggested_fix: short concrete fix if clear; otherwise "".
+Every finding must be supported by evidence you can cite — either from
+the ODIS context you fetched or from a file you read.
+</finding_contract>
+
+<rules>
+- Skip style, naming, formatting, and broad architecture advice.
+- Do not report missing tests unless the missing test hides a concrete
+  bug.
+- Do not give feedback on code outside the base..head change unless that
+  code is unchanged-but-broken-by-the-diff (a caller of a changed
+  signature, etc.).
+- When citing code in intermediate text (assistant turns, not just the
+  final finding), use the format `path/to/file.py:NN` (or `:NN-MM` for
+  ranges). The trace stays grep-able and clickable.
+- Empty findings list is valid.
+- When done, call submit_findings exactly once.
+</rules>
+
+<sdk_note>
+This implementation runs on the Claude Agent SDK harness, but the
+agent operates exclusively against an isolated sandbox (Phase 4 —
+Daytona or a host tempdir). Your investigation tools all proxy into
+that sandbox via in-process MCP — the harness's native Read/Bash/
+Grep are NOT available; everything you see is mcp__reviewer__*:
+
+  - mcp__reviewer__bash                  (shell in the sandbox)
+  - mcp__reviewer__read_file_section     (file/section read)
+  - mcp__reviewer__grep                  (regex search via git grep)
+  - mcp__reviewer__ast_search            (structural search via ast-grep)
+  - mcp__reviewer__write_file            (write a file in the sandbox)
+  - mcp__reviewer__build_review_context  (the ODIS curated slice;
+                                          your recommended first call)
+  - mcp__reviewer__submit_findings       (the terminator)
+
+The names differ in prefix from <action_space>; the *purpose*
+described there still applies. Tool surface is identical to the
+Client SDK reviewer. Finish by calling
+mcp__reviewer__submit_findings exactly once.
+</sdk_note>
+
+--- user prompt (433 chars) ---
+You are reviewing a pull request to a git repo.
+
+Repo path:  <sandbox repo root>
+Diff range: 344aa102e7818606e29426ebe69d5a680d8727c6..bb75657fc8f13923c1d7983f422290908a1e7310
+
+Recommended first step: call `build_review_context` with the refs above
+to get the ODIS slice. Then dig further with bash / read_file_section /
+ast_search / grep / write_file as needed. Submit only real bugs through
+`submit_findings`. Empty list is valid.
+
+
+┌─ TURN 01  [INIT] ───────────────────────────────────────────────────────────┐
+│ model: claude-haiku-5-5
+│ cwd  : /Users/hendrikkrack/Desktop/build-vs-buy-coderabbit/code-review-agent
+│ /impact-exp
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 02  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=4 cache_w=2032 cache_r=32497 out=32
+│
+│ tool_use: mcp__reviewer__build_review_context
+│   args: {"base_ref": "344aa102e7818606e29426ebe69d5a680d8727c6", "head_ref":
+│  "bb75657fc8f13923c1d7983f422290908a1e7310"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 03  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__build_review_context
+│ id : toolu_01PCNSgJDdz6rMEAaGLc1Bmh
+│ chars: 40,795
+│
+│ preview:
+│   # Code Review Context
+│   
+│   ## 1. Git Diff (What Changed)
+│   
+│   <diff>
+│   diff --git a/requirements-base.txt b/requirements-base.txt
+│   index 75775e8f..ec4c6b45 100644
+│   --- a/requirements-base.txt
+│   +++ b/requirements-base.txt
+│   @@ -66,7 +66,7 @@ sentry-kafka-schemas>=0.1.64
+│   … (+40,195 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 04  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=16548 cache_r=34529 out=8
+│
+│ thinking: (omitted)
+│
+│ text:
+│   The ODIS slice shows the main risk areas: the new GitHub OAuth step, the i
+│ nstaller-identity check, and the `state` value sent in the redirect. I'll ch
+│ eck the pipeline signature format, how `safe_urlopen` picks its HTTP method,
+│  and whether the new `error` helper collides with anything in the module.
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "cd . ; grep -n \"def signature\" -A6 src/sentry/pipelin
+│ e/base.py; grep -n \"method\" src/sentry/http.py | head -20; grep -n \"\\ber
+│ ror\\b\" src/sentry/integrations/github/integration.py | head -30"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 05  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01EazUx5LXpjLhrnGhumZqq2
+│ chars: 759
+│
+│ preview:
+│   67:    method=None,
+│   103:        if method is None:
+│   104:            method = "POST" if (data or json) else "GET"
+│   107:            method=method,
+│   129:def error(
+│   138:            "error": error_long,
+│   141:                "data": {"error": _(error_short)},
+│   188:            logger.error(
+│   276:            message = exc.json.get("message", "unknown error") if exc.
+│ json else "unknown error"
+│   413:            return error(request, self.active_organization)
+│   … (+159 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 06  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=3718 cache_r=51077 out=24
+│
+│ tool_use: mcp__reviewer__bash
+│   args: {"command": "grep -rn \"signature\" src/sentry/pipeline/*.py | head;
+│  grep -rn \"def signature\" -A4 src/sentry/ | head -20"}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 07  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__bash
+│ id : toolu_01TjF29Apj7ZuTPnhKWv9cHj
+│ chars: 721
+│
+│ preview:
+│   src/sentry/pipeline/base.py:133:        self.signature = md5_text(*pipe_id
+│ s).hexdigest()
+│   src/sentry/pipeline/base.py:149:            and self.state.signature == se
+│ lf.signature
+│   src/sentry/pipeline/base.py:165:            "signature": self.signature,
+│   src/sentry/pipeline/store.py:9:    signature = redis_property("signature")
+│   src/sentry/utils/email/signer.py:28:    def signature(self, value: str) ->
+│  str:
+│   src/sentry/utils/email/signer.py-29-        return super().signature(value
+│ ).lower()
+│   src/sentry/utils/email/signer.py-30-
+│   src/sentry/utils/email/signer.py-31-    def unsign(self, signed_value: str
+│ )
+│   … (+121 more chars)
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 08  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=405 cache_r=54795 out=8
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__grep
+│   args: {"pattern": "state = pipeline.signature|request.GET.get\\(\"state\"\
+│ \) != pipeline.signature|if integration_pending_deletion_exists|Integration.
+│ DoesNotExist:|pipeline.fetch_state\\(\"github_authenticated_user\"\\)", "pat
+│ h_glob": "src/sentry…
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 09  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__grep
+│ id : toolu_01AQHG4dpLz8ZSvp4Y42zUyE
+│ chars: 589
+│
+│ preview:
+│   src/sentry/integrations/github/integration.py:402:            state = pipe
+│ line.signature
+│   src/sentry/integrations/github/integration.py:412:        if request.GET.g
+│ et("state") != pipeline.signature:
+│   src/sentry/integrations/github/integration.py:467:        if integration_p
+│ ending_deletion_exists:
+│   src/sentry/integrations/github/integration.py:481:        except Integrati
+│ on.DoesNotExist:
+│   src/sentry/integrations/github/integration.py:497:        except Integrati
+│ on.DoesNotExist:
+│   src/sentry/integrations/github/integration.py:502:            pipeline.fet
+│ ch_state("github_authenticated_user")
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 10  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1249 cache_r=55200 out=3
+│
+│ thinking: (omitted)
+│
+│ tool_use: mcp__reviewer__submit_findings
+│   args: {"findings": [{"file": "src/sentry/integrations/github/integration.p
+│ y", "line": 402, "line_end": 412, "category": "security", "severity": "high"
+│ , "summary": "The OAuth 'state' is pipeline.signature, a public MD5 of pipel
+│ ine class names, so …
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 11  [tool_result] ────────────────────────────────────────────────────┐
+│ for: mcp__reviewer__submit_findings
+│ id : toolu_01RscaqZPwymeHm9er7GjvEW
+│ chars: 2
+│
+│ preview:
+│   ok
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 12  [assistant] ──────────────────────────────────────────────────────┐
+│ usage: in=2 cache_w=1159 cache_r=56449 out=5
+│
+│ text:
+│   I submitted two findings, both in the new GitHub OAuth installation flow i
+│ n `src/sentry/integrations/github/integration.py`. I did not check the other
+│  changes in the diff (the sentry-sdk pin, the replay video billing change, t
+│ he span.op/span.description case-sensitivity change, and the monitor mute pe
+│ riod).
+│   
+│   1. **High, security: the OAuth `state` value is not a real CSRF token.** `
+│ OAuthLoginView` uses `pipeline.signature` as `state` (line 402) and checks i
+│ t on the callback (line 412). That value is an MD5 of the pipeline class nam
+│ es, so it is constant and public. An attacker can send a victim a setup link
+│  carrying the attacker's own GitHub `code` and that constant state. If the a
+│ ttacker installed the app themselves, the new installer check passes and the
+│  victim's org links the attacker's installation. The suggested fix is a per-
+│ flow random nonce stored in pipeline state or the session.
+│   
+│   2. **Medium, logic: the installer check is skipped on fresh installs.** Wh
+│ en no `Integration` row exists yet (lines 481–483), the code returns `pipeli
+│ ne.next_step()` before reaching the new `github_authenticated_user` vs `send
+│ er.login` comparison (around line 502). The installation webhook is asynchro
+│ nous, so that row may not exist when the callback runs. The suggested fix is
+│  to verify the installation owner via the GitHub API on that path as well.
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TURN 13  [RESULT] ─────────────────────────────────────────────────────────┐
+│ stop_reason: end_turn
+│ num_turns: 6
+│ duration: 36397 ms
+│ total_cost_usd: $0.0092
+│ totals: in=14 cache_w=25111 cache_r=284547 out=6349
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+finished: 2026-11-27T02:10:26.614521+00:00  submitted=True  duplicate_submission=False  findings=2  num_turns=6  stop_reason=end_turn
