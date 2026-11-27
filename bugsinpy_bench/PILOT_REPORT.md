@@ -140,3 +140,43 @@ skipped bugs, and the judge returned no errors.
 - `bugsinpy_bench/router_inputs/`: `<project>_<bug>.diff` (the reviewer's
   `git diff --unified=3` of base..head), `<project>_<bug>.summary.json` (Haiku 5.5, one call
   per changed non-test Python file, merged per bug) and `_summary_cost.json`.
+
+## Jev triage, scored from these results (added after the pilot)
+
+Each bug was routed with `shared/routing.py` exactly as committed on
+`claude/jev-model-routing` (`3e69e01`): Jev scores how deep a review the diff
+needs and whether it is high-stakes, and the cheapest tier whose chance of
+needing a deeper one is at most 0.15 is chosen. The commit subject stands in
+for the PR title. No reviews were rerun: each bug takes the stored result and
+cost of the tier it was routed to (light = Haiku 5.5 medium, standard =
+Sonnet 5.5 high, deep = the May Opus 4.7 sweep). Jev's own cost was not measured.
+
+Script: `bugsinpy_bench/scripts/route_and_score.py`. Output:
+`bugsinpy_bench/routing/routes_pilot30.json` and `triage_scores.json`.
+The Sonnet and Haiku results of the other pilot run (`bench/model-tiers-pilot`,
+`332fe11`) are scored as "cloud".
+
+**Routes (second pass, committed):** 0 light, 6 standard, 24 deep. Standard:
+fastapi#8, luigi#2, matplotlib#6, pandas#30, thefuck#1, thefuck#7.
+black#1 went deep on a 0.90 high-stakes score.
+
+**Routing is not fully repeatable.** A first pass with the same code and inputs
+(`routes_pilot30_pass1.json`) also sent luigi#4 and thefuck#9 to standard
+(8 standard, 22 deep). Both sat at P(needs deep) 0.13 on the first pass and
+0.17 on the second, either side of the 0.15 threshold.
+
+| Setup | Found, this run | Cost, this run | Found, cloud run | Cost, cloud run |
+|---|---:|---:|---:|---:|
+| All Opus 4.7 max (no triage) | 19/30 | $30.67 | 19/30 | $30.67 |
+| All Opus 4.7 high (no triage) | 17/30 | $16.37 | 17/30 | $16.37 |
+| Jev triage, deep = Opus 4.7 max | 20/30 | $24.61 | 21/30 | $24.62 |
+| Jev triage, deep = Opus 4.7 high | 19/30 | $14.50 | 20/30 | $14.51 |
+| All Sonnet 5.5 high | 17/30 | $1.51 | 21/30 | $1.67 |
+| All Haiku 5.5 medium | 16/30 | $0.14 | 18/30 | $0.17 |
+
+With the first-pass routes, triage costs $22.94 (deep = max) and $13.83
+(deep = high) with the same found counts.
+
+The 30 bugs were chosen by the May Opus 4.7 outcomes, so the Opus columns are
+fixed by construction. The extra bugs triage finds come from the "never found"
+group, where Sonnet found thefuck#7 and fastapi#8.
