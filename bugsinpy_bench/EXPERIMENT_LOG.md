@@ -40,7 +40,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 8 | 2026-11-27 17:00-17:35 | Opus 5.5 high on Martian with a prompt addendum asking it to file what it would drop | Recall 9 → 14 of 31, precision unchanged, F1 0.359 → 0.459 for $3.07 |
 | 9 | 2026-11-27 | Sonnet 5.5 high on Martian with the same addendum; Jev routing compared with random routing | Sonnet F1 0.510 → 0.464 (no gain); Jev's tier picks beat random same-mix routing by about 2 bugs |
 | 10 | 2026-11-27 19:50-20:45 | Block-level Jev routing: Haiku 5.5 per-block facts, 11 Jev questions, facts only (A) vs facts + Haiku complexity (B), scored on stored BugsInPy reviews | No ranking signal (AUC 0.51-0.53); best point 42/100 for $14.97, worse than the current router ($14.15) |
-| 11 | 2026-11-27 | Replays on stored data: the router's risk setting, repeat runs of one model, merged reviews | Risk 0.25 keeps 42 found for 18% less; a model disagrees with itself on 4 of 30 bugs; adding a Haiku pass finds more bugs on BugsInPy but not on Martian with Sonnet |
+| 11 | 2026-11-27 | Replays on stored data: the router's risk setting, repeat runs of one model, merged reviews | With Jev's picks, risk 0.25 keeps 42 found for 18% less than all-Opus 5.5 (random routing of that mix expects 39.3); a model disagrees with itself on 4 of 30 bugs; adding a Haiku pass finds more bugs on BugsInPy but not on Martian with Sonnet |
 | 12 | 2026-11-27 21:23-21:30 | Offline cascade test, design fixed in advance: Jev reads each finished review and flags the ones that need a second pass | No usable signal on Haiku's reviews (AUC 0.45 and 0.43, chance is 0.5); success bar not met |
 
 ## Step 0. May baseline (Opus 4.7)
@@ -459,10 +459,13 @@ For comparison: all-Opus 5.5 finds 42 for $16.33, the shipped router 42 for $14.
 Neither "Haiku filed nothing" nor the router's deep set beats a random set of the same
 size (41.0 and 45.1 expected with Opus as second).
 
-Three cautions. Most of the gain is a second sample, not a different model: two runs of
-the same model, merged, gain about as much (table above). BugsInPy counts only the target
-bug, so the extra false positives of a merged review are not measured. And Martian, which
-does count them, shows little:
+Three cautions. Part of the gain is simply a second sample. On the 30 pilot bugs a second
+Haiku run adds 3 bugs to Haiku's first run, where Opus adds 6 and Sonnet 4 to 6; a second
+Sonnet run adds 4 to Sonnet's first, where Opus adds 5. Thirty bugs cannot settle how
+much is the second sample and how much the different model. BugsInPy counts only the
+target bug, so the extra false positives of a merged review are not measured. And
+Martian, which does count them, is mixed: adding Haiku does nothing for Sonnet and helps
+Opus (9 to 12 goldens). Findings are pooled there without removing duplicates.
 
 | Martian, 10 PRs | Goldens matched | Findings | Precision | F1 | Cost |
 |---|---:|---:|---:|---:|---:|
@@ -512,10 +515,14 @@ the more expensive ones to repeat with Opus.
 **What the answers show.**
 - Haiku misses silently. Where Haiku missed a bug that Opus found, its closing message
   raises fewer flags than elsewhere (median `flag` 0.69 against 0.87 in pass 1).
-- `could_not_verify` is not informative in this sandbox. The projects are usually not
-  installed, so reviewers often say they could not run the code: the question is at 0.5
-  or more for 49 Haiku, 89 Sonnet and 53 Opus reviews. It saturates `flag` for Sonnet
-  (97 of 100 escalated).
+- `could_not_verify` fires too often to be informative: it is at 0.5 or more for 49
+  Haiku, 89 Sonnet and 53 Opus reviews, and it saturates `flag` for Sonnet (97 of 100
+  escalated). Most of those closing messages say the reviewer did not run the code or the
+  tests (34, 81 and 39 of them by a phrase count); few say it could not (12, 0 and 9).
+- The flag mostly tracks whether Haiku found something: its median is 0.94 where Haiku
+  found the bug, 0.69 on the gain cases and 0.55 where no model found it (pass 1). All
+  three questions rank below 0.5 on their own, so the result does not depend on taking
+  the largest.
 - The flags line up only for Opus 5.5 as the first model (AUC 0.68 and 0.69, 6 of 7 gain
   cases caught). That set is not a clean test: the questions were written after reading
   Opus's traces for these bugs, and it has 7 gain cases. It fits step 7: Opus 5.5 says
@@ -527,9 +534,11 @@ the more expensive ones to repeat with Opus.
 **Conclusion.** Three ways of asking Jev which PR needs the stronger model have now been
 measured: from the diff (steps 4 and 6), from the diff's blocks (step 10) and from the
 cheap model's finished review (this step). None beats a random choice of the same size
-on BugsInPy by a margin these 100 bugs can establish. What does hold on stored results is
-structural and needs no prediction: sending a share of PRs to a cheaper model (step 11's
-risk table), and adding a cheap second pass, with the cautions listed in step 11.
+on BugsInPy by a margin these 100 bugs can establish. The cost side of the risk table in
+step 11 holds whatever Jev picks: sending a share of PRs to a cheaper model saves that
+money. The bugs-found side does not: the 42 found at risk 0.15 and 0.25 are with Jev's
+picks, and random routing of the same mix expects 40.0 and 39.3. Adding a cheap second
+pass needs no prediction, with the cautions listed in step 11.
 
 ## Spend
 

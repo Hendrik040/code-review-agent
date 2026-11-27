@@ -62,6 +62,12 @@ def review_state(title: str, files: list[dict], review: dict) -> dict:
     }
 
 
+def is_verifiable(review: dict) -> bool:
+    """False for a review that never submitted or whose trace is missing; such a
+    review always gets a second look (flag 1.0 in score_cascade.flag_score)."""
+    return review["exit_reason"] == "submit_findings" and bool(review.get("has_trace", True))
+
+
 def verify(state: dict, client) -> dict:
     """{"answers": {question: P(yes)}, "usage": {...}} or {"error": class name}."""
     try:
@@ -113,7 +119,7 @@ def main() -> int:
 
     def one(label: str) -> None:
         rv, e = reviews[label], entries[label]
-        rec = {"label": label, "submitted": rv["exit_reason"] == "submit_findings",
+        rec = {"label": label, "submitted": is_verifiable(rv),
                "n_findings": len(rv["findings"]), "num_turns": rv["num_turns"],
                "closing_chars": len(rv["closing_message"]),
                **verify(review_state(e["title"], numstat(e["diff"]), rv), client())}

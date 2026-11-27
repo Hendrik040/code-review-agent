@@ -124,11 +124,21 @@ def parse_result_file(text: str) -> dict:
         "label": field("bug"),
         "model": field("model"),
         "run_id": int(run.group(1)) if run else None,
+        "refs": field("refs"),
         "num_turns": field("num_turns", int, 0),
         "exit_reason": field("exit_reason", str, ""),
         "cost_usd": field("cost_usd", float, 0.0),
         "findings": findings if isinstance(findings, list) else [],
     }
+
+
+def trace_facts(trace_text: str) -> dict:
+    """What a trace says about itself, to check it belongs to a result file."""
+    run = re.search(r"^=== Agent SDK reviewer run (\d+) ===", trace_text[:2000], re.M)
+    refs = re.search(r"^refs: (.+)$", trace_text[:2000], re.M)
+    done = re.findall(r"^finished: .*?findings=(\d+)\s+num_turns=(\d+)", trace_text, re.M)
+    return {"run_id": int(run.group(1)) if run else None, "refs": refs.group(1).strip() if refs else None,
+            "findings": int(done[-1][0]) if done else None, "num_turns": int(done[-1][1]) if done else None}
 
 
 def load_reviews(arm: str) -> dict[str, dict]:
@@ -138,8 +148,7 @@ def load_reviews(arm: str) -> dict[str, dict]:
         for path in sorted((RESULTS / sweep / "runs").glob("*.txt")):
             r = parse_result_file(path.read_text())
             trace = TRACES / f"run_{r['run_id']:03d}.txt" if r["run_id"] is not None else None
-            r["closing_message"] = (
-                closing_message(trace.read_text(errors="replace")) if trace and trace.exists() else ""
-            )
+            r["has_trace"] = bool(trace and trace.exists())
+            r["closing_message"] = closing_message(trace.read_text(errors="replace")) if r["has_trace"] else ""
             out[r["label"]] = r
     return out

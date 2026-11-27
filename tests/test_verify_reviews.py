@@ -51,3 +51,17 @@ def test_verify_returns_the_three_probabilities_and_usage():
 
 def test_a_jev_error_is_recorded_by_class_name_only():
     assert verify(review_state("t", FILES, REVIEW), FakeJev(error=TimeoutError("secret body"))) == {"error": "TimeoutError"}
+
+
+def test_question_wording_is_the_wording_fixed_in_the_design_doc():
+    design = (Path(__file__).resolve().parent.parent / "docs" / "superpowers" / "specs"
+              / "2026-11-27-jev-review-verifier-design.md").read_text()
+    for name, q in QUESTIONS.items():
+        assert f"| `{name}` | {q['instructions']} |" in design
+
+
+def test_a_review_without_a_trace_is_not_verifiable():
+    from verify_reviews import is_verifiable
+    assert is_verifiable({"exit_reason": "submit_findings", "has_trace": True}) is True
+    assert is_verifiable({"exit_reason": "submit_findings", "has_trace": False}) is False
+    assert is_verifiable({"exit_reason": "max_turns", "has_trace": True}) is False

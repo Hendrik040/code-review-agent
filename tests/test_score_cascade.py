@@ -49,3 +49,48 @@ def test_stored_results_give_the_totals_in_the_design_doc():
     assert cascade("haiku", "opus", missed, out) == (49, pytest.approx(10.41, abs=0.01))
     assert [len(gain_cases(a, b, out)) for a, b in
             (("haiku", "opus"), ("haiku", "sonnet"), ("sonnet", "opus"), ("opus", "haiku"))] == [14, 10, 8, 7]
+
+
+def _answers(flags):
+    """Records shaped like routing/verifier/answers_*.json, one question carrying the flag."""
+    return {lb: {"label": lb, "submitted": True, "n_findings": 1, "num_turns": 5,
+                 "answers": {"unfiled_issue": f, "dismissed_as_intended": 0.0, "could_not_verify": 0.0}}
+            for lb, f in flags.items()}
+
+
+def test_random_share_strict_counts_only_sets_that_do_better():
+    from score_cascade import random_share
+    assert random_share("haiku", "opus", 1, 1, TOY, trials=20000, seed=1, strict=True) == pytest.approx(0.25, abs=0.02)
+    assert random_share("haiku", "opus", 1, 2, TOY, trials=2000, seed=1, strict=True) == 0.0
+
+
+def test_score_pass_ranks_gain_cases_first_and_escalates_at_the_threshold():
+    from score_cascade import score_pass
+    # a#2 is the only gain case. A flag of exactly 0.5 is escalated (>=).
+    rec = score_pass("haiku", "opus", _answers({"a#1": 0.1, "a#2": 0.9, "a#3": 0.5, "a#4": 0.2}), TOY, trials=200)
+    assert rec["auc_flag"] == 1.0
+    assert rec["escalated_labels"] == ["a#2", "a#3"]
+    assert (rec["at_declared_T"]["found"], rec["at_declared_T"]["cost_usd"]) == (2, 0.74)
+    assert rec["at_declared_T"]["gain_cases_escalated"] == 1
+    # The same flags upside down: the gain case is ranked last.
+    low = score_pass("haiku", "opus", _answers({"a#1": 0.9, "a#2": 0.1, "a#3": 0.6, "a#4": 0.7}), TOY, trials=200)
+    assert low["auc_flag"] == 0.0
+    assert low["at_declared_T"]["found"] == 1
+
+
+def test_success_bar_needs_both_conditions_in_every_pass():
+    from score_cascade import meets_bar
+    good = {"auc_flag": 0.75, "random_share_strictly_better": 0.03}
+    assert meets_bar([good, good]) is True
+    assert meets_bar([good, {"auc_flag": 0.69, "random_share_strictly_better": 0.03}]) is False
+    assert meets_bar([good, {"auc_flag": 0.75, "random_share_strictly_better": 0.06}]) is False
+    assert meets_bar([]) is False
+
+
+def test_router_deep_baseline_is_the_shipped_routers_deep_set():
+    from score_cascade import router_deep_set
+    out = load_outcomes()
+    deep = router_deep_set()
+    assert len(deep) == 72
+    assert cascade("haiku", "opus", deep, out) == (44, pytest.approx(13.49, abs=0.01))
+    assert cascade("haiku", "sonnet", deep, out) == (41, pytest.approx(4.89, abs=0.01))

@@ -93,3 +93,21 @@ def test_load_reviews_covers_all_100_bugs_for_each_model():
     assert closing.startswith("The submission failed validation")
     assert "I submitted two findings for this commit." in closing
     assert "file output is broken (`pysnooper/pysnooper.py:34`)" in closing
+
+
+def test_every_stored_review_is_matched_to_its_own_trace():
+    """The join the whole test rests on: result file -> run number -> trace."""
+    from review_digest import TRACES, trace_facts
+    for arm in ("haiku", "sonnet", "opus"):
+        for label, r in load_reviews(arm).items():
+            assert r["has_trace"], (arm, label)
+            facts = trace_facts((TRACES / f"run_{r['run_id']:03d}.txt").read_text(errors="replace"))
+            assert facts == {"run_id": r["run_id"], "refs": r["refs"], "findings": len(r["findings"]),
+                             "num_turns": r["num_turns"]}, (arm, label)
+
+
+def test_a_missing_trace_is_reported_not_hidden(tmp_path, monkeypatch):
+    import review_digest
+    monkeypatch.setattr(review_digest, "TRACES", tmp_path)
+    r = review_digest.load_reviews("haiku")["PySnooper#3"]
+    assert r["has_trace"] is False and r["closing_message"] == ""

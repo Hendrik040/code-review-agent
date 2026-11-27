@@ -83,6 +83,67 @@ def random_share(first: str, second: str, n: int, observed_found: int, outcomes:
     return hits / trials
 
 
+def router_deep_set() -> set[str]:
+    """The bugs the shipped router (risk 0.15) sends to the deep tier."""
+    out: set[str] = set()
+    for f in ("routes_pilot30.json", "routes_rest70.json"):
+        out |= {r["label"] for r in json.loads((ROUTING / f).read_text())["routes"] if r["tier"] == "deep"}
+    return out
+
+
+def _row(first: str, second: str, escalate: set[str], outcomes: dict[str, dict]) -> dict:
+    """The cascade with this escalation set, next to a random set of the same size."""
+    n = len(outcomes)
+    gains = set(gain_cases(first, second, outcomes))
+    base_found, base_cost = cascade(first, second, set(), outcomes)
+    second_total = sum(o[second]["cost_usd"] for o in outcomes.values())
+    found, cost = cascade(first, second, escalate, outcomes)
+    k = len(escalate)
+    return {"escalated": k, "found": found, "cost_usd": round(cost, 2),
+            "random_expected_found": round(base_found + len(gains) * k / n, 1),
+            "random_expected_cost_usd": round(base_cost + second_total * k / n, 2),
+            "gain_cases_escalated": len(gains & escalate)}
+
+
+def score_pass(first: str, second: str, answers: dict[str, dict], outcomes: dict[str, dict],
+               threshold: float = T_DECLARED, trials: int = 10000) -> dict:
+    """Everything reported for one pass of Jev answers about `first`'s reviews.
+
+    AUC orientation: 1.0 means every gain case (first missed, second found) has
+    a higher flag than every other review of `first`; 0.5 is chance.
+    """
+    labels = sorted(outcomes)
+    gains = set(gain_cases(first, second, outcomes))
+    others = [lb for lb in labels if lb not in gains]
+    flags = {lb: flag_score(answers[lb], answers[lb]["submitted"]) for lb in labels}
+    escalate = {lb for lb in labels if flags[lb] >= threshold}
+    row = _row(first, second, escalate, outcomes)
+    q_auc = {}
+    for q in QUESTION_IDS:
+        v = {lb: (answers[lb]["answers"][q] if "answers" in answers[lb] else 1.0) for lb in labels}
+        q_auc[q] = round(auc([v[x] for x in gains], [v[x] for x in others]), 3)
+    return {
+        "auc_flag": round(auc([flags[x] for x in gains], [flags[x] for x in others]), 3),
+        "auc_per_question": q_auc,
+        "median_flag_gain_cases": round(statistics.median(flags[x] for x in gains), 3) if gains else None,
+        "median_flag_other_reviews": round(statistics.median(flags[x] for x in others), 3) if others else None,
+        "escalated_labels": sorted(escalate),
+        "at_declared_T": row,
+        "random_share_at_least_as_good": random_share(first, second, row["escalated"], row["found"], outcomes,
+                                                      trials=trials),
+        "random_share_strictly_better": random_share(first, second, row["escalated"], row["found"], outcomes,
+                                                     trials=trials, strict=True),
+        "sweep": [{"T": T, **_row(first, second, {lb for lb in labels if flags[lb] >= T}, outcomes)} for T in TS],
+    }
+
+
+def meets_bar(passes: list[dict]) -> bool:
+    """The success bar of the design: in every pass, an AUC of at least 0.70 and
+    at most 5% of random sets of the same size finding strictly more bugs."""
+    return bool(passes) and all(
+        p["auc_flag"] >= AUC_BAR and p["random_share_strictly_better"] <= RANDOM_BAR for p in passes)
+
+
 def _answers(arm: str, pass_: int) -> dict[str, dict] | None:
     p = ANSWERS / f"answers_{arm}_p{pass_}.json"
     return {r["label"]: r for r in json.loads(p.read_text())["reviews"]} if p.exists() else None
@@ -96,20 +157,11 @@ def _router_p_deep() -> dict[str, float]:
     return out
 
 
-def _row(first, second, escalate, outcomes, gains, base, second_total) -> dict:
-    n = len(outcomes)
-    found, cost = cascade(first, second, escalate, outcomes)
-    k = len(escalate)
-    return {"escalated": k, "found": found, "cost_usd": round(cost, 2),
-            "random_expected_found": round(base[0] + len(gains) * k / n, 1),
-            "random_expected_cost_usd": round(base[1] + second_total * k / n, 2),
-            "gain_cases_escalated": len(gains & escalate)}
-
-
 def main() -> int:
     outcomes = load_outcomes()
     labels = sorted(outcomes)
     p_deep = _router_p_deep()
+    deep_set = router_deep_set()
     result: dict = {"T_declared": T_DECLARED, "auc_bar": AUC_BAR, "random_bar": RANDOM_BAR, "pairs": {}, "jev": {}}
 
     for arm in ARM:
@@ -125,63 +177,45 @@ def main() -> int:
         gains = set(gain_cases(first, second, outcomes))
         others = [lb for lb in labels if lb not in gains]
         base = cascade(first, second, set(), outcomes)
-        second_total = sum(o[second]["cost_usd"] for o in outcomes.values())
         missed = {lb for lb in labels if not outcomes[lb][first]["found"]}
         pair: dict = {
             "status": status, "gain_cases": len(gains),
             "first_alone": {"found": base[0], "cost_usd": round(base[1], 2)},
-            "second_on_every_bug": _row(first, second, set(labels), outcomes, gains, base, second_total),
-            "perfect_signal": _row(first, second, missed, outcomes, gains, base, second_total),
+            "second_on_every_bug": _row(first, second, set(labels), outcomes),
+            "perfect_signal": _row(first, second, missed, outcomes),
             "passes": {},
         }
         print(f"\n=== {first} first, {second} second ({status}); gain cases {len(gains)}; "
               f"{first} alone {base[0]} found ${base[1]:.2f}")
-        decisions = {}
         for p in (1, 2):
             a = _answers(first, p)
             if not a or len(a) < len(labels):
                 print(f"  pass {p}: answers missing or incomplete")
                 continue
-            flags = {lb: flag_score(a[lb], a[lb]["submitted"]) for lb in labels}
-            escalate = {lb for lb in labels if flags[lb] >= T_DECLARED}
-            decisions[p] = escalate
-            row = _row(first, second, escalate, outcomes, gains, base, second_total)
-            q_auc = {}
-            for q in QUESTION_IDS:
-                v = {lb: (a[lb]["answers"][q] if "answers" in a[lb] else 1.0) for lb in labels}
-                q_auc[q] = round(auc([v[x] for x in gains], [v[x] for x in others]), 3)
-            rec = {
-                "auc_flag": round(auc([flags[x] for x in gains], [flags[x] for x in others]), 3),
-                "auc_per_question": q_auc,
-                "median_flag_gain_cases": round(statistics.median(flags[x] for x in gains), 3) if gains else None,
-                "median_flag_other_reviews": round(statistics.median(flags[x] for x in others), 3),
-                "at_declared_T": row,
-                "random_share_at_least_as_good": random_share(first, second, row["escalated"], row["found"], outcomes),
-                "random_share_strictly_better": random_share(first, second, row["escalated"], row["found"], outcomes,
-                                                             strict=True),
-                "sweep": [{"T": T, **_row(first, second, {lb for lb in labels if flags[lb] >= T}, outcomes, gains,
-                                          base, second_total)} for T in TS],
-            }
+            rec = score_pass(first, second, a, outcomes)
+            row = rec["at_declared_T"]
             pair["passes"][f"p{p}"] = rec
-            print(f"  pass {p}: AUC flag {rec['auc_flag']:.3f}  per question {q_auc}")
+            print(f"  pass {p}: AUC flag {rec['auc_flag']:.3f}  per question {rec['auc_per_question']}")
             print(f"          median flag: gain cases {rec['median_flag_gain_cases']}, other reviews {rec['median_flag_other_reviews']}")
             print(f"          T=0.5: escalated {row['escalated']}, caught {row['gain_cases_escalated']}/{len(gains)} gain cases, "
                   f"found {row['found']} for ${row['cost_usd']:.2f} | random same size: {row['random_expected_found']} "
                   f"for ${row['random_expected_cost_usd']:.2f} | random sets at least as good {rec['random_share_at_least_as_good']:.3f}, "
                   f"strictly better {rec['random_share_strictly_better']:.3f}")
-        if len(decisions) == 2:
-            same = sum((lb in decisions[1]) == (lb in decisions[2]) for lb in labels)
+        recs = list(pair["passes"].values())
+        if len(recs) == 2:
+            same = sum((lb in recs[0]["escalated_labels"]) == (lb in recs[1]["escalated_labels"]) for lb in labels)
             pair["pass_agreement_at_T"] = round(same / len(labels), 3)
             print(f"  passes agree on {same}/{len(labels)} escalation decisions at T=0.5")
 
-        # Baselines that need no Jev call, from the stored review itself.
+        # Baselines that need no new Jev call.
         a1 = _answers(first, 1)
         if a1 and len(a1) >= len(labels):
             nothing = {lb for lb in labels if a1[lb]["n_findings"] == 0}
             pair["baselines"] = {
-                "filed_nothing": {**_row(first, second, nothing, outcomes, gains, base, second_total),
+                "filed_nothing": {**_row(first, second, nothing, outcomes),
                                   "auc": round(auc([float(x in nothing) for x in gains],
                                                    [float(x in nothing) for x in others]), 3)},
+                "router_deep_set": _row(first, second, deep_set, outcomes),
                 "fewer_turns_auc": round(auc([-a1[x]["num_turns"] for x in gains],
                                              [-a1[x]["num_turns"] for x in others]), 3),
                 "router_p_deep_auc": round(auc([p_deep[x] for x in gains], [p_deep[x] for x in others]), 3),
@@ -189,14 +223,14 @@ def main() -> int:
             b = pair["baselines"]
             print(f"  baselines: filed nothing AUC {b['filed_nothing']['auc']:.3f} "
                   f"(escalates {b['filed_nothing']['escalated']}, found {b['filed_nothing']['found']} for "
-                  f"${b['filed_nothing']['cost_usd']:.2f}); fewer turns AUC {b['fewer_turns_auc']:.3f}; "
-                  f"router P(deep) AUC {b['router_p_deep_auc']:.3f}")
-        if status == "primary" and len(pair["passes"]) == 2:
-            ok = all(r["auc_flag"] >= AUC_BAR and r["random_share_strictly_better"] <= RANDOM_BAR
-                     for r in pair["passes"].values())
-            pair["meets_success_bar"] = ok
+                  f"${b['filed_nothing']['cost_usd']:.2f}; random {b['filed_nothing']['random_expected_found']}); "
+                  f"router's deep set (escalates {b['router_deep_set']['escalated']}, found {b['router_deep_set']['found']} "
+                  f"for ${b['router_deep_set']['cost_usd']:.2f}; random {b['router_deep_set']['random_expected_found']}); "
+                  f"fewer turns AUC {b['fewer_turns_auc']:.3f}; router P(deep) AUC {b['router_p_deep_auc']:.3f}")
+        if status == "primary" and len(recs) == 2:
+            pair["meets_success_bar"] = meets_bar(recs)
             print(f"  SUCCESS BAR (AUC >= {AUC_BAR} and at most {RANDOM_BAR:.0%} of random sets better, both passes): "
-                  f"{'met' if ok else 'NOT met'}")
+                  f"{'met' if pair['meets_success_bar'] else 'NOT met'}")
         result["pairs"][f"{first}_then_{second}"] = pair
 
     if result["jev"]:
