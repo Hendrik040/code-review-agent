@@ -137,6 +137,41 @@ the ODIS context you fetched or from a file you read.
 </rules>
 """
 
+# Phase 8: with impact selection the context is a trimmed selection. Without
+# saying so, reviewers trusted it, stopped early and dismissed suspicions
+# they could have confirmed with one read (bench_impact/RESULTS.md on
+# bench/impact-selection-exp). Two passages change; the rest is identical.
+# REVIEW_PROMPT_VARIANT=default (or legacy) restores the earlier prompt so
+# older sweeps stay reproducible. Read once, at import.
+_ENOUGH_EVIDENCE = (
+    "If the returned context contains enough evidence, submit\n"
+    "findings without further investigation."
+)
+_VERIFY = (
+    "The context is a trimmed selection: <callees> and <callers>\n"
+    "show only the code judged relevant, and a <not_shown> note says what\n"
+    "was left out. Do not drop a suspected bug only because the context\n"
+    "does not prove it; confirm or reject it with the smallest code read."
+)
+_SPECULATIVE = "5. Prefer no finding over a speculative finding."
+_NOT_SPECULATIVE = (
+    "5. Prefer no finding over a speculative finding. A mismatch you can\n"
+    "   point to in the code, such as a condition that admits inputs the\n"
+    "   code after it does not handle, is not speculative: report it, at\n"
+    "   low severity if its impact is narrow."
+)
+SYSTEM_PROMPT_LEGACY = SYSTEM_PROMPT
+assert _ENOUGH_EVIDENCE in SYSTEM_PROMPT_LEGACY and _SPECULATIVE in SYSTEM_PROMPT_LEGACY
+SYSTEM_PROMPT_VERIFY = SYSTEM_PROMPT_LEGACY.replace(_ENOUGH_EVIDENCE, _VERIFY).replace(_SPECULATIVE, _NOT_SPECULATIVE)
+
+import os as _os  # noqa: E402
+
+SYSTEM_PROMPT = (
+    SYSTEM_PROMPT_LEGACY
+    if _os.environ.get("REVIEW_PROMPT_VARIANT", "").strip().lower() in {"default", "legacy"}
+    else SYSTEM_PROMPT_VERIFY
+)
+
 USER_PROMPT_TEMPLATE = """\
 You are reviewing a pull request to a git repo.
 
