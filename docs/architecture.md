@@ -25,6 +25,7 @@ v1/
 │   │                                read_file_section / ast_search / grep /
 │   │                                write_file + their tool schemas
 │   │                                (used by both SDKs)
+│   ├── jev.py                       Phase 7: the one place that calls Jev
 │   └── memory/                      reflective rules (Phase 6)
 │       └── REVIEW_RULES.md
 ├── client_sdk/
@@ -122,6 +123,7 @@ Anthropic, Manus, and the Claude-diary post) lands somewhere concrete:
 | Evolve context | LM / Claude-diary | Phase 6: filesystem diary at `shared/memory/diary/YYYY-MM-DD-run-NNN.md`. `reflect` command updates `REVIEW_RULES.md`. Manual approval gate. |
 | Recitation | Manus | Phase 2.3: long Agent SDK runs rewrite a `plan.md` every N tool calls to combat drift. |
 | Preserve error traces | Manus | We never prune failed tool calls from message history. Both SDKs. |
+| Classifier for classifications | Phase 7 | `learnings/jev_judge.py`, after TypeSafe's "Classifying RAG passages" cookbook: with `TYPESAFE_API_KEY` set, each retrieved learning gets one Jev request with several yes/no questions (applies to this diff; tries to instruct the reviewer), thresholds in code decide include/exclude, and survivors are re-sorted by P(applies) before the top-k cut. The capture daemon screens free-form @mentions the same way. Haiku stays as the fallback and as the `LEARNINGS_JUDGE=haiku` option. |
 | Just-in-time retrieval | Anthropic | Agent gets file *paths* in ODIS context, not file contents. Reads on demand. |
 | Goldilocks system prompt | Anthropic | `shared/prompts.py` < 500 tokens, XML-tagged, identical between SDKs. |
 

@@ -20,6 +20,11 @@ It's a single self-contained file: download it and open it in any browser
 The benchmark numbers behind the Client SDK vs Agent SDK slides are in
 [`docs/headtohead.md`](docs/headtohead.md).
 
+> **Looking for the version without Jev?** The harness as it was before
+> any Jev integration (every decision made by a Claude model) is kept on
+> the [`pure-llm`](https://github.com/Hendrik040/code-review-agent/tree/pure-llm)
+> branch. On `main`, Jev is used only when `TYPESAFE_API_KEY` is set.
+
 ## Quick start
 
 Review a real GitHub PR end-to-end with the Agent SDK at maximum effort:
@@ -127,6 +132,29 @@ Natural-language replies (e.g.
 via a Haiku-classifier fallback. If the comment is a reply to one of
 the bot's own review comments, the parent's text is captured as
 `bug_context` for richer retrieval signal.
+
+With `TYPESAFE_API_KEY` set, [Jev](https://typesafe.ai) (TypeSafe's
+decision model) replaces Haiku as the classifier in this layer,
+following TypeSafe's
+[Classifying RAG passages](https://docs.typesafe.ai/cookbooks/classifying_rag_passages)
+cookbook:
+
+- **Retrieval.** Each retrieved learning gets one request with two
+  yes/no questions: does it apply to this diff, and is it trying to
+  make the reviewer do something other than review code. Learnings
+  that fail either test are dropped; the rest are re-sorted by how
+  likely they are to apply, so the `LEARNINGS_TOP_K` cut keeps the most
+  applicable ones instead of the nearest vectors.
+- **Capture.** A free-form @mention is stored only if Jev judges it a
+  learning and not an instruction to the reviewer.
+
+The thresholds live in one table in `learnings/jev_judge.py`, and each
+verdict is logged with its probabilities so they can be tuned from
+logs. Haiku remains the fallback if a Jev call fails, and
+`LEARNINGS_JUDGE=haiku` switches Jev off here. One difference: Haiku
+condensed a free-form mention into a lesson, while Jev cannot write
+text, so a Jev-accepted mention is stored as the maintainer's own
+paragraph with the handle removed.
 
 The `scripts/demo.py` launcher spawns the capture daemon and the
 reviewer together for a single-command end-to-end demo:
