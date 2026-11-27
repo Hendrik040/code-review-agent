@@ -91,6 +91,50 @@ for comparing harness vs. bare-loop economics — see
 [`docs/headtohead.md`](docs/headtohead.md) for the full per-fixture
 numbers.
 
+### Model routing with Jev (Phase 7)
+
+By default every PR is reviewed by `claude-opus-4-7` at `effort="max"`.
+With `TYPESAFE_API_KEY` set, `review_pr.py` makes one call to
+[Jev](https://typesafe.ai) (TypeSafe's decision model) after the clone
+and before the agent starts, and picks a tier for that PR:
+
+| Tier | For | Default model : effort |
+|---|---|---|
+| `light` | docs, comments, renames; no behavior change | `claude-haiku-5-5:medium` |
+| `standard` | a behavior change you can judge from the diff | `claude-sonnet-5-5:high` |
+| `deep` | correctness depends on code outside the diff, or high-stakes code | the reviewer's `MODEL`:`EFFORT` |
+
+Jev returns a probability for each depth level. The router takes the
+cheapest tier where the chance that the PR needs a deeper one is at
+most `ROUTER_RISK` (default 0.15), and goes straight to `deep` when the
+diff probably touches auth, payments, migrations or concurrency. No
+key, a timeout or any Jev error also means `deep`, so routing can only
+lower the cost of a review, never block one.
+
+To compare setups on the fixtures, run one sweep per arm and compare
+`suite_NNN.md` cost and line-hit (`--tier` runs a fixed tier with no
+Jev call; `ROUTER_TIER_DEEP` sets what "deep" means):
+
+```bash
+uv run python scripts/run_suite.py --sdk agent --tier deep                  # old setup
+ROUTER_TIER_DEEP=claude-opus-5-5:high uv run python scripts/run_suite.py --sdk agent --tier deep
+uv run python scripts/run_suite.py --sdk agent --route                      # Jev routing
+```
+
+```bash
+uv run python scripts/github/review_pr.py <pr_url>               # --tier auto
+uv run python scripts/github/review_pr.py <pr_url> --tier deep   # skip Jev
+uv run python scripts/run_suite.py --sdk agent --route           # measure it
+```
+
+The tier defaults and `ROUTER_RISK` are starting points, not tuned
+values. Jev routes all seven planted-bug fixtures to `deep`, so
+`run_suite.py --route` confirms routing doesn't under-serve hard PRs
+but can't show a saving; for that, compare `--tier auto` against
+`--tier deep` on a sample of your own merged PRs. To keep one model and route only
+effort, point all three `ROUTER_TIER_*` variables at that model (see
+`.env.example`). The Client SDK reviewer is not routed.
+
 ### Evaluation harness — sweep the fixture suite
 
 `scripts/run_suite.py` runs either reviewer across the 7 planted-bug
