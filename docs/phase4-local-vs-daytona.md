@@ -24,6 +24,18 @@ The leakage fix removed two oracle hints visible to the agent
 two path-traversal hardenings on DaytonaRepo, and a fixture
 working-tree reset between v1/v2 commits.
 
+> **Correction, 2026-11-26 — the Client SDK dollar figures in this doc
+> are 3× too high.** They were computed with `pricing.py` while it held
+> the Opus 4 / 4.1 rates ($15 / $75 per MTok) instead of the
+> `claude-opus-4-7` rates ($5 / $25). Agent SDK figures are
+> harness-reported and were always at the real rate. Corrected Client SDK
+> totals, recomputed from stored usage: Local xhigh $17.93 → **$5.98**,
+> Daytona pre-fix $12.87 → **$4.29**, Daytona post-fix $13.72 →
+> **$4.57**. The Daytona-vs-Local percentages are ratios within one SDK
+> and are unaffected; the side-by-side Client / Agent dollar columns
+> under "Headline numbers" are on two different rates. The tables below
+> have not been revised.
+
 ## Client SDK
 
 | Fixture | Local xhigh (Phase 2.2) | Daytona xhigh pre-fix | Daytona xhigh post-fix |

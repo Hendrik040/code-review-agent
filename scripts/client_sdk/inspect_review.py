@@ -3,7 +3,7 @@ end-to-end. Prints what the reviewer returned, plus the trace + result
 file paths so you can read them after.
 
 Run:    uv run python scripts/client_sdk/inspect_review.py
-Cost:   one model call, ~$0.10-0.15 at standard Opus 4 rates.
+Cost:   one model call, ~$0.03-0.05 at the Opus 4.7 API rate.
 """
 
 from __future__ import annotations
