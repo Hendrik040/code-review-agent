@@ -333,6 +333,12 @@ async def _run_async(
 
     summary_on = _prs.enabled()
     summary = _prs.for_repo(repo, base_ref, head_ref) if summary_on else None
+    # Phase 10: with REVIEW_LINT_HINTS=1, linter warnings filtered by Jev,
+    # once per run, with the summary (if any) in Jev's state.
+    from shared import lint_hints as _lh
+
+    hints_on = _lh.enabled()
+    hints = _lh.for_repo(repo, base_ref, head_ref, summary=summary) if hints_on else None
 
     # Closure-captured state for the in-process MCP tools.
     captured_findings: list[Finding] = []
@@ -354,12 +360,13 @@ async def _run_async(
         BUILD_REVIEW_CONTEXT_TOOL["input_schema"],
     )
     async def _build_review_context(args: dict[str, Any]) -> dict[str, Any]:
-        if not summary_on:
+        if not (summary_on or hints_on):
             return _wrap_text(_build_context_impl(repo, args["base_ref"], args["head_ref"]))
-        # The summary describes the run's base..head; other refs get none.
+        # Summary and hints describe the run's base..head; other refs get none.
         same = (args["base_ref"], args["head_ref"]) == (base_ref, head_ref)
         return _wrap_text(_build_context_impl(
-            repo, args["base_ref"], args["head_ref"], pr_summary=summary if same else None))
+            repo, args["base_ref"], args["head_ref"],
+            pr_summary=summary if same else None, lint_hints=hints if same else None))
 
     @tool(
         BASH_TOOL["name"],
@@ -587,6 +594,10 @@ async def _run_async(
     log("")
     if summary_on:
         for line in _prs.trace_lines(summary):
+            log(line)
+        log("")
+    if hints_on:
+        for line in _lh.trace_lines(hints):
             log(line)
         log("")
 
