@@ -29,7 +29,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 # Directories never worth scanning for the call graph.
@@ -243,63 +243,112 @@ def group_consecutive_lines(lines: list[int], gap: int = 5) -> list[list[int]]:
     return chunks
 
 
-def format_context_as_markdown(
-    changed_snippets: list[dict[str, str]],
-    impact_snippets: list[dict[str, str]],
-    diff_text: str,
-) -> str:
-    """Same XML-tagged sections the baseline's prompt expects."""
-    out: list[str] = ["# Code Review Context\n"]
+@dataclass
+class ImpactCandidate:
+    """One caller or callee ODIS found by name matching.
 
+    `text` is the snippet exactly as today's context shows it; the other
+    fields are what a selector (shared/impact.py) needs to rank it
+    without reading the snippet.
+    """
+    id: str
+    role: str                 # "callee" | "caller"
+    file: str                 # repo-relative
+    line: int                 # def/class line (callee) or call line (caller)
+    symbol: str               # name, or "call to <name>" for callers (as today)
+    line_text: str            # that source line, stripped
+    doc: str                  # first docstring line (callees), else ""
+    inside_function: str      # enclosing function (callers), else ""
+    same_file_as_change: bool
+    imported_by_changed_file: bool
+    is_test: bool
+    text: str
+
+
+@dataclass
+class Collected:
+    diff: str
+    changed: list[dict[str, str]]
+    candidates: list[ImpactCandidate] = field(default_factory=list)
+
+
+_CHANGED_OMITTED = (
+    "(Omitted to fit the context budget; the diff above shows every changed line.)"
+)
+
+
+def _render_block(out: list[str], items: list[ImpactCandidate],
+                  signatures: list[str]) -> None:
+    for item in items:
+        out.append(f'<file name="{item.file}" symbol="{item.symbol}">')
+        out.append("```python")
+        out.append(item.text)
+        out.append("```")
+        out.append("</file>")
+    for line in signatures:
+        out.append(f"<signature>{line}</signature>")
+    if not items and not signatures:
+        out.append("None")
+
+
+def render_markdown(
+    c: Collected,
+    tiers: dict[str, str] | None = None,
+    note: str = "",
+    drop_changed: bool = False,
+) -> str:
+    """Print the context. `tiers=None` means every candidate in full,
+    which reproduces the pre-Phase-8 output byte for byte.
+
+    With `tiers`, a candidate absent from the dict is omitted (only
+    duplicates are), "full" prints its snippet, "signature" prints one
+    line, "counted" prints nothing; `note` follows the callers block.
+    """
+    def pick(role: str, tier: str) -> list[ImpactCandidate]:
+        return [
+            x for x in c.candidates
+            if x.role == role and (tiers is None if tier == "all" else
+                                   tiers is not None and tiers.get(x.id) == tier)
+        ]
+
+    out: list[str] = ["# Code Review Context\n"]
     out.append("## 1. Git Diff (What Changed)\n")
     out.append("<diff>")
-    out.append(diff_text)
+    out.append(c.diff)
     out.append("</diff>\n")
-
     out.append("## 2. Changed Code (Modified Files with Context)\n")
-    for item in changed_snippets:
-        out.append(f'<file name="{item["file"]}" lines="{item["lines"]}" type="changed">')
-        out.append("```python")
-        out.append(item["text"])
-        out.append("```")
-        out.append("</file>\n")
-
+    if drop_changed:
+        out.append(_CHANGED_OMITTED + "\n")
+    else:
+        for item in c.changed:
+            out.append(f'<file name="{item["file"]}" lines="{item["lines"]}" type="changed">')
+            out.append("```python")
+            out.append(item["text"])
+            out.append("```")
+            out.append("</file>\n")
     out.append("## 3. Impact Code (Contracts & Call Sites)\n")
-    callees = [i for i in impact_snippets if i.get("role") == "callee"]
-    callers = [i for i in impact_snippets if i.get("role") == "caller"]
-
     out.append(
         "### CALLEES: Definitions that the changed code CALLS "
         "(check if changed code respects these contracts)"
     )
-    out.append("<callees>")
-    if callees:
-        for item in callees:
-            out.append(f'<file name="{item["file"]}" symbol="{item["symbol"]}">')
-            out.append("```python")
-            out.append(item["text"])
-            out.append("```")
-            out.append("</file>")
-    else:
-        out.append("None")
-    out.append("</callees>\n")
-
-    out.append(
-        "### CALLERS: Call sites that invoke the changed functions/classes "
-        "(check if callers pass correct arguments)"
-    )
-    out.append("<callers>")
-    if callers:
-        for item in callers:
-            out.append(f'<file name="{item["file"]}" symbol="{item["symbol"]}">')
-            out.append("```python")
-            out.append(item["text"])
-            out.append("```")
-            out.append("</file>")
-    else:
-        out.append("None")
-    out.append("</callers>\n")
-
+    for role, tag in (("callee", "callees"), ("caller", "callers")):
+        if role == "caller":
+            out.append(
+                "### CALLERS: Call sites that invoke the changed functions/classes "
+                "(check if callers pass correct arguments)"
+            )
+        out.append(f"<{tag}>")
+        if tiers is None:
+            _render_block(out, pick(role, "all"), [])
+        else:
+            from shared import impact  # sandbox-safe, stdlib only
+            _render_block(
+                out, pick(role, impact.FULL),
+                [impact.signature_line(x) for x in pick(role, impact.SIGNATURE)],
+            )
+        out.append(f"</{tag}>\n")
+    if note:
+        out.append(f"<not_shown>{note}</not_shown>\n")
     return "\n".join(out)
 
 
@@ -314,17 +363,50 @@ def _walk_repo_python_files(repo: pathlib.Path) -> list[pathlib.Path]:
     ]
 
 
-def build_context(
-    repo: pathlib.Path,
-    base_ref: str,
-    head_ref: str,
-) -> str:
-    """Build the ODIS markdown context for the diff base_ref..head_ref.
+def _is_test_path(rel: str) -> bool:
+    parts = pathlib.PurePosixPath(rel).parts
+    base = parts[-1] if parts else ""
+    return (
+        any(p in ("tests", "test") for p in parts[:-1])
+        or (base.startswith("test_") and base.endswith(".py"))
+        or base.endswith("_test.py")
+    )
 
-    Both reviewers (Client SDK and Agent SDK) call this and inject the
-    result into their first user prompt. They may then dig further with
-    Read/Bash tools, but ODIS is what they start with.
-    """
+
+def _imported_names(paths: Iterable[pathlib.Path]) -> set[str]:
+    """Module last-components and names the given files import."""
+    names: set[str] = set()
+    for p in paths:
+        tree = _parse(p)
+        if tree is None:
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom):
+                if n.module:
+                    names.add(n.module.split(".")[-1])
+                names.update(a.name for a in n.names)
+            elif isinstance(n, ast.Import):
+                names.update(a.name.split(".")[-1] for a in n.names)
+    return names
+
+
+def _innermost_function(tree: ast.AST, line: int) -> str:
+    best: tuple[int, str] | None = None
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            end = getattr(n, "end_lineno", n.lineno)
+            if n.lineno <= line <= end and (best is None or end - n.lineno < best[0]):
+                best = (end - n.lineno, n.name)
+    return best[1] if best else ""
+
+
+def _source_line(rows: list[str], line: int) -> str:
+    return rows[line - 1].strip() if 0 < line <= len(rows) else ""
+
+
+def collect(repo: pathlib.Path, base_ref: str, head_ref: str) -> Collected:
+    """Everything `build_context` prints, as data. Candidates keep the
+    pre-Phase-8 order and duplicates; ids are "c0", "c1", ..."""
     repo = repo.resolve()
     changes = changed_lines(repo, base_ref, head_ref)
 
@@ -374,31 +456,47 @@ def build_context(
             start_s, end_s = item["lines"].split("-")
             shown_lines.setdefault(f, set()).update(range(int(start_s), int(end_s) + 1))
 
-    # Names that the changed lines actually call (for CALLEES).
+    # Names that the changed lines actually call (for CALLEES), and names
+    # whose signatures changed (for CALLERS).
     calls_from_changed: set[str] = set()
-    for rel_path, lines in changes.items():
-        if not rel_path.endswith(".py"):
-            continue
-        abs_path = repo / rel_path
-        if abs_path.exists():
-            calls_from_changed.update(calls_in_lines(abs_path, lines))
-
-    # Names whose signatures changed (for CALLERS).
     changed_signature_names: set[str] = set()
+    changed_py: list[pathlib.Path] = []
     for rel_path, lines in changes.items():
         if not rel_path.endswith(".py"):
             continue
         abs_path = repo / rel_path
         if abs_path.exists():
+            changed_py.append(abs_path)
+            calls_from_changed.update(calls_in_lines(abs_path, lines))
             changed_signature_names.update(symbols_with_signature_changes(abs_path, lines))
+    imported = _imported_names(changed_py)
 
-    impact_snippets: list[dict[str, str]] = []
+    candidates: list[ImpactCandidate] = []
+
+    def add(rel: str, abs_path: pathlib.Path, rows: list[str], role: str,
+            line: int, symbol: str, text: str, doc: str = "", inside: str = "") -> None:
+        candidates.append(ImpactCandidate(
+            id=f"c{len(candidates)}", role=role, file=rel, line=line,
+            symbol=symbol, line_text=_source_line(rows, line), doc=doc,
+            inside_function=inside, same_file_as_change=rel in changes,
+            imported_by_changed_file=abs_path.stem in imported,
+            is_test=_is_test_path(rel), text=text,
+        ))
+
+    def first_doc_line(node: ast.AST) -> str:
+        doc = ast.get_docstring(node) or ""
+        return doc.strip().splitlines()[0] if doc.strip() else ""
+
     for f_str in sorted(impact_files):
         abs_path = pathlib.Path(f_str)
         rel = str(abs_path.relative_to(repo)) if abs_path.is_absolute() else f_str
         tree = _parse(abs_path)
         if tree is None:
             continue
+        try:
+            rows = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            rows = []
 
         # CALLEES: definitions referenced by changed lines.
         for node in ast.walk(tree):
@@ -414,10 +512,8 @@ def build_context(
                 rng = range(max(1, init_line - 12), init_line + 13)
                 if rel in shown_lines and any(ln in shown_lines[rel] for ln in rng):
                     continue
-                impact_snippets.append({
-                    "file": rel, "symbol": node.name, "role": "callee",
-                    "text": snippet(abs_path, init_line, pad=12),
-                })
+                add(rel, abs_path, rows, "callee", node.lineno, node.name,
+                    snippet(abs_path, init_line, pad=12), doc=first_doc_line(node))
             elif (
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and node.name in calls_from_changed
@@ -425,10 +521,8 @@ def build_context(
                 rng = range(max(1, node.lineno - 10), node.lineno + 11)
                 if rel in shown_lines and any(ln in shown_lines[rel] for ln in rng):
                     continue
-                impact_snippets.append({
-                    "file": rel, "symbol": node.name, "role": "callee",
-                    "text": snippet(abs_path, node.lineno, pad=10),
-                })
+                add(rel, abs_path, rows, "callee", node.lineno, node.name,
+                    snippet(abs_path, node.lineno, pad=10), doc=first_doc_line(node))
 
         # CALLERS: call sites of signature-changed names.
         for node in ast.walk(tree):
@@ -441,10 +535,22 @@ def build_context(
                 rng = range(max(1, node.lineno - 8), node.lineno + 9)
                 if rel in shown_lines and any(ln in shown_lines[rel] for ln in rng):
                     continue
-                impact_snippets.append({
-                    "file": rel, "symbol": f"call to {node.func.id}",
-                    "role": "caller",
-                    "text": snippet(abs_path, node.lineno, pad=8),
-                })
+                add(rel, abs_path, rows, "caller", node.lineno,
+                    f"call to {node.func.id}", snippet(abs_path, node.lineno, pad=8),
+                    inside=_innermost_function(tree, node.lineno))
 
-    return format_context_as_markdown(changed_snippets, impact_snippets, diff_text)
+    return Collected(diff=diff_text, changed=changed_snippets, candidates=candidates)
+
+
+def build_context(
+    repo: pathlib.Path,
+    base_ref: str,
+    head_ref: str,
+) -> str:
+    """Build the ODIS markdown context for the diff base_ref..head_ref.
+
+    Both reviewers (Client SDK and Agent SDK) call this and inject the
+    result into their first user prompt. They may then dig further with
+    Read/Bash tools, but ODIS is what they start with.
+    """
+    return render_markdown(collect(repo, base_ref, head_ref))

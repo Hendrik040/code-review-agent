@@ -198,8 +198,8 @@ def build_review_context(repo: Repo, base_ref: str, head_ref: str) -> str:
     exposed for the agent to call when it wants the curated slice.
 
     Phase 4 invokes the ODIS CLI (`python -m shared.odis_cli BASE..HEAD`)
-    inside the sandbox so the algorithm runs next to the repo. The
-    Daytona image bakes the `shared/` package at /opt/code-review-agent
+    inside the sandbox so the algorithm runs next to the repo. DaytonaRepo
+    uploads the files in `_HOST_SHARED_FILES` to /home/daytona/code-review-agent
     with PYTHONPATH set; LocalRepo seeds the same env in `exec`.
 
     Recommended as the first investigation step — 1-5 KB of context
