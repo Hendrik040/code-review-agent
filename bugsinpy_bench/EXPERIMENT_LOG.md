@@ -40,6 +40,8 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 8 | 2026-11-27 17:00-17:35 | Opus 5.5 high on Martian with a prompt addendum asking it to file what it would drop | Recall 9 → 14 of 31, precision unchanged, F1 0.359 → 0.459 for $3.07 |
 | 9 | 2026-11-27 | Sonnet 5.5 high on Martian with the same addendum; Jev routing compared with random routing | Sonnet F1 0.510 → 0.464 (no gain); Jev's tier picks beat random same-mix routing by about 2 bugs |
 | 10 | 2026-11-27 19:50-20:45 | Block-level Jev routing: Haiku 5.5 per-block facts, 11 Jev questions, facts only (A) vs facts + Haiku complexity (B), scored on stored BugsInPy reviews | No ranking signal (AUC 0.51-0.53); best point 42/100 for $14.97, worse than the current router ($14.15) |
+| 11 | 2026-11-27 | Replays on stored data: the router's risk setting, repeat runs of one model, merged reviews | Risk 0.25 keeps 42 found for 18% less; a model disagrees with itself on 4 of 30 bugs; adding a Haiku pass finds more bugs on BugsInPy but not on Martian with Sonnet |
+| 12 | 2026-11-27 21:23-21:30 | Offline cascade test, design fixed in advance: Jev reads each finished review and flags the ones that need a second pass | No usable signal on Haiku's reviews (AUC 0.45 and 0.43, chance is 0.5); success bar not met |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -395,6 +397,140 @@ inverted ranking but does not replace it with a useful one, and taking the riski
 sends nearly everything to Opus. On these 100 bugs, which model finds a bug is not well
 predicted by describing the change.
 
+## Step 11. Replays on stored data: risk setting, repeat runs, merged reviews
+
+No reviews and no Jev calls. Scripts: `scripts/risk_replay.py`,
+`martian_bench/scripts/merge_scores.py`, and the baseline rows of `scripts/score_cascade.py`.
+
+### The router's risk setting
+
+The router sends a PR to a cheaper model when Jev's chance that it needs a deeper one is
+at most `ROUTER_RISK` (0.15 as shipped). Replaying the stored Jev answers of the 100 bugs
+at other settings:
+
+| Risk | To Haiku / Sonnet / Opus | Found | Cost | Saving vs all-Opus 5.5 | Random routing, same mix: expected found |
+|---|---|---:|---:|---:|---:|
+| 0.05 | 1 / 10 / 89 | 42 | $15.64 | 4% | 41.2 |
+| 0.15 (shipped) | 2 / 26 / 72 | 42 | $14.15 | 13% | 40.0 |
+| 0.25 | 2 / 36 / 62 | 42 | $13.35 | 18% | 39.3 |
+| 0.50 | 3 / 50 / 47 | 41 | $11.86 | 27% | 38.3 |
+| 0.70 | 4 / 64 / 32 | 40 | $9.84 | 40% | 37.2 |
+| 0.80 | 5 / 70 / 25 | 39 | $9.03 | 45% | 36.8 |
+| 0.90 | 7 / 75 / 18 | 36 | $7.98 | 51% | 36.3 |
+
+From 0.15 to 0.80 Jev's choice finds 2 to 3 more bugs than random routing with the same
+number of bugs per model; 7% to 16% of random assignments do at least as well at each
+setting. The settings share most of their bugs, so this is one consistent observation,
+not several independent ones.
+
+This narrows the step-10 statement about the depth score. P(deep) ranks the bugs Opus
+finds and **Haiku** misses low (AUC 0.27). The router almost never chooses Haiku. For the
+choice it does make, Sonnet or Opus, P(deep) leans the right way: AUC 0.63 for the 8 bugs
+Opus found and Sonnet missed against the 35 Sonnet found. Eight bugs is a weak basis.
+
+### How repeatable is one model's result on a bug?
+
+Haiku 5.5 and Sonnet 5.5 each ran twice on the 30 pilot bugs (the local run and the cloud
+rerun of step 3b).
+
+| Model | Run 1 | Run 2 | Bugs where the two runs disagree | Either run found |
+|---|---:|---:|---:|---:|
+| Haiku 5.5 medium | 16 | 18 | 4 of 30 | 19 |
+| Sonnet 5.5 high | 17 | 21 | 4 of 30 | 21 |
+
+Of the 14 bugs "Opus found, Haiku missed", 6 are pilot bugs with a second Haiku run, and
+that run found 3 of them. So about half of that label, where it can be checked, is run-to-run
+luck. This limits any router that predicts from the diff which model a bug needs.
+
+### Merging two reviews of the same PR
+
+Haiku reviews every bug; a second model is added on some; a bug is found if either found it.
+
+| Haiku first, second model added on | Opus 5.5 as second | Sonnet 5.5 as second |
+|---|---|---|
+| no bug (Haiku alone) | 35 for $0.52 | 35 for $0.52 |
+| a random half (expected) | 42.0 for $8.68 | 40.0 for $3.32 |
+| the bugs where Haiku filed nothing (43) | 40 for $6.94 | 38 for $2.79 |
+| the bugs the shipped router sends deep (72) | 44 for $13.49 | 41 for $4.89 |
+| exactly the bugs Haiku missed (upper bound) | 49 for $10.41 | 45 for $4.04 |
+| every bug | 49 for $16.85 | 45 for $6.11 |
+
+For comparison: all-Opus 5.5 finds 42 for $16.33, the shipped router 42 for $14.15.
+Neither "Haiku filed nothing" nor the router's deep set beats a random set of the same
+size (41.0 and 45.1 expected with Opus as second).
+
+Three cautions. Most of the gain is a second sample, not a different model: two runs of
+the same model, merged, gain about as much (table above). BugsInPy counts only the target
+bug, so the extra false positives of a merged review are not measured. And Martian, which
+does count them, shows little:
+
+| Martian, 10 PRs | Goldens matched | Findings | Precision | F1 | Cost |
+|---|---:|---:|---:|---:|---:|
+| Sonnet 5.5 | 13/31 | 20 | 0.650 | 0.510 | $1.06 |
+| Haiku + Sonnet 5.5 | 13/31 | 31 | 0.613 | 0.498 | $1.15 |
+| Opus 5.5 | 9/31 | 17 | 0.471 | 0.359 | $2.77 |
+| Haiku + Opus 5.5 | 12/31 | 28 | 0.500 | 0.436 | $2.86 |
+| Haiku + Sonnet 5.5 + Opus 5.5 | 15/31 | 48 | 0.562 | 0.520 | $3.92 |
+
+## Step 12. Offline cascade test: can Jev tell which reviews need a second pass?
+
+Design, with the questions, the rule and the success bar, committed before any answer
+existed (`1e78708`): `docs/superpowers/specs/2026-11-27-jev-review-verifier-design.md`.
+Scripts: `review_digest.py` (findings and closing message of a stored review),
+`verify_reviews.py` (the Jev call), `score_cascade.py` (scoring). No new reviews.
+
+**Setup.** One Jev call per stored review, 300 reviews (Haiku, Sonnet and Opus 5.5 on the
+100 bugs), asked twice: 600 calls, no errors. Jev sees the PR title, the changed files,
+the submitted findings and the reviewer's closing message, and answers three yes/no
+questions: `unfiled_issue`, `dismissed_as_intended`, `could_not_verify`. `flag` is the
+largest of the three; a review is escalated when `flag` >= 0.5.
+
+**Instrument checks.** 99, 98 and 96 of 100 reviews (Haiku, Sonnet, Opus) name a changed
+file in their findings or closing message, so each review is matched to its own trace.
+On the four Opus reviews where step 7 found a noticed-but-unreported bug (luigi#10,
+luigi#33, pandas#95, pandas#132), `unfiled_issue` is 0.81 to 0.90. The questions detect
+the pattern where it is known to exist.
+
+**Result.** AUC ranks the gain cases (first model missed, second found) above the first
+model's other reviews; 0.5 is chance.
+
+| First, then second | Gain cases | AUC of `flag`, pass 1 / 2 | Escalated at 0.5 | Gain cases caught | Found, cost | Random set of that size (expected) |
+|---|---:|---|---:|---:|---|---|
+| Haiku, then Opus (primary) | 14 | 0.45 / 0.43 | 67 / 65 | 9 / 7 | 44 for $12.98 / 42 for $12.58 | 44.4 for $11.46 / 44.1 for $11.13 |
+| Haiku, then Sonnet | 10 | 0.43 / 0.42 | 67 / 65 | 5 / 5 | 40 for $4.66 / 40 for $4.55 | 41.7 for $4.27 / 41.5 for $4.15 |
+| Sonnet, then Opus | 8 | 0.45 / 0.44 | 97 / 97 | 8 / 8 | 43 for $21.69 | 42.8 for $21.44 |
+| Opus, then Haiku (not a clean test) | 7 | 0.68 / 0.69 | 71 / 72 | 6 / 6 | 48 for $16.73 | 47.0 for $16.70 |
+
+**The success bar is not met.** It asked, on the primary set and in both passes, for an AUC
+of at least 0.70 and for at most 5% of random sets doing strictly better; 49% and 84% of
+random sets did better. Across the thresholds 0.05 to 0.95 the cascade stays within
+about 2 bugs of a random set of the same size, from 1.7 more to 2.9 fewer over the two
+passes: slightly more up to 0.30, where most reviews are escalated anyway, and fewer from
+0.35 upward. It usually costs more than the random set, because the flagged reviews are
+the more expensive ones to repeat with Opus.
+
+**What the answers show.**
+- Haiku misses silently. Where Haiku missed a bug that Opus found, its closing message
+  raises fewer flags than elsewhere (median `flag` 0.69 against 0.87 in pass 1).
+- `could_not_verify` is not informative in this sandbox. The projects are usually not
+  installed, so reviewers often say they could not run the code: the question is at 0.5
+  or more for 49 Haiku, 89 Sonnet and 53 Opus reviews. It saturates `flag` for Sonnet
+  (97 of 100 escalated).
+- The flags line up only for Opus 5.5 as the first model (AUC 0.68 and 0.69, 6 of 7 gain
+  cases caught). That set is not a clean test: the questions were written after reading
+  Opus's traces for these bugs, and it has 7 gain cases. It fits step 7: Opus 5.5 says
+  what it leaves out. For that, the reporting prompt of step 8 is the cheaper fix.
+- The two passes agree on 96 to 100 of 100 escalation decisions.
+- Baselines without Jev on the primary set: "filed nothing" AUC 0.46, fewer turns 0.59,
+  the shipped router's P(deep) 0.36.
+
+**Conclusion.** Three ways of asking Jev which PR needs the stronger model have now been
+measured: from the diff (steps 4 and 6), from the diff's blocks (step 10) and from the
+cheap model's finished review (this step). None beats a random choice of the same size
+on BugsInPy by a margin these 100 bugs can establish. What does hold on stored results is
+structural and needs no prediction: sending a share of PRs to a cheaper model (step 11's
+risk table), and adding a cheap second pass, with the cautions listed in step 11.
+
 ## Spend
 
 | Step | Cost |
@@ -407,13 +543,17 @@ predicted by describing the change.
 | 8 Martian sweep ($3.07), judging ($0.30), discarded first attempt ($0.27) | $3.64 |
 | 9 Sonnet sweep ($1.17), judging ($0.19) | $1.36 |
 | 10 Haiku block extraction ($0.40 BugsInPy; about $0.25-0.50 Martian, partly unlogged after the stopped runs); Jev 3,958 calls (3,912 in the four runs, 46 in the smoke test), 3.59M input tokens at $0.042 per million (`jev-1.14.0`; output tokens are free) = $0.15 | about $0.80-1.05 |
+| 11 Replays on stored data (no API calls) | $0 |
+| 12 Jev, 600 calls, 508,112 input tokens | $0.02 |
 | **Total** | **about $35.1-35.4** |
 
 Jev pricing is from https://docs.typesafe.ai/models (checked 2026-11-27): $0.042 per
 million input tokens, output free, no per-request fee. At that price the step-10 router
 costs about $0.0004 per PR, and the original two-question router less.
 
-Jev's own cost is not measured.
+The Jev calls of the original two-question routing (steps 4 and 6, about 240 calls) were
+not metered. Each sends at most 24,000 characters of diff, so at this price they cost
+at most about $0.08 in total.
 
 ## Caveats that apply throughout
 
