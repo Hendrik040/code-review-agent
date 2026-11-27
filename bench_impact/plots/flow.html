@@ -1,0 +1,311 @@
+<meta charset="utf-8">
+<title>Context Builder Replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column of numbered stages, each a card; a sticky bar picks the example and replays. */
+:root {
+  --bg: #f7f8fa; --panel: #ffffff; --sunk: #f1f3f6; --ink: #14161a; --ink-2: #4d525c; --ink-3: #7b818c;
+  --rule: #e3e6eb; --track: #e9ecf0;
+  --full: #2a78d6; --sig: #1baf7a; --counted: #b4bac4; --jev: #6250d6; --add: #0f7b3a; --del: #b3261e; --warn: #e34948;
+  --f-display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --f-body: "Inter", system-ui, -apple-system, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121417; --panel: #1a1c20; --sunk: #14161a; --ink: #eef0f3; --ink-2: #b7bcc5; --ink-3: #868c97;
+  --rule: #2c3037; --track: #262a30;
+  --full: #3987e5; --sig: #199e70; --counted: #4a505a; --jev: #9085e9; --add: #5fcf86; --del: #f07b72; --warn: #e66767;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #121417; --panel: #1a1c20; --sunk: #14161a; --ink: #eef0f3; --ink-2: #b7bcc5; --ink-3: #868c97;
+  --rule: #2c3037; --track: #262a30;
+  --full: #3987e5; --sig: #199e70; --counted: #4a505a; --jev: #9085e9; --add: #5fcf86; --del: #f07b72; --warn: #e66767;
+  color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 860px; margin: 0 auto; padding-block: 32px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 18px; }
+h1, h2 { font-family: var(--f-display); margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: 28px; line-height: 1.15; }
+h2 { font-size: 17px; display: flex; gap: 10px; align-items: baseline; }
+h2 .n { font-family: var(--f-mono); font-size: 13px; color: var(--ink-3); }
+p { margin: 0; max-width: 68ch; }
+.muted { color: var(--ink-2); }
+.small { font-size: 13px; color: var(--ink-3); }
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 10px;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid var(--rule); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+button { font: inherit; font-size: 14px; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+button:focus-visible { outline: 2px solid var(--full); outline-offset: 2px; }
+#replay { margin-left: auto; font-weight: 600; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+  transition: opacity .35s ease, transform .35s ease; }
+.card.pending { opacity: .25; transform: translateY(6px); }
+@media (prefers-reduced-motion: reduce) { .card, .fill { transition: none !important; } }
+.lede { display: flex; flex-direction: column; gap: 10px; }
+pre { margin: 0; font-family: var(--f-mono); font-size: 12.5px; line-height: 1.5; background: var(--sunk); border-radius: 8px; padding: 12px; overflow: auto; max-height: 320px; white-space: pre; }
+pre .a { color: var(--add); } pre .d { color: var(--del); } pre .h { color: var(--ink-3); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 14px; }
+.kv b { font-family: var(--f-mono); font-weight: 500; font-variant-numeric: tabular-nums; }
+.meter { display: grid; grid-template-columns: 150px 1fr 110px; gap: 10px; align-items: center; font-size: 13px; }
+.meter .lab { color: var(--ink-2); }
+.meter .val { font-family: var(--f-mono); text-align: right; font-variant-numeric: tabular-nums; }
+.track { position: relative; height: 12px; background: var(--track); border-radius: 3px; overflow: hidden; }
+.fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; transition: width .8s cubic-bezier(.2,.7,.2,1); }
+.tick { position: absolute; top: -3px; bottom: -3px; border-left: 2px dashed var(--ink-3); }
+.qbox { border-left: 3px solid var(--jev); padding: 4px 0 4px 12px; }
+.qbox .t { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--jev); font-weight: 600; }
+.cands { display: flex; flex-direction: column; gap: 6px; }
+.cand { display: grid; grid-template-columns: minmax(0, 1fr) 160px 46px 88px; gap: 10px; align-items: center; font-size: 13px; }
+.cand .who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); font-size: 12px; }
+.cand .who em { font-style: normal; color: var(--ink-3); }
+.cand .p { font-family: var(--f-mono); text-align: right; font-variant-numeric: tabular-nums; }
+.chip { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; border-radius: 999px; padding: 2px 8px; text-align: center; }
+.chip.full { background: color-mix(in srgb, var(--full) 18%, transparent); color: var(--full); }
+.chip.signature { background: color-mix(in srgb, var(--sig) 18%, transparent); color: var(--sig); }
+.chip.counted { background: var(--track); color: var(--ink-2); }
+.rules { display: flex; flex-direction: column; gap: 8px; }
+.rule { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: start; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+.rule .ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; color: var(--panel); }
+.rule .res { font-family: var(--f-mono); font-size: 13px; color: var(--ink-2); white-space: nowrap; }
+.hist { display: flex; align-items: flex-end; gap: 4px; height: 90px; }
+.hist div { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 3px; height: 100%; font-size: 11px; color: var(--ink-3); font-family: var(--f-mono); }
+.hist i { display: block; width: 100%; border-radius: 3px 3px 0 0; min-height: 2px; }
+.histx { display: flex; gap: 4px; font-size: 11px; color: var(--ink-3); font-family: var(--f-mono); }
+.histx span { flex: 1; text-align: center; }
+.note { background: var(--sunk); border-radius: 8px; padding: 10px 12px; font-size: 13px; font-family: var(--f-mono); color: var(--ink-2); }
+details summary { cursor: pointer; color: var(--ink-2); font-size: 14px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.optional { border-style: dashed; }
+@media (max-width: 600px) {
+  .cand { grid-template-columns: minmax(0, 1fr) 70px 40px; }
+  .cand .chip { grid-column: 1 / -1; justify-self: start; }
+  .meter { grid-template-columns: 1fr 90px; } .meter .track { grid-column: 1 / -1; grid-row: 2; }
+}
+</style>
+
+<div class="wrap">
+  <header class="lede">
+    <div class="small">code-review-agent · PR #33 · Jev impact selection</div>
+    <h1>How the review context is built</h1>
+    <p class="muted">Pick a real BugsInPy change and replay it. Each step shows what the context builder sees, what Jev is asked, what it answers, and which rule turns that answer into what the reviewer reads. All numbers come from running the code on the reviewed commit.</p>
+  </header>
+
+  <div class="bar" role="toolbar" aria-label="Example">
+    <span class="small">Example</span>
+    <span id="picks" style="display:flex;gap:6px;flex-wrap:wrap"></span>
+    <button id="replay" type="button">⟳ Replay</button>
+  </div>
+
+  <section class="card optional" data-step="0">
+    <h2><span class="n">0</span>Optional: machine summary of the PR</h2>
+    <p class="muted">With <code>REVIEW_PR_SUMMARY=1</code>, Haiku 5.5 writes one neutral sentence per changed source file and it goes first, headed "machine summary, may be wrong; verify against the diff". It was off in every benchmark run on this page.</p>
+  </section>
+
+  <section class="card" data-step="1">
+    <h2><span class="n">1</span>Collect: the diff and every name match</h2>
+    <div id="s1-meta" class="kv"></div>
+    <pre id="s1-diff" aria-label="Diff"></pre>
+    <p class="muted" id="s1-text"></p>
+  </section>
+
+  <section class="card" data-step="2">
+    <h2><span class="n">2</span>Does it fit without help?</h2>
+    <div id="s2-meters" style="display:flex;flex-direction:column;gap:8px"></div>
+    <p class="muted" id="s2-text"></p>
+  </section>
+
+  <section class="card" data-step="3">
+    <h2><span class="n">3</span>Ask Jev, one yes/no question per candidate</h2>
+    <div class="qbox"><div class="t">State</div><p class="small">The diff (cut at <span id="s3-maxdiff"></span> characters) and, per candidate, facts extracted by code: role, file, line, symbol, the source line, the enclosing function and the first docstring line. No model writes them.</p></div>
+    <pre id="s3-state" aria-label="Example state"></pre>
+    <div class="qbox"><div class="t">Question (type noul, one per candidate)</div><p id="s3-q"></p></div>
+    <div id="s3-meta" class="kv"></div>
+  </section>
+
+  <section class="card" data-step="4">
+    <h2><span class="n">4</span>Jev's answers</h2>
+    <div class="legend"><span><i style="background:var(--full)"></i>full snippet</span><span><i style="background:var(--sig)"></i>one-line signature</span><span><i style="background:var(--counted)"></i>only counted in a note</span><span>dashed lines: 0.2 and 0.5</span></div>
+    <div id="s4-list" class="cands"></div>
+    <div>
+      <div class="small" style="margin-bottom:6px">All <span id="s4-n"></span> scored candidates, by P(yes)</div>
+      <div id="s4-hist" class="hist"></div>
+      <div class="histx"><span>0</span><span>.1</span><span>.2</span><span>.3</span><span>.4</span><span>.5</span><span>.6</span><span>.7</span><span>.8</span><span>.9</span></div>
+    </div>
+  </section>
+
+  <section class="card" data-step="5">
+    <h2><span class="n">5</span>Decision rule, applied to every candidate</h2>
+    <div id="s5-rules" class="rules"></div>
+    <div id="s5-budget"></div>
+  </section>
+
+  <section class="card" data-step="6">
+    <h2><span class="n">6</span>What the reviewer gets</h2>
+    <div id="s6-meters" style="display:flex;flex-direction:column;gap:8px"></div>
+    <div class="note" id="s6-note"></div>
+    <details><summary>Show the rendered context</summary><pre id="s6-ctx" style="max-height:480px;margin-top:8px"></pre></details>
+    <p class="muted" id="s6-text"></p>
+  </section>
+
+  <section class="card">
+    <h2>What this changed in the benchmark</h2>
+    <p class="muted">Before this step existed, 10 of the 16 BugsInPy bugs it now trims overflowed the Agent SDK tool-result limit, and the reviewer got an error instead of a context. After it, none did, at the same cost. Bugs found did not change: without a context the reviewer explored the code with its own tools and did about as well, and with the trimmed context it sometimes stopped too early (the thefuck#7 example is one such case). Details in bench_impact/RESULTS.md.</p>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString("en-US");
+let DATA = [], cur = 0, timers = [];
+
+function el(tag, attrs = {}, text) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (text != null) n.textContent = text;
+  return n;
+}
+function kv(box, rows) {
+  box.replaceChildren();
+  for (const [k, v] of rows) { box.append(el("span", { class: "muted" }, k)); box.append(el("b", {}, v)); }
+}
+function meter(label, value, max, color, valText, ticks = []) {
+  const row = el("div", { class: "meter" });
+  row.append(el("span", { class: "lab" }, label));
+  const tr = el("div", { class: "track" });
+  const f = el("div", { class: "fill", style: `background:var(${color});width:0%` });
+  f.dataset.w = Math.min(100, value / max * 100).toFixed(2);
+  tr.append(f);
+  for (const t of ticks) tr.append(el("div", { class: "tick", style: `left:${t / max * 100}%` }));
+  row.append(tr, el("span", { class: "val" }, valText));
+  return row;
+}
+function diffPre(pre, text) {
+  pre.replaceChildren();
+  for (const line of text.split("\n")) {
+    const cls = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("@@") || line.startsWith("index ") ? "h"
+      : line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : "";
+    pre.append(el("span", cls ? { class: cls } : {}, line + "\n"));
+  }
+}
+
+function render(d) {
+  const C = d.config, tc = d.tier_counts;
+  const roles = d.candidates;
+  // 1
+  kv($("s1-meta"), [["Change", `${d.label} (${d.commit})`], ["Diff", `${fmt(d.diff_chars)} characters`],
+    ["Name matches found", `${fmt(d.candidates_total)} callers and callees`], ["Their snippets together", `${fmt(d.candidate_chars)} characters`]]);
+  diffPre($("s1-diff"), d.diff);
+  $("s1-text").textContent = `ODIS looks up every name the changed code defines or calls and collects each matching definition (callee) and call site (caller) with a code snippet. Matching is by name only, so a common name like match pulls in every rule in the repository.`;
+  // 2
+  const m2 = $("s2-meters"); m2.replaceChildren();
+  const max2 = Math.max(d.candidate_chars, d.untiered_chars, C.budget * 1.1);
+  m2.append(meter("Impact budget", C.budget, max2, "--ink-3", fmt(C.budget)));
+  m2.append(meter("Callers + callees", d.candidate_chars, max2, "--warn", fmt(d.candidate_chars), [C.budget]));
+  m2.append(meter("Whole context as before", d.untiered_chars, max2, "--counted", fmt(d.untiered_chars)));
+  $("s2-text").textContent = d.candidate_chars <= C.budget
+    ? `Everything fits the ${fmt(C.budget)}-character budget, so Jev is not asked and the context is exactly what it was before.`
+    : `The snippets need ${(d.candidate_chars / C.budget).toFixed(1)}× the ${fmt(C.budget)}-character budget, so the builder asks Jev which of them matter. Before this step, the whole ${fmt(d.untiered_chars)}-character context went to the reviewer${d.untiered_chars > 100000 ? " and overflowed the tool-result limit" : ""}.`;
+  // 3
+  $("s3-maxdiff").textContent = fmt(C.max_diff_chars);
+  const st = d.example_state ? { diff: d.example_state.diff.slice(0, 420) + (d.example_state.diff.length > 420 ? "…" : ""), candidates: d.example_state.candidates } : {};
+  $("s3-state").textContent = JSON.stringify(st, null, 2).slice(0, 2600) + (d.deduped > 3 ? `\n… and ${fmt(d.deduped - 3)} more candidates` : "");
+  $("s3-q").textContent = d.question.replace("{cid}", "c0");
+  kv($("s3-meta"), [["Questions", `${fmt(d.deduped)} (after removing ${fmt(d.candidates_total - d.deduped)} duplicates)`],
+    ["Requests", `${d.requests} in parallel, at most ${fmt(C.max_request_chars)} characters each`], ["Jev time", `${fmt(d.jev_ms)} ms (deadline ${C.timeout} s)`]]);
+  // 4
+  const list = $("s4-list"); list.replaceChildren();
+  for (const c of roles.slice(0, 12)) {
+    const row = el("div", { class: "cand" });
+    const who = el("div", { class: "who", title: `${c.file}:${c.line} ${c.line_text}` });
+    who.append(el("span", {}, `${c.role === "callee" ? "def" : "call"} ${c.symbol.replace(/^call to /, "")} `), el("em", {}, `${c.file}:${c.line}`));
+    const tr = el("div", { class: "track" });
+    const f = el("div", { class: "fill", style: `background:var(${c.tier === "full" ? "--full" : c.tier === "signature" ? "--sig" : "--counted"});width:0%` });
+    f.dataset.w = ((c.score ?? 0) * 100).toFixed(1);
+    tr.append(f, el("div", { class: "tick", style: `left:${C.mention * 100}%` }), el("div", { class: "tick", style: `left:${C.keep * 100}%` }));
+    row.append(who, tr, el("span", { class: "p" }, c.score == null ? "–" : c.score.toFixed(2)), el("span", { class: `chip ${c.tier}` }, c.tier));
+    list.append(row);
+  }
+  if (roles.length > 12) list.append(el("div", { class: "small" }, `Top 12 of ${fmt(d.scored)} by P(yes).`));
+  $("s4-n").textContent = fmt(d.scored);
+  const h = $("s4-hist"); h.replaceChildren();
+  const hm = Math.max(...d.score_histogram, 1);
+  d.score_histogram.forEach((v, i) => {
+    const col = el("div");
+    col.append(el("span", {}, v ? fmt(v) : ""));
+    const bar = el("i", { style: `height:0%;background:var(${i >= C.keep * 10 ? "--full" : i >= C.mention * 10 ? "--sig" : "--counted"});transition:height .8s ease` });
+    bar.dataset.h = (v / hm * 78).toFixed(1);
+    col.append(bar); h.append(col);
+  });
+  // 5
+  const R = $("s5-rules"); R.replaceChildren();
+  const rules = [
+    [`P(yes) ≥ ${C.keep}: show the full snippet, best first, while the ${fmt(C.budget)}-character budget lasts`, "--full", "✓", `${tc.full} full`],
+    [`${C.mention} ≤ P(yes) < ${C.keep}, or a full snippet that did not fit: one-line signature (file:line and the source line), at most ${C.max_signatures}`, "--sig", "✓", `${tc.signature} signature`],
+    [`Everything else: not shown, only counted in a note that tells the reviewer to grep for it`, "--counted", "–", `${fmt(tc.counted)} counted`],
+    [`If Jev fails or times out: the same rule with a fixed order (same file as the change, then files it imports, then non-test code)`, "--ink-3", "↺", d.path === "fallback" ? "used" : "not needed"],
+  ];
+  for (const [t, c, icon, res] of rules) {
+    const r = el("div", { class: "rule" });
+    r.append(el("span", { class: "ic", style: `background:var(${c})` }, icon), el("span", {}, t), el("span", { class: "res" }, res));
+    R.append(r);
+  }
+  const usedFull = roles.filter(c => c.tier === "full").reduce((s, c) => s + c.size, 0);
+  const b = $("s5-budget"); b.replaceChildren(meter("Budget used by full snippets", usedFull, C.budget, "--full", `${fmt(usedFull)} / ${fmt(C.budget)}`));
+  // 6
+  const m6 = $("s6-meters"); m6.replaceChildren();
+  const max6 = Math.max(d.untiered_chars, d.rendered_chars);
+  m6.append(meter("Context before", d.untiered_chars, max6, "--counted", fmt(d.untiered_chars)));
+  m6.append(meter("Context now", d.rendered_chars, max6, "--full", fmt(d.rendered_chars)));
+  $("s6-note").textContent = d.note || "Nothing left out.";
+  $("s6-ctx").textContent = d.rendered + (d.rendered.length >= 12000 ? "\n… (cut for this page)" : "");
+  const story = {
+    "thefuck#7": "Jev kept exactly the two helpers the new rule calls, replace_argument and for_app, out of 670 name matches. The bug sits in how the rule uses them, so the evidence was all there. In the benchmark, Sonnet and one Opus run still dismissed it as speculative; the verify prompt variant recovered it in 4 of 4 runs.",
+    "thefuck#26": "No candidate was relevant: the new rule calls nothing in the repository except the test Command helper, so Jev kept one signature and counted the other 379. The bug (a hardcoded && instead of shells.and_) is visible in the diff itself.",
+    "PySnooper#3": "A small change just over budget: the three call sites with P(yes) above 0.5 are shown in full and the rest as signatures, so only one candidate is left out.",
+    "luigi#5": "Many answers sit near the 0.5 line, so small differences between Jev runs move a candidate between full and signature. The signature still names the file and line, so the reviewer can open it.",
+  };
+  $("s6-text").textContent = story[d.label] || "";
+}
+
+function animate() {
+  timers.forEach(clearTimeout); timers = [];
+  const cards = [...document.querySelectorAll(".card[data-step]")];
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const setFills = (card, on) => {
+    card.querySelectorAll(".fill").forEach(f => f.style.width = on ? f.dataset.w + "%" : "0%");
+    card.querySelectorAll(".hist i").forEach(i => i.style.height = on ? i.dataset.h + "%" : "0%");
+  };
+  if (reduce) { cards.forEach(c => { c.classList.remove("pending"); setFills(c, true); }); return; }
+  cards.forEach(c => { c.classList.add("pending"); setFills(c, false); });
+  cards.forEach((c, i) => timers.push(setTimeout(() => {
+    c.classList.remove("pending"); setFills(c, true);
+  }, 150 + i * 650)));
+  // Safety: everything is visible at rest even if timers are throttled.
+  timers.push(setTimeout(() => cards.forEach(c => { c.classList.remove("pending"); setFills(c, true); }), 150 + cards.length * 650 + 400));
+}
+
+function pick(i) {
+  cur = i;
+  [...$("picks").children].forEach((b, j) => b.setAttribute("aria-pressed", j === i ? "true" : "false"));
+  try { localStorage.setItem("flow-pick", DATA[i].label); } catch (e) {}
+  render(DATA[i]); animate();
+}
+
+fetch("flow_data.json").then(r => r.json()).then(d => {
+  const order = ["thefuck#7", "thefuck#26", "PySnooper#3", "luigi#5"];
+  DATA = order.map(l => d.find(x => x.label === l)).filter(Boolean);
+  DATA.forEach((x, i) => {
+    const b = el("button", { type: "button", "aria-pressed": "false" }, `${x.label} · ${fmt(x.candidates_total)} matches`);
+    b.addEventListener("click", () => pick(i));
+    $("picks").append(b);
+  });
+  let start = 0;
+  try { const s = localStorage.getItem("flow-pick"); const k = DATA.findIndex(x => x.label === s); if (k >= 0) start = k; } catch (e) {}
+  pick(start);
+});
+$("replay").addEventListener("click", () => animate());
+</script>
