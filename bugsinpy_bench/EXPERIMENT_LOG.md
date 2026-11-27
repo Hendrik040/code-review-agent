@@ -36,6 +36,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 4 | 2026-11-27 00:10 | Jev routing of the 30 bugs, two passes; triage scored from stored results | 6-8 to Sonnet, rest to Opus; 13-25% cheaper than all-Opus 4.7 |
 | 5 | 2026-11-27 00:13-00:40 | Opus 5.5 high on the 30 bugs (needed a newer CLI) | 22/30 for $4.77 |
 | 6 | 2026-11-27 00:45-01:40 | Full benchmark: all three models on the other 70 BugsInPy bugs and Martian's 10 PRs, six sweeps in parallel | Triage matches all-Opus 5.5 (42/100) for 13% less |
+| 7 | 2026-11-27 | Trace analysis of Opus 5.5's misses; alternative routings scored from stored results | Opus 5.5 often sees the bug and decides not to report it; triage + Haiku second pass: 48/100 for $14.66 |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -187,6 +188,83 @@ differences of the same size.
 
 ![F1 against cost per PR on Martian](experiment_figures/martian10_cost_vs_f1.png)
 
+## Step 7. Why Opus 5.5 misses, and where triage can improve
+
+No new reviews: this step reads the stored traces (`agent_sdk/traces/run_NNN.txt`),
+the judge verdicts, and `full_scores.json`.
+
+### Martian: Opus 5.5 sees bugs and decides not to report them
+
+Opus 5.5 matched 9 of 31 goldens, Sonnet 5.5 matched 13. In four PRs, Opus 5.5's
+own closing summary names a golden issue and then gives a reason for leaving it out:
+
+| PR | Golden it described | Its reason for not filing (trace) |
+|---|---|---|
+| sentry-greptile#2 | Negative queryset slicing (Critical; a High variant too) | "It was already a 500 before this change" (run 511) |
+| sentry#80528 | Function returns the original `monitor.config`, not the modified copy (High) | "This PR didn't introduce it" (moved code) (run 602) |
+| sentry#93824 | `join()` stops at the deadline without terminating the remaining flushers | Judged the early exit to change nothing in practice (run 580) |
+| sentry-greptile#5 | `zip(error_ids, events.values())` pairs IDs with the wrong events | "Left out as low impact" (run 566) |
+
+Filing these would add 4-5 goldens, putting Opus 5.5 at about 13-14 of 31, level
+with Sonnet. This is an estimate from the traces, not a rescore. The reviewer prompt's
+rule against feedback on code the change didn't break supports some of these
+omissions, and Opus 5.5 applies it more strictly than Sonnet. Opus 5.5 also files
+fewer findings (17 against Sonnet's 20), often one per PR.
+
+Of the remaining misses, two goldens were never examined (the static OAuth `state`
+in sentry#67876, the wrong dataset in greptile#3); most others are test-name typos,
+docstrings and magic numbers that no model found. Some false positives look like gaps
+in the golden set: the "member is None" finding is a match on greptile#1 but a false
+positive on greptile#2, which has near-identical code, and Sonnet independently
+filed the same queue-pool finding that scored as a false positive for Opus on
+sentry#95633.
+
+### BugsInPy: what triage missed
+
+`scripts/combo_scores.py` lists triage's misses that another model found: 7 bugs.
+Six were routed deep and found only by Haiku (luigi#10, luigi#33, pandas#121,
+pandas#132, pandas#95, scrapy#31); one was routed standard and found only by
+Opus 5.5 (thefuck#1).
+
+The traces show the same habit as on Martian:
+
+- **luigi#10 (run 558):** notes the fast path "can now return tasks that belong to
+  other workers" and reasons it is safe. That is the bug.
+- **luigi#33 (run 572):** notes positional arguments now bind to different parameters
+  and calls it "intended, not a bug". That is the bug.
+- **pandas#95 (run 645):** finds the NumPy-integer comparison change and leaves it
+  out, partly because "as I recall, released pandas has the same code".
+- **pandas#132 (run 674):** states timedelta `std` still works, without running it
+  (pandas was not built in the sandbox).
+- **pandas#121, scrapy#31:** finds other real bugs, not the target.
+
+The deep tier holds 72 bugs. Opus 5.5 found 32 of them for $12.98; Haiku found 29 for
+$0.41 and Sonnet 25 for $4.38. Only 3 (black#12, pandas#6, tornado#12) were found
+by Opus 5.5 alone; 34 were found by no model.
+
+### Alternative setups, scored from stored results
+
+| Setup | Found | Cost |
+|---|---:|---:|
+| Jev triage (as run) | 42/100 | $14.15 |
+| Jev triage + Haiku second pass on every bug | 48/100 | $14.66 |
+| Haiku everywhere + Opus 5.5 on deep only | 44/100 | $13.49 |
+| Haiku on light+standard, Opus 5.5 on deep | 38/100 | $13.08 |
+| Haiku + Opus 5.5 on every bug | 49/100 | $16.85 |
+| All three on every bug | 49/100 | $22.44 |
+
+Haiku plus Opus 5.5 already cover all 49 bugs any model found. Merging two models'
+findings adds false positives, which BugsInPy's target recall does not count; these
+are single runs, with run-to-run noise of about ±2-4 bugs on 30.
+
+### Next experiments this suggests
+
+1. Change the reviewer prompt so issues it would otherwise drop are filed (as
+   low-severity findings or a separate "considered" list), then rerun Opus 5.5 on
+   Martian (about $3) and score both recall and precision.
+2. Run Haiku as a second pass next to triage and measure the extra false positives
+   on Martian, where precision counts.
+
 ## Spend
 
 | Step | Cost |
@@ -195,6 +273,7 @@ differences of the same size.
 | 5 Opus 5.5 smoke tests, sweep, judging | $5.44 |
 | 6 Six full sweeps ($19.75), Martian tail reruns ($0.19), judging ($1.14) | $21.08 |
 | 6 Stopped sequential start (two Opus 5.5 bugs, cost not recorded) | about $0.30 |
+| 7 Trace analysis (no API calls) | $0 |
 | **Total** | **about $29.33** |
 
 Jev's own cost is not measured.
