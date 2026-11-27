@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 735
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 10
+# cost (USD, harness-reported): 0.329901
+# cost (USD, public Opus 4 rate): 1.571276
+# usage: {'input_tokens': 20, 'cache_creation_input_tokens': 22259, 'cache_read_input_tokens': 445530, 'output_tokens': 6471, 'output_tokens_details': {'thinking_tokens': 3595}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 22259}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 709, 'cache_read_input_tokens': 50322, 'cache_creation_input_tokens': 2135, 'cache_creation': {'ephemeral_5m_input_tokens': 2135, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Regex mask uses re.match (start-anchored), so list/dict regex replacements no longer apply when the pattern only matches mid-string.",
+    "detail": "Before this change, list/dict replacement on object blocks called `ObjectBlock.replace`/`_replace_single`, which uses `rx.search`/`rx.sub` and so matches anywhere in the string. `replace_list` now computes the mask up front with `bool(re.match(b, x))`, which only matches at the start of the string. `_replace_single` then applies `re_replacer` only to elements where the mask is True. Example: `pd.Series(['xab']).replace(['a'], ['z'], regex=True)` used to return 'xzb' and now leaves the value unchanged. The scalar call `s.replace('a', 'z', regex=True)` still returns 'xzb', so the same request now behaves differently depending on whether it is passed as a scalar or a list/dict.",
+    "line_end": 1919,
+    "suggested_fix": "-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n+        op = np.vectorize(lambda x: bool(re.search(b, x)) if isinstance(x, compat.string_types)\n                           else False)"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1917,
+    "category": "logic",
+    "severity": "low",
+    "summary": "With regex=True, non-string to_replace entries now either raise TypeError or never match.",
+    "detail": "When regex=True, every entry in src_list is used as a regex. If an entry is not a string or compiled pattern (for example the int 1) and the values contain any string, `re.match(1, 'a')` raises TypeError. The old code handled this case: `ObjectBlock._replace_single` falls back to plain equality replacement when the pattern cannot be compiled. On numeric blocks, the vectorized lambda returns False for every non-str element, so `pd.DataFrame({'a': [1, 2]}).replace([1], [10], regex=True)` no longer replaces anything. The old code used an equality mask plus putmask there. Also, `isinstance(x, str)` misses `unicode` values on Python 2, which this codebase still supports.",
+    "line_end": 1919,
+    "suggested_fix": "Only use the regex matcher when `regex and is_re_compilable(b)`; otherwise use equality (`operator.eq`). Check against `compat.string_types` instead of `str`."
+  }
+]

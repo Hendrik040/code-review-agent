@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 731
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 5
+# cost (USD, harness-reported): 0.082730
+# cost (USD, public Opus 4 rate): 0.737863
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 13783, 'cache_read_input_tokens': 156521, 'output_tokens': 3260, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 13783}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 401, 'cache_read_input_tokens': 45580, 'cache_creation_input_tokens': 1514, 'cache_creation': {'ephemeral_5m_input_tokens': 1514, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1920,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Regex mask uses re.match (anchored at start) while the replacement itself uses search/sub (match anywhere), so partial-match regex replacements in list-based replace are silently skipped.",
+    "detail": "In `replace_list`, the mask is now built by `_compare_or_regex_match` with `regex=True`, and it uses `re.match(b, x)`. `ObjectBlock._replace_single` applies the replacement with `rx.search` or `rx.sub`, which match anywhere in the string. `_replace_coerce` only does work when `mask.any()` is true. For example, `Series(['abc']).replace(['b'], ['x'], regex=True)` used to give 'axc'. Now the mask is False because `re.match('b', 'abc')` is None, so nothing is replaced. Any pattern that is not anchored at the start of the string regresses. Related problems: `isinstance(x, str)` misses `unicode` on Python 2, so those values never match. A non-string or non-pattern `s` with regex=True (e.g. an int key) now raises TypeError inside `re.match`. Before, `_replace_single` tolerated it.",
+    "line_end": null,
+    "suggested_fix": "Use `re.search` (and `compat.string_types`) so the mask agrees with `_replace_single`:\n-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n-                          else False)\n+        op = np.vectorize(lambda x: bool(re.search(b, x))\n+                          if isinstance(x, compat.string_types) else False,\n+                          otypes=[bool])"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "error",
+    "severity": "low",
+    "summary": "np.vectorize is created without otypes, so regex replace on empty data raises ValueError.",
+    "detail": "The regex branch of `_compare_or_regex_match` builds `np.vectorize(...)` with no `otypes`. NumPy raises `ValueError: cannot call vectorize on size 0 inputs unless otypes is set` when it is called on a zero-size array. `replace_list(..., regex=True)` on an empty Series or DataFrame (or an empty object array) now fails. It used to return the empty object unchanged.",
+    "line_end": null,
+    "suggested_fix": "Pass `otypes=[bool]` to np.vectorize."
+  }
+]

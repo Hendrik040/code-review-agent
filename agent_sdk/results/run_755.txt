@@ -1,0 +1,52 @@
+# Agent SDK reviewer run 755
+# repo: LocalRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 6
+# cost (USD, harness-reported): 0.160530
+# cost (USD, public Opus 4 rate): 0.735956
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 10881, 'cache_read_input_tokens': 178625, 'output_tokens': 3518, 'output_tokens_details': {'thinking_tokens': 754}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 10881}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 698, 'cache_read_input_tokens': 39076, 'cache_creation_input_tokens': 2003, 'cache_creation': {'ephemeral_5m_input_tokens': 2003, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "error",
+    "severity": "high",
+    "summary": "side_effect calls os.remove on every namelist() entry, including directory entries, crashing on any archive containing directories.",
+    "detail": "ZipFile.namelist() includes directory entries such as 'dir/' as well as nested paths like 'dir/file'. os.remove('dir/') raises IsADirectoryError/PermissionError, and os.remove on a nested file that was not extracted raises FileNotFoundError. side_effect is invoked from main.run_rule (thefuck/main.py:140) without any exception handling, so `fuck` crashes with a traceback after the user confirms; the corrected command is never printed/put into history, and cleanup is left half-done. Archives with directories are the common case for 'dirty' zips (multiple top-level entries).",
+    "line_end": 38,
+    "suggested_fix": "for file in archive.namelist():\n    try:\n        if os.path.isfile(file):\n            os.remove(file)\n    except OSError:\n        pass\n# (and optionally remove now-empty directories in reverse order)"
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 38,
+    "category": "security",
+    "severity": "medium",
+    "summary": "Paths from the archive are passed unsanitized to os.remove, allowing deletion of files outside the extraction directory (e.g. '../x' or absolute paths).",
+    "detail": "unzip itself strips '../' components and leading '/' when extracting, so the files actually written are in the cwd. But side_effect removes the raw namelist() path, so an archive containing an entry like '../.bashrc' or '/home/user/file' causes thefuck to delete that real file outside the cwd, which the unzip never created. A malicious or unusual archive therefore results in data loss when the user runs `fuck`.",
+    "line_end": null,
+    "suggested_fix": "Resolve each path and skip entries whose os.path.abspath does not start with os.getcwd() (and skip absolute paths)."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 24,
+    "category": "error",
+    "severity": "medium",
+    "summary": "match() raises (and prints a WARN traceback) whenever the zip file is missing or no archive argument is given.",
+    "detail": "_zip_file returns None for `unzip` with no positional args (e.g. `unzip -l`), and for a typical failed command like `unzip foo` where foo.zip doesn't exist, zipfile.ZipFile raises FileNotFoundError (or BadZipFile for non-zip input). The exception is caught in main.get_matched_rule but logs.rule_failed writes a full red traceback to stderr every time, so the common 'unzip on a nonexistent/invalid file' failure spams users with rule errors.",
+    "line_end": 27,
+    "suggested_fix": "def match(command, settings):\n    if not command.script.startswith('unzip') or '-d' in command.script.split():\n        return False\n    zip_file = _zip_file(command)\n    if not zip_file or not os.path.isfile(zip_file):\n        return False\n    try:\n        return _is_bad_zip(zip_file)\n    except zipfile.BadZipfile:\n        return False"
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 26,
+    "category": "logic",
+    "severity": "low",
+    "summary": "'-d' substring check on the whole script prevents matching archives whose names contain '-d' (e.g. my-data.zip).",
+    "detail": "`'-d' not in command.script` is a substring check, so `unzip my-data.zip` or `unzip foo-docs.zip` never matches even though no -d flag was passed.",
+    "line_end": null,
+    "suggested_fix": "and '-d' not in command.script.split()"
+  }
+]

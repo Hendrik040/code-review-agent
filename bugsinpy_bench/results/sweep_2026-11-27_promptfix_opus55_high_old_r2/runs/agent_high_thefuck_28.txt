@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_promptfix_opus55_high_old_r2
+# bug: thefuck#28
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: d3b50e6acfc007b4bf8bb76a9c293dee5bc7db1b
+# prepared_path: bench_impact/prepared_ctxerr10.json
+# prepared_sha256_16: 48e4ed63e78d6fe8
+# upstream_repo: nvbn/thefuck
+# introducing_commit: e4b97af73e04c9a936ac8a43fbce874deb3adf70
+# fixed_commit: 9b30ae0424607a4e268bd26eaee8ccb91a5588f9
+# base_ref: e4b97af73e04c9a936ac8a43fbce874deb3adf70^
+# head_ref: e4b97af73e04c9a936ac8a43fbce874deb3adf70
+# started: 2026-11-27T16:36:37+00:00
+# finished: 2026-11-27T16:37:37+00:00
+# duration_s: 60.0
+# cost_usd: 0.2379
+# num_turns: 8
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 764
+# repo: LocalRepo
+# refs: e4b97af73e04c9a936ac8a43fbce874deb3adf70^..e4b97af73e04c9a936ac8a43fbce874deb3adf70
+# turns: 8
+# cost (USD, harness-reported): 0.237853
+# cost (USD, public Opus 4 rate): 1.123207
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 15976, 'cache_read_input_tokens': 308345, 'output_tokens': 4812, 'output_tokens_details': {'thinking_tokens': 2318}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 15976}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 648, 'cache_read_input_tokens': 45056, 'cache_creation_input_tokens': 1118, 'cache_creation': {'ephemeral_5m_input_tokens': 1118, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/fix_file.py",
+    "line": 52,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The rule is on by default and matches any stderr that fits a loose regex, without checking that the captured file exists, so it produces false positives and hides other rules.",
+    "detail": "`match` returns a truthy value whenever any pattern matches. It never checks that `m.group('file')` is an existing file. Several patterns are very loose. `^{file}:{line}:` matches any line that starts with text, a colon, digits and a colon, such as a timestamped log line `2015-07-29 16:05:46 ERROR ...`; there the file is '2015-07-29 16' and the line is 05. The perl pattern `at {file} line {line}` has no `^` anchor, so it matches prose anywhere in stderr. `get_matched_rule` returns the first rule that matches. Rules are sorted by priority and then by file name, and `fix_file` has the default priority and sorts before git_*, no_command, python_*, etc. So it takes over those commands and suggests `$EDITOR <nonexistent> +N && cmd`.",
+    "line_end": null,
+    "suggested_fix": "def match(command, settings):\n    m = _search(command.stderr)\n    return m and os.path.isfile(m.group('file'))"
+  },
+  {
+    "file": "thefuck/rules/fix_file.py",
+    "line": 60,
+    "category": "security",
+    "severity": "medium",
+    "summary": "The file path taken from stderr is put into a shell command without quoting.",
+    "detail": "`'$EDITOR {} +{}'.format(m.group('file'), ...)` inserts the matched file name directly into a command that the shell will run. The file regex `[^:\\n]+` accepts spaces and shell metacharacters such as `;`, `$()` and backticks. A path with a space opens the wrong files. A crafted file name or crafted error output, e.g. a script named `a; rm -rf ~.sh` or output from an untrusted program, runs arbitrary commands when the user accepts the suggestion.",
+    "line_end": null,
+    "suggested_fix": "from thefuck.utils import quote\n...\nreturn shells.and_('$EDITOR {} +{}'.format(quote(m.group('file')), m.group('line')), command.script)"
+  },
+  {
+    "file": "thefuck/rules/fix_file.py",
+    "line": 60,
+    "category": "error",
+    "severity": "low",
+    "summary": "The rule is enabled by default even when $EDITOR is unset, which makes the suggested command broken.",
+    "detail": "If `EDITOR` is not set, `$EDITOR file +N` expands to `file +N`. The shell then tries to run the source file as a command, which fails or runs something unintended, e.g. an executable script `./a`. Nothing turns the rule off when EDITOR is missing.",
+    "line_end": null,
+    "suggested_fix": "enabled_by_default = bool(os.environ.get('EDITOR'))"
+  }
+]

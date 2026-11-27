@@ -138,3 +138,33 @@ to get the ODIS slice. Then dig further with bash / read_file_section /
 ast_search / grep / write_file as needed. Submit only real bugs through
 `submit_findings`. Empty list is valid.
 """
+
+# --- Experiment: "verify" variant (bench_impact, 2026-11-27) -------------
+# With Jev impact selection the reviewer gets a trimmed context and tends to
+# submit straight from it, dismissing suspicions it could have confirmed
+# with one read. REVIEW_PROMPT_VARIANT=verify swaps two sentences. Default
+# behavior is unchanged; the variant is read once, at import.
+_ENOUGH_EVIDENCE = (
+    "If the returned context contains enough evidence, submit\n"
+    "findings without further investigation."
+)
+_VERIFY = (
+    "The context is a trimmed selection: <callees> and <callers>\n"
+    "show only the code judged relevant, and a <not_shown> note says what\n"
+    "was left out. Do not drop a suspected bug only because the context\n"
+    "does not prove it; confirm or reject it with the smallest code read."
+)
+_SPECULATIVE = "5. Prefer no finding over a speculative finding."
+_NOT_SPECULATIVE = (
+    "5. Prefer no finding over a speculative finding. A mismatch you can\n"
+    "   point to in the code, such as a condition that admits inputs the\n"
+    "   code after it does not handle, is not speculative: report it, at\n"
+    "   low severity if its impact is narrow."
+)
+assert _ENOUGH_EVIDENCE in SYSTEM_PROMPT and _SPECULATIVE in SYSTEM_PROMPT
+SYSTEM_PROMPT_VERIFY = SYSTEM_PROMPT.replace(_ENOUGH_EVIDENCE, _VERIFY).replace(_SPECULATIVE, _NOT_SPECULATIVE)
+
+import os as _os  # noqa: E402
+
+if _os.environ.get("REVIEW_PROMPT_VARIANT", "").strip().lower() == "verify":
+    SYSTEM_PROMPT = SYSTEM_PROMPT_VERIFY

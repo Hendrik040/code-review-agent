@@ -1,0 +1,80 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_promptfix_opus55_high_verify_r1
+# bug: pandas#121
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: d3b50e6acfc007b4bf8bb76a9c293dee5bc7db1b
+# prepared_path: bench_impact/prepared_ctxerr10.json
+# prepared_sha256_16: 48e4ed63e78d6fe8
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# fixed_commit: 958756af5cb40658e975a70d29089b68aea93040
+# base_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda^
+# head_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# started: 2026-11-27T16:27:13+00:00
+# finished: 2026-11-27T16:28:32+00:00
+# duration_s: 79.0
+# cost_usd: 0.3555
+# num_turns: 9
+# num_findings: 4
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 675
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 9
+# cost (USD, harness-reported): 0.355505
+# cost (USD, public Opus 4 rate): 1.640902
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 24313, 'cache_read_input_tokens': 410342, 'output_tokens': 7590, 'output_tokens_details': {'thinking_tokens': 4286}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 24313}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 804, 'cache_read_input_tokens': 52421, 'cache_creation_input_tokens': 1757, 'cache_creation': {'ephemeral_5m_input_tokens': 1757, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "high",
+    "summary": "The regex mask uses anchored `re.match`, but the replacement uses `rx.search`/`rx.sub`, so substring regex replacements are now silently skipped.",
+    "detail": "With regex=True, `replace_list` now builds its masks with `_compare_or_regex_match`, which calls `re.match(b, x)`. That only matches at the start of the string. `ObjectBlock._replace_single` replaces with `rx.search`/`rx.sub`, which match anywhere in the string. `replace_list` only calls `_replace_coerce`/`_replace_single` for elements whose mask is True. So `pd.Series(['abc']).replace({'b': 'x'}, regex=True)` used to return 'axc' and now returns 'abc' unchanged, because `re.match('b', 'abc')` is None. The same happens with `df.replace({'col': {r'\\d+': ...}}, regex=True)`-style dict replacements whose patterns are not anchored at the start. This is a silent regression in regex replace.",
+    "line_end": 1919,
+    "suggested_fix": "-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n+        op = np.vectorize(lambda x: bool(re.search(b, x))\n+                          if isinstance(x, compat.string_types)\n                           else False)"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1917,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "With regex=True, any non-string `to_replace` key gets an all-False mask, so numeric/object exact-value replacements in a dict are silently dropped.",
+    "detail": "When regex=True, `_compare_or_regex_match` uses the vectorized regex lambda for every key, and that lambda returns False for any element that is not a str. Before this change, non-object blocks always used `operator.eq` masks, and object blocks went through `Block.replace`, which falls back to exact replacement for keys that are not regex-compilable. Now `df.replace({1: 2, 'a': 'b'}, regex=True)`, or even `pd.Series([1, 2]).replace({1: 10}, regex=True)`, never replaces the integer values, because their masks are all False. For numeric keys the regex mask should not be used; equality should be.",
+    "line_end": 1919,
+    "suggested_fix": "Use regex matching only when `regex` is true and `b` is regex-compilable (`is_re_compilable(b)`); otherwise fall back to `operator.eq`."
+  },
+  {
+    "file": "pandas/core/internals/blocks.py",
+    "line": 1726,
+    "category": "logic",
+    "severity": "low",
+    "summary": "For non-object blocks (e.g. CategoricalBlock) with regex=True, `Block._replace_coerce` calls the base `_replace_single`, which is a no-op, so matching values are silently not replaced.",
+    "detail": "The base `Block._replace_single` (blocks.py:818) just returns self or a copy. A CategoricalBlock with string categories gets a True regex mask, because `as_array()` exposes the strings. `_replace_coerce` then takes the regex branch and does nothing. Before this change, non-object blocks always used `coerce_to_target_dtype` + `putmask`, so `pd.Series(['a','b'], dtype='category').replace({'a': 'c'}, regex=True)` used to replace 'a'. Now it silently leaves the value unchanged.",
+    "line_end": 1735,
+    "suggested_fix": ""
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`isinstance(x, str)` excludes unicode strings on Python 2, and an unset `otypes` makes `np.vectorize` raise on empty frames.",
+    "detail": "pandas still supports py2 here (`compat.string_types` is used everywhere else in this code). On py2, unicode object values fail `isinstance(x, str)`, so regex dict replacements on them silently do nothing. Separately, `np.vectorize` without `otypes` raises ValueError ('cannot call `vectorize` on size 0 inputs') when the frame or series is empty, so `pd.Series([], dtype=object).replace({'a': 'b'}, regex=True)` now raises.",
+    "line_end": null,
+    "suggested_fix": "np.vectorize(lambda x: ..., otypes=[np.bool_]) and use compat.string_types."
+  }
+]

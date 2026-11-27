@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 676
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 6
+# cost (USD, harness-reported): 0.275901
+# cost (USD, public Opus 4 rate): 1.225306
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 21497, 'cache_read_input_tokens': 254238, 'output_tokens': 5876, 'output_tokens_details': {'thinking_tokens': 3355}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 21497}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 633, 'cache_read_input_tokens': 49645, 'cache_creation_input_tokens': 2050, 'cache_creation': {'ephemeral_5m_input_tokens': 2050, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The regex mask uses re.match (anchored at the start), but the replacement uses rx.search/rx.sub (unanchored), so patterns that match mid-string are no longer replaced.",
+    "detail": "replace_list now works out a per-element mask up front with `re.match(b, x)`. That only matches at the start of the string. `ObjectBlock._replace_coerce` and `_replace_single` only replace masked elements, and they replace using `rx.search` / `rx.sub`, which match anywhere. Before this change, `ObjectBlock.replace` was called with no mask, so `pd.Series(['ab']).replace(['b'], ['X'], regex=True)` returned 'aX'. Now the mask is False for 'ab', so nothing is replaced. Any regex used with list or dict to_replace that doesn't match at position 0 silently does nothing.",
+    "line_end": 1919,
+    "suggested_fix": "-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n+        op = np.vectorize(lambda x: bool(re.search(b, x)) if isinstance(x, str)\n                           else False)"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1915,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "With regex=True, a non-string to_replace now either matches nothing (numeric data) or raises TypeError (object data), where it used to replace by equality.",
+    "detail": "`comp(s, regex)` now always uses the regex matcher when regex=True. That matcher returns False for every non-str element. So a numeric frame or series like `pd.Series([1, 2]).replace([1], [10], regex=True)` silently does nothing; before, numeric blocks always matched by equality. For object arrays, when `s` is not a string or compiled pattern (for example `pd.Series(['a', 1]).replace([1, 'a'], [10, 'b'], regex=True)`), `re.match(1, 'a')` raises `TypeError: first argument must be string or compiled pattern`. Before, `ObjectBlock._replace_single` fell back to plain equality replacement whenever to_replace was not regex-compilable.",
+    "line_end": 1919,
+    "suggested_fix": "Use regex matching only when b is regex-compilable (is_re_compilable(b)); otherwise fall back to operator.eq."
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "error",
+    "severity": "low",
+    "summary": "np.vectorize without otypes raises ValueError on empty input, so replace_list with regex=True fails on an empty object frame.",
+    "detail": "`np.vectorize(lambda ...)` is built without `otypes`. When it is called on a size-0 array (for example an empty object-dtype DataFrame or Series with `replace([...], [...], regex=True)`), numpy raises `ValueError: cannot call vectorize on size 0 inputs unless otypes is set`. Before this change, empty inputs went through without error.",
+    "line_end": null,
+    "suggested_fix": "Pass otypes=[bool] to np.vectorize."
+  }
+]

@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 738
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 8
+# cost (USD, harness-reported): 0.293477
+# cost (USD, public Opus 4 rate): 1.328768
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 22532, 'cache_read_input_tokens': 304305, 'output_tokens': 5995, 'output_tokens_details': {'thinking_tokens': 3810}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 22532}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 545, 'cache_read_input_tokens': 50502, 'cache_creation_input_tokens': 1895, 'cache_creation': {'ephemeral_5m_input_tokens': 1895, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Regex mask uses re.match (anchored at string start) while replacement uses rx.search/rx.sub, so list-based regex replace no longer matches patterns in the middle of strings.",
+    "detail": "replace_list now precomputes masks via _compare_or_regex_match, which for regex=True uses `re.match(b, x)`. The actual substitution in ObjectBlock._replace_single uses `rx.search(s)` / `rx.sub(value, s)` and is applied only to masked elements. Before this change, object blocks went through b.replace(...), which used search semantics. Example: `pd.Series(['xa']).replace(['a'], ['b'], regex=True)` used to give 'xb'. Now the mask is False because 'a' does not match at position 0, so the value is left unchanged. This is a silent behavior regression for list/dict regex replacements.",
+    "line_end": 1919,
+    "suggested_fix": "-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n+        op = np.vectorize(lambda x: bool(re.search(b, x)) if isinstance(x, compat.string_types)\n                           else False)"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "error",
+    "severity": "low",
+    "summary": "Regex mask calls re.match with non-string to_replace entries (e.g. ints), raising TypeError; and isinstance(x, str) skips unicode values on Python 2.",
+    "detail": "With regex=True, comp() passes every src_list entry to _compare_or_regex_match. A numeric entry such as `df.replace([1, 'a'], [2, 'b'], regex=True)` on a frame with mixed/object values reaches `re.match(1, 'somestr')`. is_numeric_v_string_like does not short-circuit here because `a` is an object array. Python then raises TypeError ('first argument must be string or compiled pattern'). Previously ObjectBlock._replace_single fell back to plain equality replacement for non-regex-compilable to_replace. Separately, `isinstance(x, str)` excludes `unicode` on Python 2, which pandas still supports here (it uses compat.string_types). So regex replace silently never matches unicode values on py2.",
+    "line_end": null,
+    "suggested_fix": "Only use regex matching when `is_re_compilable(b)`, otherwise fall back to operator.eq; use `compat.string_types` instead of `str`."
+  }
+]

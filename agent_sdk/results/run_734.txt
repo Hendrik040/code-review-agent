@@ -1,0 +1,42 @@
+# Agent SDK reviewer run 734
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 12
+# cost (USD, harness-reported): 0.329597
+# cost (USD, public Opus 4 rate): 1.596352
+# usage: {'input_tokens': 24, 'cache_creation_input_tokens': 18821, 'cache_read_input_tokens': 480482, 'output_tokens': 6965, 'output_tokens_details': {'thinking_tokens': 3296}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 18821}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 694, 'cache_read_input_tokens': 46474, 'cache_creation_input_tokens': 2091, 'cache_creation': {'ephemeral_5m_input_tokens': 2091, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The regex mask in replace_list uses anchored re.match, but the replacement itself uses rx.search/rx.sub, so list/dict regex replacements whose match is not at the start of the string are silently skipped.",
+    "detail": "Before this change, object blocks in BlockManager.replace_list were handled by b.replace(...). That path finds matches anywhere in the string (rx.search for non-string values, rx.sub for string values). Now each block runs `_replace_coerce` with a mask from `_compare_or_regex_match`, which uses `re.match(b, x)` and so only matches at the start of the string. `_replace_coerce` and `_replace_single` only change elements where the mask is True, and `new_rb.append(b)` keeps the block unchanged when `m.any()` is False. Example: `pd.DataFrame({'a': ['abc']}).replace(['b'], ['x'], regex=True)` used to give 'axc' and now leaves 'abc' unchanged. The scalar path `df.replace('b', 'x', regex=True)` still uses search, so the scalar and list forms now give different results. This is a silent data-correctness regression.",
+    "line_end": 1919,
+    "suggested_fix": "-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n-                          else False)\n+        op = np.vectorize(lambda x: bool(re.search(b, x))\n+                          if isinstance(x, compat.string_types) else False)"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "error",
+    "severity": "medium",
+    "summary": "With regex=True, a non-string entry in to_replace (e.g. a number) now causes re.match(b, x) to raise a TypeError when computing the mask.",
+    "detail": "`comp(s, regex)` now calls `_compare_or_regex_match(values, s, regex=True)` for every item in src_list, including non-string items such as ints and floats. The vectorized lambda calls `re.match(b, x)` for every string element x, and `re.match(1, 'foo')` raises `TypeError: first argument must be string or compiled pattern`. Before this change, `ObjectBlock._replace_single` checked `is_re_compilable(to_replace)` and sent non-pattern values to plain equality replacement. So a call like `df.replace([1, 'a.*'], [2, 'b'], regex=True)` on a frame with string values used to work and now raises. Only NaN is checked first (via isna); datetime values (asm8) are also passed to re.match.",
+    "line_end": 1919,
+    "suggested_fix": "In _compare_or_regex_match, use regex matching only when `regex and is_re_compilable(b)`; otherwise fall back to operator.eq."
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "low",
+    "summary": "The regex mask checks isinstance(x, str), so on Python 2 unicode values are never matched and are never replaced.",
+    "detail": "This version of pandas still supports Python 2 (it uses compat.string_types elsewhere, including in `_replace_single`). On Python 2, `isinstance(u'abc', str)` is False, so the mask is all False for unicode object values. `df.replace([u'^a'], [u'z'], regex=True)` therefore becomes a no-op, whereas before it replaced the value.",
+    "line_end": null,
+    "suggested_fix": "Use `isinstance(x, compat.string_types)` instead of `isinstance(x, str)`."
+  }
+]

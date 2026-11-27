@@ -1,0 +1,52 @@
+# Agent SDK reviewer run 697
+# repo: LocalRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 7
+# cost (USD, harness-reported): 0.181171
+# cost (USD, public Opus 4 rate): 0.870679
+# usage: {'input_tokens': 14, 'cache_creation_input_tokens': 11477, 'cache_read_input_tokens': 255050, 'output_tokens': 3636, 'output_tokens_details': {'thinking_tokens': 899}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 11477}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 650, 'cache_read_input_tokens': 39801, 'cache_creation_input_tokens': 1874, 'cache_creation': {'ephemeral_5m_input_tokens': 1874, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 37,
+    "category": "error",
+    "severity": "high",
+    "summary": "side_effect calls os.remove on every archive entry, including directory entries, and crashes with an uncaught exception.",
+    "detail": "`archive.namelist()` returns directory entries such as `dir/` alongside the files. `os.remove('dir/')` raises IsADirectoryError or OSError. It also raises FileNotFoundError for any entry that was not extracted, for example because the user declined to overwrite it or extraction failed partway. `run_rule` in thefuck/main.py:139-140 calls `rule.side_effect` with no try/except. So `thefuck` crashes with a traceback before it prints the corrected command or adds it to history. Even when the crash happens, some files have already been deleted and others haven't.",
+    "line_end": 38,
+    "suggested_fix": "Skip entries that end in '/' or for which os.path.isdir is true, wrap os.remove in try/except OSError, and remove directories afterwards in reverse depth order."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 36,
+    "category": "security",
+    "severity": "high",
+    "summary": "Removing files by the raw names stored in the archive can delete files outside the extraction directory, such as absolute or `../` paths.",
+    "detail": "The archive's entry names are passed directly to os.remove. A zip entry named `../../.bashrc` or `/home/user/important` makes the side effect delete that path. `unzip` itself strips leading `/` and `../` parts when it extracts, so the deleted path is not even the file it wrote. The side effect also deletes files that already existed in the directory and just share a name with an archive entry, for example ones the user chose not to overwrite. The result is data loss outside the extracted contents.",
+    "line_end": 38,
+    "suggested_fix": "Resolve each path with os.path.abspath and only remove it if it lies under os.getcwd(). Skip absolute paths and names containing '..'."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 6,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "_is_bad_zip counts every archive entry, so a well-formed zip with one top-level folder is wrongly flagged as dirty.",
+    "detail": "The rule is meant to catch archives that spill several files into the current directory. A normal archive such as `project/`, `project/a`, `project/b` has namelist() longer than 1, so the rule matches. It then suggests `unzip project.zip -d project`, which creates project/project/... nesting, and the side effect tries to delete the correctly extracted files, which then crashes on the `project/` directory entry.",
+    "line_end": 8,
+    "suggested_fix": "Treat the archive as dirty only if its entries have more than one distinct top-level component, e.g. `len({n.split('/')[0] for n in names}) > 1`."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 24,
+    "category": "error",
+    "severity": "low",
+    "summary": "match raises for `unzip` with no archive argument, a missing file, or a non-zip file, which prints a rule-failure traceback.",
+    "detail": "_zip_file returns None when every argument starts with '-' (e.g. `unzip -l` or a bare `unzip`), and zipfile.ZipFile(None) raises. A missing file raises FileNotFoundError/IOError, and a non-zip file raises BadZipFile. The rule does not need command output (requires_output = False), so it runs for every unzip command. get_matched_rule catches the error and calls logs.rule_failed, which prints a traceback whenever the user runs `fuck` after a typo such as `unzip foo` with no foo.zip present. The check `command.script.startswith('unzip')` also matches other commands like `unzipsfx`.",
+    "line_end": 27,
+    "suggested_fix": "In match, return False when _zip_file returns None or os.path.isfile fails, and catch zipfile.BadZipfile and IOError. Check `command.script.split()[0] == 'unzip'`."
+  }
+]

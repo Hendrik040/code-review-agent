@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 681
+# repo: LocalRepo
+# refs: 4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897^..4e7eceaa3afafe8585c3b680ec4f3d18b0c0e897
+# turns: 7
+# cost (USD, harness-reported): 0.065738
+# cost (USD, public Opus 4 rate): 0.681704
+# usage: {'input_tokens': 16, 'cache_creation_input_tokens': 6308, 'cache_read_input_tokens': 251559, 'output_tokens': 2478, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 6308}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 515, 'cache_read_input_tokens': 38363, 'cache_creation_input_tokens': 1256, 'cache_creation': {'ephemeral_5m_input_tokens': 1256, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 34,
+    "category": "error",
+    "severity": "medium",
+    "summary": "side_effect calls os.remove on every archive entry, which crashes on directory entries and deletes pre-existing files.",
+    "detail": "`side_effect` runs from `run_rule` in thefuck/main.py:139-140, after the user confirms and before the corrected command is printed. It calls `os.remove(file)` for every name in `archive.namelist()`. A zip that has more than one entry usually contains directory entries such as `dir/`. `os.remove` on a directory raises IsADirectoryError or PermissionError, and the exception is not caught in `run_rule`. The cleanup then stops partway, nothing is printed, and `put_to_history` is skipped, so the fix fails. It also raises FileNotFoundError for any entry that was never extracted, for example when the user had extracted only some files with `unzip a.zip file1`. The function also deletes any same-named file already in the cwd, whether or not unzip created it. Pre-existing user files can be lost, and the rule only extracts the archive into a new directory, not into the cwd.",
+    "line_end": null,
+    "suggested_fix": "Skip entries ending in '/', and only remove paths that exist. Handle OSError per file. Remove directories with os.rmdir after the files, deepest first. Consider not deleting files that the failed unzip did not create."
+  },
+  {
+    "file": "thefuck/rules/dirty_unzip.py",
+    "line": 24,
+    "category": "logic",
+    "severity": "low",
+    "summary": "match does not handle missing archive names, nonexistent files or non-zip files, and uses loose string checks.",
+    "detail": "`_zip_file` returns None when the command has no non-flag argument, for example a bare `unzip` or `unzip -l`. `match` then calls `zipfile.ZipFile(None)`, which raises. A nonexistent archive raises FileNotFoundError, and a non-zip file raises BadZipFile. `get_matched_rule` catches these and logs a rule failure, but the user gets noisy debug output and the failure is only an accident of the exception handler. `'-d' not in command.script` is a substring test, so it wrongly excludes archives whose names contain '-d' such as `my-data.zip`. `startswith('unzip')` also matches commands like `unzipfoo`. `get_new_command` appends `-d <name>` to the end of the script, which puts it after any `-x` list and makes unzip treat the directory as an excluded file.",
+    "line_end": null,
+    "suggested_fix": "In `match`, return False if `_zip_file` is None. Wrap `_is_bad_zip` in try/except (IOError, zipfile.BadZipfile) and return False on error. Check for the '-d' token with `'-d' in command.script.split()`. Match on `command.script.split()[0] == 'unzip'`."
+  }
+]

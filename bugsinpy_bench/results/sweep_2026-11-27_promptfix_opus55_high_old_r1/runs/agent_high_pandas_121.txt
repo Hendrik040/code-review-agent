@@ -1,0 +1,80 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_promptfix_opus55_high_old_r1
+# bug: pandas#121
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: d3b50e6acfc007b4bf8bb76a9c293dee5bc7db1b
+# prepared_path: bench_impact/prepared_ctxerr10.json
+# prepared_sha256_16: 48e4ed63e78d6fe8
+# upstream_repo: pandas-dev/pandas
+# introducing_commit: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# fixed_commit: 958756af5cb40658e975a70d29089b68aea93040
+# base_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda^
+# head_ref: 720d263a9daa7a45e52a31d14ed9db1179c89cda
+# started: 2026-11-27T16:27:29+00:00
+# finished: 2026-11-27T16:28:50+00:00
+# duration_s: 80.4
+# cost_usd: 0.3588
+# num_turns: 12
+# num_findings: 4
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 678
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 12
+# cost (USD, harness-reported): 0.358807
+# cost (USD, public Opus 4 rate): 1.707140
+# usage: {'input_tokens': 24, 'cache_creation_input_tokens': 20312, 'cache_read_input_tokens': 482153, 'output_tokens': 8036, 'output_tokens_details': {'thinking_tokens': 4250}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 20312}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 719, 'cache_read_input_tokens': 46402, 'cache_creation_input_tokens': 3654, 'cache_creation': {'ephemeral_5m_input_tokens': 3654, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 4
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "logic",
+    "severity": "high",
+    "summary": "The regex mask uses `re.match`, which only matches at the start of a string, so substring regex replacements in `replace_list` now silently do nothing.",
+    "detail": "`replace_list` builds masks ahead of time with `_compare_or_regex_match(values, s, regex=True)`, which uses `re.match(b, x)`. That only matches at the start of the string. The replacement itself (`ObjectBlock._replace_single`) uses `rx.search` / `rx.sub`, which match anywhere. `ObjectBlock._replace_coerce` only does the replacement when `mask.any()`, and `_replace_single` then applies only the masked elements. As a result, `pd.Series(['ab', 'cd']).replace(['b'], ['X'], regex=True)`, or `s.replace({'b': 'X'}, regex=True)`, used to return `['aX', 'cd']` and now returns the data unchanged. This is a silent correctness regression for any list/dict regex replacement whose pattern is not anchored at the start.",
+    "line_end": 1919,
+    "suggested_fix": "-        op = np.vectorize(lambda x: bool(re.match(b, x)) if isinstance(x, str)\n+        op = np.vectorize(lambda x: bool(re.search(b, x))\n+                          if isinstance(x, str) and isinstance(b, (str, Pattern))\n                           else False)"
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "error",
+    "severity": "medium",
+    "summary": "With regex=True, a non-string `to_replace` entry (e.g. an int) makes `re.match(b, x)` raise TypeError for every string element.",
+    "detail": "`comp(s, regex)` is called for every `src_list` entry. When `regex=True` and `s` is not a string or pattern (e.g. `1`), the vectorized lambda calls `re.match(1, 'abc')` for every string value, which raises `TypeError: first argument must be string or compiled pattern`. Before this change, `ObjectBlock.replace` -> `_replace_single` checked `is_re_compilable(to_replace)` and fell back to an ordinary equality replace. So `pd.Series(['a', 1]).replace([1, 'a'], ['x', 'y'], regex=True)`, or a dict with mixed int and str keys, used to work and now crashes.",
+    "line_end": 1919,
+    "suggested_fix": "Only apply the regex when `b` is a string or compiled pattern (`isinstance(b, (str, Pattern))`); otherwise use equality comparison or return False."
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 584,
+    "category": "error",
+    "severity": "medium",
+    "summary": "`maybe_convert_objects` is called on the 2-D `as_array()` result, but the Cython `lib.maybe_convert_objects` only accepts 1-D arrays, so Timestamp replacements on mixed-dtype DataFrames crash.",
+    "detail": "`values = self.as_array()` is 2-D for a DataFrame, and it has object dtype when the frame mixes dtypes (e.g. a datetime column plus a string column). When a `to_replace` entry has `asm8` (Timestamp/Timedelta), the new code calls `maybe_convert_objects(values)`, which passes the 2-D object array to `lib.maybe_convert_objects(ndarray[object] objects, ...)`. That buffer type is 1-D, so the call raises `ValueError: Buffer has wrong number of dimensions (expected 1, got 2)`. Before this change, the code compared `values` directly against `s.asm8` with no conversion. Example: `df = pd.DataFrame({'a': pd.to_datetime(['2018-01-01']), 'b': ['x']}); df.replace([pd.Timestamp('2018-01-01')], [pd.Timestamp('2019-01-01')])` now raises.",
+    "line_end": 586,
+    "suggested_fix": "Flatten before converting and reshape afterwards, e.g. `maybe_convert_objects(values.ravel()).reshape(values.shape)`, or compare against the boxed scalar without converting the whole array."
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1918,
+    "category": "error",
+    "severity": "low",
+    "summary": "`np.vectorize` without `otypes` raises on size-0 inputs, so regex `replace_list` on an empty Series or DataFrame crashes.",
+    "detail": "`np.vectorize(lambda ...)` has no `otypes`, so calling it on an empty array raises `ValueError: cannot call vectorize on size 0 inputs unless otypes is set`. `pd.Series([], dtype=object).replace(['a'], ['b'], regex=True)` used to be a no-op and now raises.",
+    "line_end": null,
+    "suggested_fix": "Pass `otypes=[bool]` to `np.vectorize`."
+  }
+]

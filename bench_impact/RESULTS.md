@@ -58,3 +58,58 @@ cut.
 
 Spend: $12.47 in reviews (including a discarded first attempt that ran without the
 isolated CLI config), plus the judge calls.
+
+## Follow-up: why bugs were lost, and a prompt fix
+
+**Trace reading.** In the 6 bugs that were found before and missed after, the new
+context held the evidence every time (rebuilt at the reviewed commits: for thefuck#7
+Jev kept `replace_argument` and `for_app` out of 670 name matches). The reviewers saw
+it and dismissed it (thefuck#7: Sonnet called the bug "speculative", Opus listed it
+under "limits, neither worth flagging") or reported a different issue in the same code.
+With a working context they make fewer tool calls (Opus 61 → 39 on the 10 bugs that
+used to overflow) and submit fewer findings. The system prompt asks for that: "If the
+returned context contains enough evidence, submit findings without further
+investigation" and "Prefer no finding over a speculative finding". When the context
+was an error, neither applied.
+
+**Prompt fix.** `REVIEW_PROMPT_VARIANT=verify` (shared/prompts.py; off by default)
+replaces the first sentence with "the context is a trimmed selection; do not drop a
+suspected bug only because the context does not prove it; confirm or reject it with
+the smallest code read", and adds to the second that a mismatch you can point to in the
+code is not speculative and should be reported, at low severity if narrow.
+
+**Test** (`run_prompt_fix.sh`, `score_prompt_fix.py` → `prompt_fix_scores.json`): the 10
+bugs whose context overflowed, Sonnet 5.5 high and Opus 5.5 high, three setups on this
+branch, two fresh runs each. Old = `IMPACT_SELECT=off` (the one-shot context, which
+overflows on all 10), new = `jev`, verify = `jev` + the prompt variant. Earlier runs of
+the same setups are pooled in. Every trace was checked for the intended prompt and for
+context errors only in the old setup.
+
+| Bugs found of 10 | Old context | New context | New + prompt fix |
+|---|---|---|---|
+| Sonnet 5.5 high | 4, 2 (earlier 5) → mean 3.7 | 2, 3 (earlier 2) → 2.3 | 3, 3 → 3.0 |
+| Opus 5.5 high | 2, 3 (earlier 5) → 3.3 | 1, 3 (earlier 5, 3) → 3.0 | 4, 5 → 4.5 |
+
+| Fresh runs, both reps | Old | New | Verify |
+|---|---|---|---|
+| Sonnet: cost / tool calls / findings (judged real) | $1.33 / 118 / 18 (16) | $1.28 / 73 / 14 (14) | $1.31 / 79 / 20 (20) |
+| Opus: cost / tool calls / findings (judged real) | $3.42 / 126 / 28 (28) | $3.36 / 85 / 24 (23) | $3.55 / 84 / 30 (30) |
+
+**Reading.**
+1. **The noise is as large as the effects.** The same setup ranges 2-5 of 10 for Opus
+   (old) and 1-5 (new). With 2-4 runs per cell, no difference here is significant.
+2. **Verify is the best Opus setup in this sample (mean 4.5)** and lifts Sonnet back
+   toward the old context. It did not make the agent investigate more (tool calls are
+   unchanged from new); it made it report more: 30 vs 24 findings for Opus, 20 vs 14 for
+   Sonnet, with the judge rating every verify finding a real bug.
+3. **thefuck#7, the clearest dismissal, is recovered:** 4 of 4 verify runs found it
+   across both models, against 1 of 7 with the new context.
+4. **Sonnet still loses thefuck#20 and #26** with or without the prompt change (old
+   context 2/3 and 1/3, new and verify 0 of 5). Those look like a real cost of the
+   trimmed context for Sonnet, not fixed by the prompt.
+5. **Overfitting caveat:** the prompt change was written after reading these traces and
+   is scored on the same 10 bugs. It needs a run on the other 90 bugs (and Martian)
+   before it is adopted.
+
+Spend for the follow-up: $14.25 in reviews (rep 1 $7.38, rep 2 $6.87), plus judge calls.
+Total for this experiment: $26.72 in reviews of the $30 approved.

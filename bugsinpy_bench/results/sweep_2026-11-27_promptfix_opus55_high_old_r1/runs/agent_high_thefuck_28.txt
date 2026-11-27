@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_promptfix_opus55_high_old_r1
+# bug: thefuck#28
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/impact-selection-exp
+# harness_git_rev: d3b50e6acfc007b4bf8bb76a9c293dee5bc7db1b
+# prepared_path: bench_impact/prepared_ctxerr10.json
+# prepared_sha256_16: 48e4ed63e78d6fe8
+# upstream_repo: nvbn/thefuck
+# introducing_commit: e4b97af73e04c9a936ac8a43fbce874deb3adf70
+# fixed_commit: 9b30ae0424607a4e268bd26eaee8ccb91a5588f9
+# base_ref: e4b97af73e04c9a936ac8a43fbce874deb3adf70^
+# head_ref: e4b97af73e04c9a936ac8a43fbce874deb3adf70
+# started: 2026-11-27T16:30:47+00:00
+# finished: 2026-11-27T16:31:26+00:00
+# duration_s: 38.4
+# cost_usd: 0.1391
+# num_turns: 6
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: Y
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 706
+# repo: LocalRepo
+# refs: e4b97af73e04c9a936ac8a43fbce874deb3adf70^..e4b97af73e04c9a936ac8a43fbce874deb3adf70
+# turns: 6
+# cost (USD, harness-reported): 0.139110
+# cost (USD, public Opus 4 rate): 0.687928
+# usage: {'input_tokens': 12, 'cache_creation_input_tokens': 6337, 'cache_read_input_tokens': 221686, 'output_tokens': 3152, 'output_tokens_details': {'thinking_tokens': 1124}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 6337}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 488, 'cache_read_input_tokens': 40356, 'cache_creation_input_tokens': 1121, 'cache_creation': {'ephemeral_5m_input_tokens': 1121, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "thefuck/rules/fix_file.py",
+    "line": 51,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The rule is on by default but never checks that $EDITOR is set, so the suggested command can run the broken file itself.",
+    "detail": "fix_file has no `enabled_by_default` and `match` never looks at the environment, so the rule is active for every user. Its patterns are broad: almost any stderr containing `name:NN:` matches. When EDITOR is unset or empty, the suggestion `$EDITOR a.sh +2 && sh a.sh` expands to `a.sh +2 && ...`. That tries to execute the file that has the error, or fails with 'command not found', and then re-runs the original command. Users who have no EDITOR set will see this rule pre-empt more useful rules whenever their stderr looks like a file:line reference.",
+    "line_end": null,
+    "suggested_fix": "+import os\n def match(command, settings):\n-    return _search(command.stderr)\n+    return 'EDITOR' in os.environ and _search(command.stderr)"
+  },
+  {
+    "file": "thefuck/rules/fix_file.py",
+    "line": 46,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Whatever the regexes capture is treated as a file name without checking that the file exists, which gives frequent false positives that override other rules.",
+    "detail": "`_search` returns the first regex hit, and `match` treats it as a match without checking that `m.group('file')` is a real file. The generic patterns `^{file}:{line}:` and `at {file} line {line}` (unanchored), together with `[^:\\n]+` for the file name, also match plenty of non-file text. Examples: prefixes of tool messages, `<stdin>` in Python tracebacks, URLs or host:port strings, and Perl-style `at X line N` text. The result is a suggestion to open a file that doesn't exist. Because the rule is on by default it can shadow the correct rule, and for multi-frame tracebacks it picks the first frame even when that frame's file is missing.",
+    "line_end": null,
+    "suggested_fix": "Loop over all matches (`finditer`) for each pattern and return the first one where `os.path.isfile(m.group('file'))` is true."
+  },
+  {
+    "file": "thefuck/rules/fix_file.py",
+    "line": 60,
+    "category": "security",
+    "severity": "low",
+    "summary": "The file name taken from stderr goes into a shell command without quoting.",
+    "detail": "`'$EDITOR {} +{}'.format(m.group('file'), ...)` puts text captured from program output straight into a shell command line. A path with spaces (e.g. `my dir/a.sh: line 2: ...`) produces a broken command. A file name containing shell metacharacters such as `;`, `$()` or backticks (allowed by `[^:\\n]+`) is interpreted by the shell when the user accepts the suggestion.",
+    "line_end": null,
+    "suggested_fix": "Quote the file name, e.g. with `pipes.quote`/`shlex.quote`: `'$EDITOR {} +{}'.format(quote(m.group('file')), m.group('line'))`."
+  }
+]

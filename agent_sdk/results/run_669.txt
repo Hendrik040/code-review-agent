@@ -1,0 +1,32 @@
+# Agent SDK reviewer run 669
+# repo: LocalRepo
+# refs: 720d263a9daa7a45e52a31d14ed9db1179c89cda^..720d263a9daa7a45e52a31d14ed9db1179c89cda
+# turns: 10
+# cost (USD, harness-reported): 0.121194
+# cost (USD, public Opus 4 rate): 1.166702
+# usage: {'input_tokens': 18, 'cache_creation_input_tokens': 17197, 'cache_read_input_tokens': 343659, 'output_tokens': 4380, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 17197}, 'inference_geo': '', 'iterations': [{'input_tokens': 2, 'output_tokens': 523, 'cache_read_input_tokens': 48620, 'cache_creation_input_tokens': 1888, 'cache_creation': {'ephemeral_5m_input_tokens': 1888, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard'}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1915,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "The regex mask uses re.match (anchored at the start), but the replacement code uses rx.search/rx.sub, so regex replacements that match mid-string are silently skipped.",
+    "detail": "`replace_list` now builds its masks with `_compare_or_regex_match`. In regex mode that function uses `re.match(b, x)`, which only matches at the start of the string. `ObjectBlock._replace_single`, which does the replacing, uses `rx.search` and `rx.sub`, which match anywhere. `_replace_coerce` only calls `_replace_single` when `mask.any()` is true. So `Series(['ab']).replace(['b'], ['x'], regex=True)` builds an all-False mask, and nothing is replaced. Before this change the replacement was `search`-based and would have given 'ax'. When only some elements match at the start, the mask is also wrong: `_replace_single` is applied only to elements that match at position 0. The `isinstance(x, str)` check also excludes `unicode` values on Python 2, which this code base still supports.",
+    "line_end": 1920,
+    "suggested_fix": "Use `re.search` (or the compiled pattern's `.search`) in the vectorized matcher so it agrees with `_replace_single`, and handle `unicode` with `compat.string_types`."
+  },
+  {
+    "file": "pandas/core/internals/managers.py",
+    "line": 1915,
+    "category": "error",
+    "severity": "medium",
+    "summary": "A non-string, non-regex element in a list `to_replace` with regex=True now raises TypeError in the mask computation.",
+    "detail": "For `df.replace([1, 'a'], [2, 'b'], regex=True)` on object data, `comp(s, regex=True)` calls `_compare_or_regex_match(values, 1, True)`. That evaluates `re.match(1, x)` for every string element. `re.match` raises `TypeError: first argument must be string or compiled pattern` when the pattern is not a string or compiled regex. Previously a non-string `to_replace` fell through to a plain equality replace in `ObjectBlock._replace_single`. The same failure happens for `None` or `NaN` sources that are not caught earlier, and for other non-pattern objects.",
+    "line_end": 1920,
+    "suggested_fix": "In `comp`, only use regex matching when `s` is a string or a compiled pattern (`is_re_compilable(s)`). Otherwise fall back to the equality comparison."
+  }
+]
