@@ -27,9 +27,8 @@ CACHE_READ = 0.50
 # Phase 7 — per-model rates for routed runs: (input, output, cache read)
 # in USD per million tokens. Cache writes are 1.25x input (5 min) and
 # 2x input (1 h) on all of these. The Opus 4.7 row reproduces the
-# harness's own total_cost_usd to the cent on run_044 ($0.918825); the
-# module-level constants above are 3x that and are left alone so the
-# Client SDK numbers already in docs/headtohead.md stay comparable.
+# harness's own total_cost_usd to the cent on run_044 ($0.918825), and
+# so do the module-level constants above, which hold the same rates.
 # Haiku 5.5 is absent on purpose: its rate steps up past 100K prompt
 # tokens, which a per-run usage total can't apply.
 RATES: dict[str, tuple[float, float, float]] = {

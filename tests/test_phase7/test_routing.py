@@ -208,8 +208,8 @@ def test_pricing_at_the_routed_model_matches_the_harness():
     }
     assert pricing.cost_usd(usage, "claude-opus-4-7") == pytest.approx(0.918825, abs=1e-6)
     assert pricing.cost_usd(usage, "some-unlisted-model") is None
-    # No model: the pre-Phase-7 number, unchanged.
-    assert pricing.cost_usd(usage) == pytest.approx(2.756474, abs=1e-6)
+    # No model: the module-level constants, which are the Opus 4.7 rates too.
+    assert pricing.cost_usd(usage) == pytest.approx(0.918825, abs=1e-6)
 
 
 def test_review_header_names_the_model_only_when_known():
