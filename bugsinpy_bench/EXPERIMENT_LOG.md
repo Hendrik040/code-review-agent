@@ -42,6 +42,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 10 | 2026-11-27 19:50-20:45 | Block-level Jev routing: Haiku 5.5 per-block facts, 11 Jev questions, facts only (A) vs facts + Haiku complexity (B), scored on stored BugsInPy reviews | No ranking signal (AUC 0.51-0.53); best point 42/100 for $14.97, worse than the current router ($14.15) |
 | 11 | 2026-11-27 | Replays on stored data: the router's risk setting, repeat runs of one model, merged reviews | With Jev's picks, risk 0.25 keeps 42 found for 18% less than all-Opus 5.5 (random routing of that mix expects 39.3); a model disagrees with itself on 4 of 30 bugs; adding a Haiku pass finds more bugs on BugsInPy but not on Martian with Sonnet |
 | 12 | 2026-11-27 21:23-21:30 | Offline cascade test, design fixed in advance: Jev reads each finished review and flags the ones that need a second pass | No usable signal on Haiku's reviews (AUC 0.45 and 0.43, chance is 0.5); success bar not met |
+| 13 | 2026-11-27 | Router with a Haiku summary of the change added to what Jev sees; same two questions, same rule, design fixed in advance | No measurable gain: same 42 bugs, 5% higher cost (more bugs sent to Opus), ranking unchanged |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -540,6 +541,46 @@ money. The bugs-found side does not: the 42 found at risk 0.15 and 0.25 are with
 picks, and random routing of the same mix expects 40.0 and 39.3. Adding a cheap second
 pass needs no prediction, with the cautions listed in step 11.
 
+## Step 13. Does a summary of the change help the router?
+
+The shipped router sends Jev the title, the per-file line counts and the diff. It gets no
+description of the change. This step adds one and changes nothing else. Design and success
+bar are in the docstring of `scripts/route_summary_test.py`, committed (`90d5ceb`) before
+the first Jev call of this test. No new reviews.
+
+**Setup.** Two arms through the same code, both rebuilt from the stored diffs: `control`
+(the router's own state) and `summary` (the same state plus one section after the title:
+the stored Haiku 5.5 summary of each changed non-test Python file, with a heading saying it
+describes and does not judge). Same two questions, same rule, risk 0.15. Each arm ran
+twice: 400 Jev calls, no errors.
+
+| Arm, pass | To Haiku / Sonnet / Opus | Found | Cost | AUC of P(deep) |
+|---|---|---:|---:|---:|
+| Logged routing (steps 4, 6) | 2 / 26 / 72 | 42 | $14.15 | 0.63 |
+| Control, pass 1 | 2 / 26 / 72 | 42 | $14.09 | 0.646 |
+| Control, pass 2 | 2 / 28 / 70 | 42 | $14.00 | 0.628 |
+| Summary, pass 1 | 1 / 21 / 78 | 42 | $14.77 | 0.634 |
+| Summary, pass 2 | 1 / 22 / 77 | 42 | $14.82 | 0.639 |
+
+The AUC ranks the 8 bugs Opus found and Sonnet missed above the other 92; 0.5 is chance.
+
+**The success bar is not met.** It asked, in both passes, for at least as many bugs at a
+lower cost and a higher AUC. The summary arm finds the same 42 bugs, costs 5% to 6% more,
+and its AUC is lower in pass 1 and higher in pass 2.
+
+**What changed.** With the summary Jev rates more changes as needing a deep review: 77 or
+78 bugs go to Opus, against 70 or 72. 10 or 11 of 100 bugs change tier between the arms;
+3 or 4 change between two passes of the same arm. At every risk setting from 0.05 to 0.80
+the summary arm costs more than control and finds the same number of bugs, give or take
+one (`routing/summary_test/scores.json` has the full replay).
+
+**Also shown.** The control arm, rebuilt from stored diffs, reproduces the logged routing
+(42 found, $14.00 to $14.09 against $14.15), so the replay harness matches the router.
+
+**Limits.** One review run per model per bug and 100 bugs, so a difference of one or two
+bugs is noise; the cost difference comes from 5 to 8 more bugs sent to Opus. The summaries
+cover non-test Python files only. One summary wording and one placement were tried.
+
 ## Spend
 
 | Step | Cost |
@@ -554,7 +595,8 @@ pass needs no prediction, with the cautions listed in step 11.
 | 10 Haiku block extraction ($0.40 BugsInPy; about $0.25-0.50 Martian, partly unlogged after the stopped runs); Jev 3,958 calls (3,912 in the four runs, 46 in the smoke test), 3.59M input tokens at $0.042 per million (`jev-1.14.0`; output tokens are free) = $0.15 | about $0.80-1.05 |
 | 11 Replays on stored data (no API calls) | $0 |
 | 12 Jev, 600 calls, 508,112 input tokens | $0.02 |
-| **Total** | **about $35.1-35.4** |
+| 13 Jev, 400 calls, 930,560 input tokens ($0.04); Haiku summaries for 70 bugs (4 calls recorded at $0.002; the other 67 bugs were summarized in a run that crashed before writing its cost, about $0.03 by the pilot rate) | about $0.07 |
+| **Total** | **about $35.2-35.5** |
 
 Jev pricing is from https://docs.typesafe.ai/models (checked 2026-11-27): $0.042 per
 million input tokens, output free, no per-request fee. At that price the step-10 router
