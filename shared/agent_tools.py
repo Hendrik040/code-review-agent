@@ -203,8 +203,12 @@ def _odis_error(result: Any) -> str:
     )
 
 
+_COMPUTE: Any = object()  # build_review_context: compute the PR summary if enabled
+
+
 def build_review_context(
     repo: Repo, base_ref: str, head_ref: str, *, jev_client: Any = None,
+    pr_summary: Any = _COMPUTE, summary_client: Any = None,
 ) -> str:
     """ODIS-as-a-tool: same algorithm as `shared.odis.build_context`,
     exposed for the agent to call when it wants the curated slice.
@@ -223,7 +227,28 @@ def build_review_context(
 
     Recommended as the first investigation step — 1-5 KB of context
     surfaces most boundary bugs immediately.
+
+    Phase 9: with REVIEW_PR_SUMMARY=1 a machine summary of the PR
+    (shared/pr_summary.py) comes first, framed as possibly wrong. Pass
+    `pr_summary` (a summary dict, or None for none) when the caller has
+    already computed it; by default it is computed here. Any failure
+    leaves the context as it is. `summary_client` is a test seam.
     """
+    context = _context_body(repo, base_ref, head_ref, jev_client=jev_client)
+    from shared import pr_summary as prs  # host only: talks to the Anthropic API
+
+    if not prs.enabled():
+        return context
+    try:
+        s = prs.for_repo(repo, base_ref, head_ref, client=summary_client) if pr_summary is _COMPUTE else pr_summary
+        return prs.prepend(context, s) if s else context
+    except Exception:  # noqa: BLE001 — the summary must never fail the review
+        logging.getLogger("shared.pr_summary").exception("pr_summary: could not add the summary")
+        return context
+
+
+def _context_body(repo: Repo, base_ref: str, head_ref: str, *, jev_client: Any = None) -> str:
+    """build_review_context without the optional PR summary."""
     from shared import impact_select  # host only: talks to Jev
 
     rng = f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
