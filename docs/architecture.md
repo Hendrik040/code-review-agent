@@ -27,6 +27,8 @@ v1/
 │   │                                (used by both SDKs)
 │   ├── routing.py                   Phase 7: per-PR model + effort tier via Jev
 │   ├── jev.py                       Phase 7: the one place that calls Jev
+│   ├── impact.py                    Phase 8: tiers for ODIS callers/callees (both sides)
+│   ├── impact_select.py             Phase 8: Jev picks which callers/callees to show (host)
 │   └── memory/                      reflective rules (Phase 6)
 │       └── REVIEW_RULES.md
 ├── client_sdk/
@@ -53,6 +55,23 @@ v1/
 └── code-review-baseline/            submodule pinned at a48bca3c
     └── ai-code-reviewer/            source of ODIS algorithm
 ```
+
+## Impact selection (Phase 8)
+
+Name matching can pull hundreds of same-named callers and callees into
+ODIS's "Impact Code" section (thefuck#7: 449,000 characters for a
+2,000-character diff, which the Agent SDK then refused to deliver).
+`build_review_context` therefore runs ODIS in two steps inside the
+sandbox: `odis_cli collect` lists every candidate with a one-line,
+code-extracted summary, and `odis_cli render` prints the context. In
+between, on the host, `shared/impact_select.py` decides a tier per
+candidate: full snippet, signature line only, or a count in a closing
+`<not_shown>` note the reviewer can act on with grep. When every
+candidate fits `IMPACT_MAX_CHARS`, Jev is not called and the output is
+unchanged. Otherwise Jev answers one yes/no per candidate ("is this the
+actual definition or call site the change refers to?"); without a key,
+or when Jev fails, a fixed order (same file, imported by the change,
+non-test) is used. `IMPACT_SELECT=off` restores the single-step call.
 
 ## I/O contract
 

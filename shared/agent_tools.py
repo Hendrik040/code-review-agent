@@ -15,7 +15,10 @@ MCP server.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
+import secrets
 import shlex
 from typing import Any
 
@@ -193,31 +196,125 @@ def write_file(repo: Repo, path: str, content: str) -> str:
     return f"Wrote {len(content):,} chars to {path}"
 
 
-def build_review_context(repo: Repo, base_ref: str, head_ref: str) -> str:
+def _odis_error(result: Any) -> str:
+    return (
+        f"Error: build_review_context failed (exit {result.exit_code}): "
+        f"{result.stderr.strip() or '(no stderr)'}"
+    )
+
+
+_COMPUTE: Any = object()  # build_review_context: compute the PR summary if enabled
+
+
+def build_review_context(
+    repo: Repo, base_ref: str, head_ref: str, *, jev_client: Any = None,
+    pr_summary: Any = _COMPUTE, summary_client: Any = None,
+    lint_hints: Any = _COMPUTE, lint_client: Any = None,
+) -> str:
     """ODIS-as-a-tool: same algorithm as `shared.odis.build_context`,
     exposed for the agent to call when it wants the curated slice.
 
     Phase 4 invokes the ODIS CLI (`python -m shared.odis_cli BASE..HEAD`)
-    inside the sandbox so the algorithm runs next to the repo. The
-    Daytona image bakes the `shared/` package at /opt/code-review-agent
+    inside the sandbox so the algorithm runs next to the repo. DaytonaRepo
+    uploads the files in `_HOST_SHARED_FILES` to /home/daytona/code-review-agent
     with PYTHONPATH set; LocalRepo seeds the same env in `exec`.
+
+    Phase 8 bounds the "Impact Code" section: the CLI collects the
+    caller/callee candidates, the host decides how much of each to show
+    (Jev when configured, a fixed order otherwise; see
+    shared/impact_select.py), and the CLI renders the result. With
+    IMPACT_SELECT=off, or when everything fits, the output is unchanged.
+    `jev_client` is a test seam.
 
     Recommended as the first investigation step — 1-5 KB of context
     surfaces most boundary bugs immediately.
+
+    Phase 9: with REVIEW_PR_SUMMARY=1 a machine summary of the PR
+    (shared/pr_summary.py) comes first, framed as possibly wrong. Pass
+    `pr_summary` (a summary dict, or None for none) when the caller has
+    already computed it; by default it is computed here. Any failure
+    leaves the context as it is. `summary_client` is a test seam.
+
+    Phase 10: with REVIEW_LINT_HINTS=1, ruff/pylint warnings on added
+    lines that pass Jev's two checks (shared/lint_hints.py) go in a short
+    section before the diff. Pass `lint_hints` (a list, or None for
+    none) when already computed. Fail-open. `lint_client` is a test seam.
     """
-    cmd = (
-        f"python -m shared.odis_cli "
-        f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
-    )
+    context = _context_body(repo, base_ref, head_ref, jev_client=jev_client)
+    from shared import lint_hints as lh  # host side: talks to Jev
+    from shared import pr_summary as prs  # host only: talks to the Anthropic API
+
+    summary = None
+    if prs.enabled():
+        try:
+            summary = prs.for_repo(repo, base_ref, head_ref, client=summary_client) if pr_summary is _COMPUTE else pr_summary
+            if summary:
+                context = prs.prepend(context, summary)
+        except Exception:  # noqa: BLE001 — the summary must never fail the review
+            logging.getLogger("shared.pr_summary").exception("pr_summary: could not add the summary")
+    if lh.enabled():
+        try:
+            hints = lh.for_repo(repo, base_ref, head_ref, summary=summary, client=lint_client) if lint_hints is _COMPUTE else lint_hints
+            context = lh.insert(context, hints or [])
+        except Exception:  # noqa: BLE001 — hints must never fail the review
+            logging.getLogger("shared.lint_hints").exception("lint_hints: could not add the hints")
+    return context
+
+
+def _context_body(repo: Repo, base_ref: str, head_ref: str, *, jev_client: Any = None) -> str:
+    """build_review_context without the optional PR summary."""
+    from shared import impact_select  # host only: talks to Jev
+
+    rng = f"{shlex.quote(base_ref)}..{shlex.quote(head_ref)}"
     # NB: the ".." in BASE..HEAD must NOT be quoted; that's why we
     # quote each ref individually.
-    result = repo.exec(cmd, timeout=_ODIS_TIMEOUT_S)
-    if not result.ok:
-        return (
-            f"Error: build_review_context failed (exit {result.exit_code}): "
-            f"{result.stderr.strip() or '(no stderr)'}"
-        )
-    return result.stdout
+
+    def one_shot() -> str:
+        result = repo.exec(f"python -m shared.odis_cli {rng}", timeout=_ODIS_TIMEOUT_S)
+        return result.stdout if result.ok else _odis_error(result)
+
+    cfg = impact_select.load_config()
+    if cfg.mode == "off":
+        return one_shot()
+
+    log = logging.getLogger("shared.impact_select")
+    token = secrets.token_hex(8)
+    rendered = False
+    try:
+        result = repo.exec(f"python -m shared.odis_cli collect {token} {rng}", timeout=_ODIS_TIMEOUT_S)
+        if not result.ok:
+            return _odis_error(result)
+        # DaytonaRepo merges stderr into stdout, so git or Python warnings
+        # can precede the JSON; collect prints it as the last line.
+        try:
+            doc = json.loads(result.stdout.rstrip().splitlines()[-1])
+        except (ValueError, IndexError):
+            log.warning("impact_select: unreadable collect output; using the one-shot context")
+            return one_shot()
+        try:
+            decisions, _ = impact_select.decide(doc, cfg, client=jev_client)
+        except Exception:  # noqa: BLE001 — selection must never fail the review
+            log.exception("impact_select failed; retrying in cap mode")
+            try:
+                decisions, _ = impact_select.decide(doc, dataclasses.replace(cfg, mode="cap"))
+            except Exception:  # noqa: BLE001
+                log.exception("cap mode failed; full context")
+                decisions = {"tiers": None, "note": "", "drop_changed": False}
+        try:
+            repo.upload_bytes(json.dumps(decisions).encode("utf-8"), f".git/odis/{token}.decisions.json")
+        except Exception:  # noqa: BLE001 — a backend that refuses .git/ still gets a context
+            log.exception("impact_select: could not upload decisions; using the one-shot context")
+            return one_shot()
+        result = repo.exec(f"python -m shared.odis_cli render {token}", timeout=_ODIS_TIMEOUT_S)
+        rendered = True  # render deletes its files whether or not it succeeded
+        return result.stdout if result.ok else _odis_error(result)
+    finally:
+        if not rendered:
+            repo.exec(
+                f"rm -f .git/odis/{token}.collected.json .git/odis/{token}.decisions.json; "
+                "rmdir .git/odis 2>/dev/null; true",
+                timeout=10,
+            )
 
 
 # --------------------------------------------------------------------------- #
