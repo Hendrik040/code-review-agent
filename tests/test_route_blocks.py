@@ -52,3 +52,24 @@ def test_block_error_is_recorded_not_raised(tmp_path):
     e = route_entry("x#1", "t", TWO_FILE_DIFF, "A", jev_client=FakeJev(fail_blocks=True),
                     haiku_client=FakeHaiku(blocks_per_call=1), cache_dir=tmp_path)
     assert all(b.get("error") == "TimeoutError" for b in e["blocks"]) and e["pr"]["error"] is None
+
+
+def test_pr_state_lists_only_described_files(tmp_path):
+    diff = "".join(
+        f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n@@ -1 +1,{i + 1} @@\n-x\n"
+        + "".join(f"+y{j}\n" for j in range(i + 1))
+        for i in range(45)
+    )
+    seen = []
+
+    class Spy(FakeJev):
+        def system_one(self, state, questions):
+            if "files_changed" in state:
+                seen.append(state)
+            return super().system_one(state, questions)
+
+    e = route_entry("x#1", "t", diff, "A", jev_client=Spy(),
+                    haiku_client=FakeHaiku(blocks_per_call=1), cache_dir=tmp_path)
+    (st,) = seen
+    assert len(st["files_changed"]) == 40 and st["files_dropped"] == 5
+    assert e["files_dropped"] == 5

@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from block_rules import norm_levels  # noqa: E402
-from block_summaries import CACHE_DIR, get_blocks, load_entries, numstat  # noqa: E402
+from block_summaries import CACHE_DIR, MAX_FILES, get_blocks, load_entries, numstat  # noqa: E402
 
 OUT_DIR = ROOT / "bugsinpy_bench" / "routing" / "blocks"
 ARMS = ("A", "B")
@@ -100,8 +100,9 @@ def block_state(title: str, block: dict, arm: str) -> dict:
     return {"pr_title": title, "block": _for_arm(block, arm)}
 
 
-def pr_state(title: str, files: list[dict], blocks: list[dict], arm: str) -> dict:
-    return {"pr_title": title, "files_changed": files, "blocks": [_for_arm(b, arm) for b in blocks]}
+def pr_state(title: str, files: list[dict], blocks: list[dict], arm: str, files_dropped: int = 0) -> dict:
+    return {"pr_title": title, "files_changed": files, "files_dropped": files_dropped,
+            "blocks": [_for_arm(b, arm) for b in blocks]}
 
 
 def _parse(resp, questions: dict) -> dict:
@@ -138,13 +139,16 @@ def route_entry(label: str, title: str, diff: str, arm: str, *, jev_client=None,
             blocks.append({"block_id": b["block_id"], "answers": ask(block_state(title, b, arm), BLOCK_QUESTIONS)})
         except Exception as e:  # noqa: BLE001 — recorded, scored as risk 1.0
             blocks.append({"block_id": b["block_id"], "error": type(e).__name__})
+    # Same files block extraction described: the MAX_FILES with the most changed lines.
+    stats = sorted(numstat(diff), key=lambda f: f["added"] + f["removed"], reverse=True)
+    files, files_dropped = stats[:MAX_FILES], max(0, len(stats) - MAX_FILES)
     try:
-        pr = {**ask(pr_state(title, numstat(diff), rec["blocks"], arm), PR_QUESTIONS), "error": None}
+        pr = {**ask(pr_state(title, files, rec["blocks"], arm, files_dropped), PR_QUESTIONS), "error": None}
     except Exception as e:  # noqa: BLE001
         pr = {"change_kind": None, "beyond_title": None, "tests_exercise_change": None,
               "high_stakes": None, "error": type(e).__name__}
     return {"label": label, "arm": arm, "blocks": blocks, "pr": pr,
-            "blocks_dropped": rec["blocks_dropped"], "jev_calls": calls, "jev_usage": usage}
+            "blocks_dropped": rec["blocks_dropped"], "files_dropped": files_dropped, "jev_calls": calls, "jev_usage": usage}
 
 
 def main() -> int:

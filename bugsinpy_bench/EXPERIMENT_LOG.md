@@ -39,7 +39,7 @@ feature branch off `bench/bugsinpy`. Not merged into `main`.
 | 7 | 2026-11-27 | Trace analysis of Opus 5.5's misses; alternative routings scored from stored results | Opus 5.5 often sees the bug and decides not to report it; triage + Haiku second pass: 48/100 for $14.66 |
 | 8 | 2026-11-27 17:00-17:35 | Opus 5.5 high on Martian with a prompt addendum asking it to file what it would drop | Recall 9 → 14 of 31, precision unchanged, F1 0.359 → 0.459 for $3.07 |
 | 9 | 2026-11-27 | Sonnet 5.5 high on Martian with the same addendum; Jev routing compared with random routing | Sonnet F1 0.510 → 0.464 (no gain); Jev's tier picks beat random same-mix routing by about 2 bugs |
-| 10 | 2026-11-27 19:50-20:45 | Block-level Jev routing: Haiku 5.5 per-block facts, 11 Jev questions, facts only (A) vs facts + Haiku complexity (B), scored on stored BugsInPy reviews | No ranking signal (AUC 0.51-0.53); best point 42/100 for $15.08, worse than the current router |
+| 10 | 2026-11-27 19:50-20:45 | Block-level Jev routing: Haiku 5.5 per-block facts, 11 Jev questions, facts only (A) vs facts + Haiku complexity (B), scored on stored BugsInPy reviews | No ranking signal (AUC 0.51-0.53); best point 42/100 for $14.97, worse than the current router ($14.15) |
 
 ## Step 0. May baseline (Opus 4.7)
 
@@ -369,15 +369,21 @@ well above about 0.65 to be distinguishable from chance.
 
 **Cost against bugs found.** The riskiest-block score saturates: its median is 0.90 for
 both groups. At the declared T = 0.5, 98 of 100 bugs go to Opus (42 found, $16.22,
-about all-Opus 5.5). Raising T only moves bugs to Sonnet; at T = 1.0 the result is 42
-found for $15.08 (2 Haiku, 12 Sonnet, 86 Opus). The current router reaches 42 for
-$14.15, so no threshold beats it.
+about all-Opus 5.5). Raising T only moves bugs to Sonnet. No bug's block score reaches
+1.0, so at T = 1.0 the block rule never fires, and the Opus share comes from the PR
+questions alone: 8-9 bugs through `high_stakes` and 75-78 through `change_kind`
+(P(level 3) > 0.15). At T = 1.0 the result is 42 found for $15.08 (pass 1: 2 Haiku,
+12 Sonnet, 86 Opus) or $14.97 (pass 2: 2 / 14 / 84). The current router reaches 42 for
+$14.15. So the cost floor is set by the inherited `change_kind` cut-off, not by the
+block questions; no threshold on the block score beats the current router.
 
 **Other findings.**
 - Arms A and B give the same result: Haiku's complexity score adds nothing, and on its
   own it ranks the Opus-needed bugs low (0.36), like the current router.
-- Both passes routed every bug to the same tier at T = 0.5, and the Jev token totals were
-  identical. Unlike step 4, Jev answered deterministically here.
+- Jev's answers varied between passes: 870 of 878 block answers differ, by up to 0.13 on a
+  yes/no question. At T = 0.5 every bug still landed in the same tier (the saturated block
+  score forces Opus), but at T = 1.0 the passes differ (12 against 14 bugs to Sonnet).
+  Token totals were identical because they depend only on the input.
 - Only `precision_logic` (regexes, slicing, comparisons, bounds) leans the right way,
   matching the earlier trace analysis, where the Opus-only bugs were small precision bugs.
   It is one signal from 14 bugs, not a result.
@@ -400,8 +406,12 @@ predicted by describing the change.
 | 7 Trace analysis (no API calls) | $0 |
 | 8 Martian sweep ($3.07), judging ($0.30), discarded first attempt ($0.27) | $3.64 |
 | 9 Sonnet sweep ($1.17), judging ($0.19) | $1.36 |
-| 10 Haiku block extraction ($0.40 BugsInPy; about $0.25-0.50 Martian, partly unlogged after the stopped runs); Jev 3,958 calls, about 3.6M input and 0.46M output tokens (price not measured) | about $0.65-0.90 + Jev |
-| **Total** | **about $35.0-35.2 + Jev** |
+| 10 Haiku block extraction ($0.40 BugsInPy; about $0.25-0.50 Martian, partly unlogged after the stopped runs); Jev 3,958 calls (3,912 in the four runs, 46 in the smoke test), 3.59M input tokens at $0.042 per million (`jev-1.14.0`; output tokens are free) = $0.15 | about $0.80-1.05 |
+| **Total** | **about $35.1-35.4** |
+
+Jev pricing is from https://docs.typesafe.ai/models (checked 2026-11-27): $0.042 per
+million input tokens, output free, no per-request fee. At that price the step-10 router
+costs about $0.0004 per PR, and the original two-question router less.
 
 Jev's own cost is not measured.
 
