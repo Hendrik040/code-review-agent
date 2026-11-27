@@ -481,6 +481,9 @@ async def _run_async(
         disallowed_tools=["ToolSearch"],
         permission_mode="bypassPermissions",
         max_turns=MAX_TURNS,
+        # Opt-in: a newer Claude Code CLI than the SDK bundles (Opus 5.5
+        # needs 2.1.280+). Unset keeps the bundled CLI, as before.
+        cli_path=os.environ.get("REVIEW_CLI_PATH") or None,
         effort=effort,
         # `cwd` is intentionally left unset. With harness Read/Bash/
         # Grep disallowed, there's nothing on the harness side that

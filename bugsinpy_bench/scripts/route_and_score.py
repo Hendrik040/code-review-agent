@@ -12,7 +12,8 @@ tier it was routed to.
 
   light    -> Haiku 5.5 medium sweep
   standard -> Sonnet 5.5 high sweep
-  deep     -> stored May Opus 4.7 sweep (max, and high as a variant)
+  deep     -> stored May Opus 4.7 sweep (max, and high as a variant),
+              and the Opus 5.5 high sweep when it exists
 
 Both pilot runs are scored: this branch's sweeps ("local") and the run
 pushed to bench/model-tiers-pilot ("cloud", CLOUD_REV below).
@@ -47,6 +48,8 @@ RESULTS = BENCH / "results"
 
 ROUTING_REV = "3e69e01"  # claude/jev-model-routing, router code used
 CLOUD_REV = "332fe11"  # bench/model-tiers-pilot, the other pilot run
+# Opus 5.5 high on the same 30 bugs; scored as a deep tier when present.
+OPUS55_SWEEP = "sweep_2026-11-27_opus55_high_pilot30"
 
 GROUPS = {
     "found_low": "keras#13 scrapy#4 luigi#2 matplotlib#25 pandas#104 PySnooper#3 "
@@ -165,6 +168,10 @@ def score(routes: list[dict]) -> dict:
         "opus_max": _local("sweep_2026-05-04_agent_max"),
         "opus_high": _local("sweep_2026-05-04_agent_high"),
     }
+    deeps = ["max", "high"]
+    if (RESULTS / OPUS55_SWEEP / "judged.json").exists():
+        arms["opus_opus55_high"] = _local(OPUS55_SWEEP)
+        deeps.append("opus55_high")
     for run, load in (("local", _local), ("cloud", _cloud)):
         arms[f"sonnet_{run}"] = load("sweep_2026-11-26_sonnet55_high_pilot30")
         arms[f"haiku_{run}"] = load("sweep_2026-11-26_haiku55_medium_pilot30")
@@ -178,10 +185,12 @@ def score(routes: list[dict]) -> dict:
         "all_opus_max": total(lambda lb: "opus_max"),
         "all_opus_high": total(lambda lb: "opus_high"),
     }
+    if "opus55_high" in deeps:
+        setups["all_opus55_high"] = total(lambda lb: "opus_opus55_high")
     for run in ("local", "cloud"):
         setups[f"all_sonnet_{run}"] = total(lambda lb, r=run: f"sonnet_{r}")
         setups[f"all_haiku_{run}"] = total(lambda lb, r=run: f"haiku_{r}")
-        for deep in ("max", "high"):
+        for deep in deeps:
             setups[f"triage_deep_opus_{deep}_{run}"] = total(
                 lambda lb, r=run, dp=deep: {
                     "light": f"haiku_{r}", "standard": f"sonnet_{r}", "deep": f"opus_{dp}"

@@ -1,0 +1,60 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_pilot30
+# bug: keras#3
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 03dfd3f08c79694c673d12b7263dadfe4e0696ab
+# prepared_path: bugsinpy_bench/dataset/prepared_pilot30.json
+# prepared_sha256_16: dba763c9d9f4c2fe
+# upstream_repo: keras-team/keras
+# introducing_commit: e27b8b9343da4558b98570d6d45599bd0e365723
+# fixed_commit: c13d2723d01212d09dfdda39b0ad439803ec9230
+# base_ref: e27b8b9343da4558b98570d6d45599bd0e365723^
+# head_ref: e27b8b9343da4558b98570d6d45599bd0e365723
+# started: 2026-11-27T00:23:49+00:00
+# finished: 2026-11-27T00:25:03+00:00
+# duration_s: 74.7
+# cost_usd: 0.3256
+# num_turns: 5
+# num_findings: 2
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 457
+# repo: LocalRepo
+# refs: e27b8b9343da4558b98570d6d45599bd0e365723^..e27b8b9343da4558b98570d6d45599bd0e365723
+# turns: 5
+# cost (USD, harness-reported): 0.325647
+# cost (USD, public Opus 4 rate): 1.379996
+# usage: {'input_tokens': 10, 'cache_creation_input_tokens': 25103, 'cache_read_input_tokens': 211760, 'output_tokens': 7887, 'output_tokens_details': {'thinking_tokens': 5575}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 25103}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 632, 'cache_read_input_tokens': 53100, 'cache_creation_input_tokens': 2201, 'cache_creation': {'ephemeral_5m_input_tokens': 2201, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 2
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "keras/models.py",
+    "line": 1359,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "When `input_tensors` is given, the original model's InputLayers never go into `layer_map`, so they get re-cloned from config and called as intermediate layers. This can cause duplicate layer names.",
+    "detail": "In the `input_tensors` branch, a Keras tensor is appended without caching any input layer. For a non-Keras tensor, `Input(tensor=x)` sets `x._keras_history = (new_layer, 0, 0)` (topology.py:1339), so `original_input_layer = x._keras_history[0]` is the *new* wrapper layer. The mapping becomes new->new, and `model.input_layers[i]` is never mapped. When the depth loop reaches the original InputLayer's node, `layer not in layer_map` is true. The InputLayer is rebuilt via `from_config`, which creates a stray placeholder, and then called on the user's tensor, which adds an identity node. The rebuilt layer keeps the original name (e.g. 'input_1'). If the user's input tensors also have default names (e.g. created in a fresh session after `K.clear_session()`, giving 'input_1'), the new Model has two layers named 'input_1'. Container then raises RuntimeError('... All layer names should be unique'). The new test avoids this only by naming the inputs explicitly ('a', 'b'). The `input_layers` list in the placeholder branch is also never filled, so the zip loop there does nothing.",
+    "line_end": 1371,
+    "suggested_fix": "-        for i, x in enumerate(input_tensors):\n+        for i, x in enumerate(input_tensors):\n+            original_input_layer = model.input_layers[i]\n             if not K.is_keras_tensor(x):\n                 ...\n-                original_input_layer = x._keras_history[0]\n                 newly_created_input_layer = input_tensor._keras_history[0]\n                 layer_map[original_input_layer] = newly_created_input_layer\n             else:\n+                layer_map[original_input_layer] = x._keras_history[0]\n                 _input_tensors.append(x)"
+  },
+  {
+    "file": "keras/models.py",
+    "line": 1407,
+    "category": "logic",
+    "severity": "low",
+    "summary": "`kwargs = node.arguments` aliases the original node's arguments dict, so adding `kwargs['mask']` changes the source model.",
+    "detail": "If a layer in the source model was called with keyword arguments and its `call` accepts `mask`, then `kwargs['mask'] = computed_mask` writes the cloned graph's mask (a tensor or None) into the original model's `node.arguments`. This has two effects. (1) `model.get_config()` later calls `json.dumps(node.arguments)` (topology.py:2312-2320). That fails on the tensor, so all of the node's real kwargs (e.g. `training=True`) are silently dropped from the serialized config. (2) Cloning the same model again finds `'mask'` already in kwargs. It then reuses the stale mask from the previous clone's graph instead of the newly computed one, which gives wrong masking or a cross-graph error.",
+    "line_end": 1415,
+    "suggested_fix": "-                if node.arguments:\n-                    kwargs = node.arguments\n+                if node.arguments:\n+                    kwargs = dict(node.arguments)"
+  }
+]

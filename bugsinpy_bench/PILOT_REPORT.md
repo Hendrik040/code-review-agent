@@ -180,3 +180,34 @@ With the first-pass routes, triage costs $22.94 (deep = max) and $13.83
 The 30 bugs were chosen by the May Opus 4.7 outcomes, so the Opus columns are
 fixed by construction. The extra bugs triage finds come from the "never found"
 group, where Sonnet found thefuck#7 and fastapi#8.
+
+## Opus 5.5 high on the same 30 bugs (2026-11-27)
+
+`claude-opus-5-5` at high effort, sweep `sweep_2026-11-27_opus55_high_pilot30`,
+traces `run_452.txt` to `run_481.txt`. Same settings, isolated CLI config, judge and
+scoring as the pilot sweeps.
+
+**One harness change.** The Agent SDK's bundled Claude Code CLI (2.1.126) is rejected
+for Opus 5.5 (`claude_code_version_too_old`: 2.1.280 or newer required), and the SDK
+always prefers its bundled CLI. `agent_sdk/reviewer.py` now passes
+`cli_path=os.environ.get("REVIEW_CLI_PATH") or None`; unset, nothing changes. This
+sweep used Claude Code 2.1.332. A Sonnet 5.5 smoke run on 2.1.332 had a first
+request of 33,633 tokens against 34,508 on 2.1.126, with the same findings and
+$0.1558 against $0.1484. The Opus 5.5 cost matches list prices recomputed from
+usage ($4 / $20, cache write $5, cache read $0.20 per MTok).
+
+**Result:** 22/30 found (found at low 10/10, found at high/max 8/10, never found
+4/10) for $4.77, all runs ending through `submit_findings`. Missed: ansible#3,
+black#1, keras#3, keras#4, luigi#4, matplotlib#6, sanic#1, tornado#4.
+
+| Setup | Found, this run | Cost, this run | Found, cloud run | Cost, cloud run |
+|---|---:|---:|---:|---:|
+| All Opus 5.5 high (no triage) | 22/30 | $4.77 | 22/30 | $4.77 |
+| Jev triage, deep = Opus 5.5 high | 21/30 | $4.14 | 22/30 | $4.16 |
+| All Opus 4.7 max (no triage) | 19/30 | $30.67 | 19/30 | $30.67 |
+
+On the 6 standard-routed bugs, Opus 5.5 found 5 for $0.86 and Sonnet 5.5 found 4
+(this run) or 5 (cloud run) for about $0.24.
+
+**Spend for this step:** smoke tests $0.50 (Sonnet and Opus 5.5 on the newer CLI,
+plus one direct CLI check), sweep $4.77, judging $0.17. Total $5.44.

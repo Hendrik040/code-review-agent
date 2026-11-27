@@ -1,0 +1,70 @@
+# === BENCH RUN ===
+# bench: bugsinpy v1
+# sweep_id: sweep_2026-11-27_opus55_high_pilot30
+# bug: sanic#1
+# bug_source: blame
+# sdk: agent_sdk
+# effort: high
+# model: claude-opus-5-5
+# branch: bench/model-tiers-pilot-local
+# harness_git_rev: 03dfd3f08c79694c673d12b7263dadfe4e0696ab
+# prepared_path: bugsinpy_bench/dataset/prepared_pilot30.json
+# prepared_sha256_16: dba763c9d9f4c2fe
+# upstream_repo: huge-success/sanic
+# introducing_commit: a6077a179067812766293f9ab4391b5e1499a9c6
+# fixed_commit: 44973125c15304b4262c51c78b5a86bd1daafa86
+# base_ref: a6077a179067812766293f9ab4391b5e1499a9c6^
+# head_ref: a6077a179067812766293f9ab4391b5e1499a9c6
+# started: 2026-11-27T00:34:12+00:00
+# finished: 2026-11-27T00:35:04+00:00
+# duration_s: 51.7
+# cost_usd: 0.2443
+# num_turns: 4
+# num_findings: 3
+# file_hit_strict: Y
+# line_hit_strict: N
+# exit_reason: submit_findings
+# === END BENCH ===
+
+# Agent SDK reviewer run 471
+# repo: LocalRepo
+# refs: a6077a179067812766293f9ab4391b5e1499a9c6^..a6077a179067812766293f9ab4391b5e1499a9c6
+# turns: 4
+# cost (USD, harness-reported): 0.244334
+# cost (USD, public Opus 4 rate): 1.040201
+# usage: {'input_tokens': 8, 'cache_creation_input_tokens': 23914, 'cache_read_input_tokens': 165262, 'output_tokens': 4584, 'output_tokens_details': {'thinking_tokens': 2277}, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 23914}, 'inference_geo': 'global', 'iterations': [{'input_tokens': 2, 'output_tokens': 656, 'cache_read_input_tokens': 51899, 'cache_creation_input_tokens': 2213, 'cache_creation': {'ephemeral_5m_input_tokens': 2213, 'ephemeral_1h_input_tokens': 0}, 'type': 'message'}], 'speed': 'standard', 'fallback_credit': None}
+# findings: 3
+# exit_reason: submit_findings
+# ---
+[
+  {
+    "file": "sanic/blueprints.py",
+    "line": 146,
+    "category": "contract-mismatch",
+    "severity": "high",
+    "summary": "A blueprint route with a list of hosts makes route_names contain None, so app.blueprint() crashes with AttributeError.",
+    "detail": "Router._add (sanic/router.py:199-212) handles an iterable `host` by calling self.add for each host and then a bare `return`, so it returns None. Router.add appends that None (`routes.append(self._add(...))`, router.py:148) and returns [None] at router.py:158. In Blueprint.register, `if _routes:` is true for [None], so None goes into `routes`. Then `[route.name for route in routes]` raises AttributeError: 'NoneType' object has no attribute 'name'. Any blueprint (or blueprint route) that uses `host=[...]` can no longer be registered. The routes added for each host inside the recursion are also dropped, so middleware would not be attached to them even if the crash were avoided.",
+    "line_end": null,
+    "suggested_fix": "In Router._add, collect the results of the per-host recursion and return them, e.g. `routes = []\\nfor host_ in host:\\n    routes.extend(self.add(uri, methods, handler, host_, name))\\nreturn routes`. Then have Router.add flatten them (use `routes.extend` when _add returns a list) and skip None values."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 940,
+    "category": "logic",
+    "severity": "medium",
+    "summary": "Routing now runs before request middleware, so a 404 or 405 skips all global request middleware.",
+    "detail": "`self.router.get(request)` was moved above `_run_request_middleware`. Router.get raises NotFound or MethodNotSupported for unknown URLs or methods. That now goes straight to the exception handler, and no request middleware runs. Before this change, app-level request middleware ran for every request and could short-circuit it. Common uses break, for example CORS middleware that answers OPTIONS preflight requests, or auth/logging middleware that runs before routing. The PR changed a test from GET to PUT (tests/test_blueprint_group.py:86) to hide exactly this: the GET request now gets a 405 instead of the middleware's 401.",
+    "line_end": null,
+    "suggested_fix": "Keep app-level request middleware running before routing: catch NotFound/MethodNotSupported from router.get (or resolve only the route name in a way that does not raise), run global middleware first, and then run the named middleware and the handler lookup."
+  },
+  {
+    "file": "sanic/app.py",
+    "line": 217,
+    "category": "contract-mismatch",
+    "severity": "medium",
+    "summary": "@app.route/@app.get/@app.websocket now replace the decorated function with a (routes, handler) tuple, which breaks stacked route decorators.",
+    "detail": "Before this change, the decorator returned `handler`. Now it returns `routes, handler`, so after `@app.get('/x') def h(request): ...` the name `h` is bound to a tuple. Stacking route decorators (e.g. `@app.route('/a')` over `@app.route('/b')`) is a common pattern. With this change the outer decorator receives a tuple, and `signature(handler)` inside `response()` raises TypeError (or, for websocket, the tuple is wrapped as the handler). Any user code that calls or inspects the decorated function also breaks. This is a public API change made only so that Blueprint.register can get the routes.",
+    "line_end": null,
+    "suggested_fix": "Keep the decorator's return value as `handler`. Expose the created routes another way, for example by calling `self.router.add` directly from Blueprint.register, or by setting an attribute or using an internal helper that returns the routes."
+  }
+]
